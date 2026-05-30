@@ -1,6 +1,7 @@
 import { Broadcast, FileVideo, Monitor, ShieldCheck } from '@phosphor-icons/react'
 import type { ReactElement, ReactNode } from 'react'
 
+import logoUrl from '@/assets/videogre-logo.png'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -25,6 +26,7 @@ export function OnboardingDialog({
     <Dialog open={open} onOpenChange={(next) => !next && onComplete()}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
+          <img alt="Videogre" className="mb-1 size-16 object-contain" src={logoUrl} />
           <DialogTitle>Welcome to Videogre</DialogTitle>
           <DialogDescription>An AI-native studio for recording, streaming, and publishing.</DialogDescription>
         </DialogHeader>

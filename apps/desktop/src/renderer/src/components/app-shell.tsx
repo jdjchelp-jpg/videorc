@@ -1,6 +1,7 @@
-import { ArrowsClockwise, Broadcast } from '@phosphor-icons/react'
+import { ArrowsClockwise } from '@phosphor-icons/react'
 import { useCallback, useState, type ReactElement } from 'react'
 
+import logoUrl from '@/assets/videogre-logo.png'
 import { OnboardingDialog } from '@/components/onboarding-dialog'
 import { StatusBadge } from '@/components/status-badge'
 import { AiTab } from '@/components/tabs/ai-tab'
@@ -47,9 +48,7 @@ export function AppShell(): ReactElement {
       <div className="flex min-h-screen flex-col bg-background text-foreground">
         <header className="sticky top-0 z-10 flex items-center justify-between gap-4 border-b bg-background/95 px-6 py-3 backdrop-blur">
           <div className="flex items-center gap-2.5">
-            <span className="flex size-9 items-center justify-center rounded-xl bg-primary text-primary-foreground">
-              <Broadcast className="size-5" weight="fill" />
-            </span>
+            <img alt="Videogre" className="size-9 object-contain" src={logoUrl} />
             <div className="flex flex-col leading-tight">
               <span className="font-heading text-lg font-bold">Videogre</span>
               <span className="text-xs text-muted-foreground">AI recording studio</span>
