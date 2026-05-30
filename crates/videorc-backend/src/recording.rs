@@ -1257,9 +1257,8 @@ fn ffmpeg_args(
         format!("{}k", params.output.video.bitrate_kbps),
         "-bufsize".to_string(),
         format!("{}k", params.output.video.bitrate_kbps.saturating_mul(2)),
-        "-c:a".to_string(),
-        "aac".to_string(),
     ]);
+    append_audio_encoding_args(&mut args, &input_layout, stream_target.is_some());
 
     match (output_path, stream_target) {
         (Some(path), Some(target)) => {
@@ -1463,6 +1462,27 @@ fn append_audio_output_args(args: &mut Vec<String>, input_layout: &InputLayout) 
             format!("-metadata:s:a:{track_index}"),
             format!("title={}", audio_input.track.label),
         ]);
+    }
+}
+
+fn append_audio_encoding_args(args: &mut Vec<String>, input_layout: &InputLayout, streaming: bool) {
+    if input_layout.audio_inputs.is_empty() {
+        return;
+    }
+
+    args.extend([
+        "-af".to_string(),
+        "aresample=async=1:first_pts=0".to_string(),
+        "-ar".to_string(),
+        "48000".to_string(),
+        "-ac".to_string(),
+        "1".to_string(),
+        "-c:a".to_string(),
+        if streaming { "aac" } else { "pcm_s16le" }.to_string(),
+    ]);
+
+    if streaming {
+        args.extend(["-b:a".to_string(), "160k".to_string()]);
     }
 }
 
@@ -1910,6 +1930,11 @@ mod tests {
             .collect()
     }
 
+    fn arg_value<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
+        args.windows(2)
+            .find_map(|pair| (pair[0] == name).then_some(pair[1].as_str()))
+    }
+
     #[test]
     fn default_recordings_dir_uses_videorc_movies_folder() {
         let path = default_recordings_dir();
@@ -2041,6 +2066,14 @@ mod tests {
         assert!(args.iter().any(|arg| arg == "1:a?"));
         assert!(args.iter().any(|arg| arg.contains("[2:v]")));
         assert!(args.iter().any(|arg| arg == "title=Microphone"));
+        assert_eq!(
+            arg_value(&args, "-af"),
+            Some("aresample=async=1:first_pts=0")
+        );
+        assert_eq!(arg_value(&args, "-ar"), Some("48000"));
+        assert_eq!(arg_value(&args, "-ac"), Some("1"));
+        assert_eq!(arg_value(&args, "-c:a"), Some("aac"));
+        assert_eq!(arg_value(&args, "-b:a"), Some("160k"));
         assert!(args.contains(&"8000k".to_string()));
         assert!(args.iter().any(|arg| arg.contains("pad=2560:1440")));
         assert!(args.contains(&"pipe:2".to_string()));
@@ -2068,6 +2101,14 @@ mod tests {
         assert!(args.iter().any(|arg| arg == "1:a?"));
         assert!(args.iter().any(|arg| arg == "-metadata:s:a:0"));
         assert!(args.iter().any(|arg| arg == "title=Microphone"));
+        assert_eq!(
+            arg_value(&args, "-af"),
+            Some("aresample=async=1:first_pts=0")
+        );
+        assert_eq!(arg_value(&args, "-ar"), Some("48000"));
+        assert_eq!(arg_value(&args, "-ac"), Some("1"));
+        assert_eq!(arg_value(&args, "-c:a"), Some("pcm_s16le"));
+        assert_eq!(arg_value(&args, "-b:a"), None);
     }
 
     #[test]
@@ -2087,6 +2128,8 @@ mod tests {
 
         assert_eq!(ffmpeg_inputs(&args), vec!["3:none"]);
         assert!(!args.iter().any(|arg| arg.ends_with(":a?")));
+        assert_eq!(arg_value(&args, "-af"), None);
+        assert_eq!(arg_value(&args, "-c:a"), None);
         assert!(args.contains(&"pipe:1".to_string()));
     }
 
@@ -2165,6 +2208,7 @@ mod tests {
             vec!["testsrc2=size=2560x1440:rate=30", ":1"]
         );
         assert!(with_mic.iter().any(|arg| arg == "title=Microphone"));
+        assert_eq!(arg_value(&with_mic, "-c:a"), Some("pcm_s16le"));
         assert_eq!(
             ffmpeg_inputs(&without_mic),
             vec![
@@ -2173,6 +2217,7 @@ mod tests {
             ]
         );
         assert!(without_mic.iter().any(|arg| arg == "title=Test tone"));
+        assert_eq!(arg_value(&without_mic, "-c:a"), Some("pcm_s16le"));
     }
 
     #[test]
