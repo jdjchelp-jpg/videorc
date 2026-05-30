@@ -268,7 +268,7 @@ export interface SessionSummary {
   aiArtifacts: AiArtifact[]
 }
 
-export interface VideogreApi {
+export interface VideorcApi {
   getBackendConnection: () => Promise<BackendConnection | null>
   getBackendLogs: () => Promise<BackendLogEvent[]>
   onBackendConnection: (callback: (connection: BackendConnection) => void) => () => void

@@ -225,24 +225,24 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
   useEffect(() => {
     let disposed = false
 
-    if (typeof window === 'undefined' || !window.videogre) {
+    if (typeof window === 'undefined' || !window.videorc) {
       // The preload bridge is unavailable (e.g. rendered outside Electron).
       return
     }
 
-    window.videogre.getBackendLogs().then((backendLogs) => {
+    window.videorc.getBackendLogs().then((backendLogs) => {
       if (!disposed) {
         setLogs(backendLogs.slice(-80))
       }
     })
-    window.videogre.getBackendConnection().then((nextConnection) => {
+    window.videorc.getBackendConnection().then((nextConnection) => {
       if (!disposed && nextConnection) {
         setConnection(nextConnection)
       }
     })
 
-    const offConnection = window.videogre.onBackendConnection(setConnection)
-    const offLog = window.videogre.onBackendLog(appendLog)
+    const offConnection = window.videorc.onBackendConnection(setConnection)
+    const offLog = window.videorc.onBackendLog(appendLog)
 
     return () => {
       disposed = true

@@ -6,16 +6,16 @@ import { spawn } from 'node:child_process'
 const repoRoot = resolve(import.meta.dirname, '..')
 const appExecutable = resolve(
   repoRoot,
-  process.env.VIDEOGRE_PACKAGED_APP_EXECUTABLE ??
-    'apps/desktop/release/mac-arm64/Videogre.app/Contents/MacOS/Videogre'
+  process.env.VIDEORC_PACKAGED_APP_EXECUTABLE ??
+    'apps/desktop/release/mac-arm64/Videorc.app/Contents/MacOS/Videorc'
 )
 const outputDirectory = resolve(
-  process.env.VIDEOGRE_SMOKE_OUTPUT_DIR ??
-    join(tmpdir(), `videogre-packaged-smoke-${Date.now()}`)
+  process.env.VIDEORC_SMOKE_OUTPUT_DIR ??
+    join(tmpdir(), `videorc-packaged-smoke-${Date.now()}`)
 )
 const bundledFfmpegPath = resolve(dirname(appExecutable), '..', 'Resources', 'ffmpeg', 'bin', 'ffmpeg')
-const ffmpegPath = process.env.VIDEOGRE_SMOKE_FFMPEG_PATH ?? (existsSync(bundledFfmpegPath) ? bundledFfmpegPath : 'ffmpeg')
-const timeoutMs = Number(process.env.VIDEOGRE_SMOKE_TIMEOUT_MS ?? 45000)
+const ffmpegPath = process.env.VIDEORC_SMOKE_FFMPEG_PATH ?? (existsSync(bundledFfmpegPath) ? bundledFfmpegPath : 'ffmpeg')
+const timeoutMs = Number(process.env.VIDEORC_SMOKE_TIMEOUT_MS ?? 45000)
 
 if (process.platform !== 'darwin') {
   throw new Error('Packaged app smoke test currently targets macOS app bundles.')
@@ -37,7 +37,7 @@ try {
   if (!health?.ffmpeg?.available) {
     throw new Error(health?.ffmpeg?.message ?? 'FFmpeg is unavailable for packaged smoke recording.')
   }
-  if (process.env.VIDEOGRE_SMOKE_REQUIRE_BUNDLED_FFMPEG === '1' && ffmpegPath !== bundledFfmpegPath) {
+  if (process.env.VIDEORC_SMOKE_REQUIRE_BUNDLED_FFMPEG === '1' && ffmpegPath !== bundledFfmpegPath) {
     throw new Error(`Expected bundled FFmpeg at ${bundledFfmpegPath}, but smoke is using ${ffmpegPath}.`)
   }
   console.log(`Packaged smoke using FFmpeg: ${ffmpegPath}`)
@@ -75,7 +75,7 @@ function launchAndReadConnection() {
     appProcess = spawn(appExecutable, [], {
       env: {
         ...process.env,
-        VIDEOGRE_SMOKE_PRINT_BACKEND_READY: '1'
+        VIDEORC_SMOKE_PRINT_BACKEND_READY: '1'
       },
       stdio: ['ignore', 'pipe', 'pipe']
     })

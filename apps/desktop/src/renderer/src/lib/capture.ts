@@ -31,10 +31,10 @@ export type SetupStep = {
 }
 
 export const STORAGE_KEYS = {
-  settings: 'videogre.settings',
-  captureConfig: 'videogre.captureConfig',
-  onboarding: 'videogre.onboardingComplete',
-  theme: 'videogre.theme'
+  settings: 'videorc.settings',
+  captureConfig: 'videorc.captureConfig',
+  onboarding: 'videorc.onboardingComplete',
+  theme: 'videorc.theme'
 } as const
 
 export const ONBOARDING_VERSION = 'creator-ux-v1'

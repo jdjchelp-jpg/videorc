@@ -53,7 +53,7 @@ jobs:
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: videogre-macos
+          name: videorc-macos
           path: |
             apps/desktop/release/*.dmg
             apps/desktop/release/*.zip

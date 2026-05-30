@@ -44,7 +44,7 @@ export function SettingsTab({ onResetOnboarding }: { onResetOnboarding: () => vo
             <FieldLabel htmlFor="output-directory">Output directory</FieldLabel>
             <Input
               id="output-directory"
-              placeholder="~/Movies/Videogre/Recordings"
+              placeholder="~/Movies/Videorc/Recordings"
               value={settings.outputDirectory}
               onChange={(event) => setSettings((current) => ({ ...current, outputDirectory: event.target.value }))}
             />

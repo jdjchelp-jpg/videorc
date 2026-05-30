@@ -13,7 +13,7 @@ import {
 } from '@phosphor-icons/react'
 import { useEffect, useMemo, useState, type ReactElement } from 'react'
 
-import logoUrl from '@/assets/videogre-logo.png'
+import logoUrl from '@/assets/videorc-logo.png'
 import { StatusBadge, type StatusTone } from '@/components/status-badge'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
@@ -124,9 +124,9 @@ export function OnboardingDialog({
         <DialogHeader>
           <div className="flex items-start justify-between gap-4">
             <div className="flex items-center gap-3">
-              <img alt="Videogre" className="size-14 object-contain" src={logoUrl} />
+              <img alt="Videorc" className="size-14 object-contain" src={logoUrl} />
               <div className="flex flex-col gap-1">
-                <DialogTitle>Set up Videogre</DialogTitle>
+                <DialogTitle>Set up Videorc</DialogTitle>
                 <DialogDescription>Choose the first-session defaults and confirm the local capture path.</DialogDescription>
               </div>
             </div>
@@ -158,7 +158,7 @@ export function OnboardingDialog({
                 ? (health.ffmpeg.version ?? 'FFmpeg is available.')
                 : (health?.ffmpeg.message ?? 'FFmpeg status is still pending.')
             }
-            outputDirectory={settings.outputDirectory.trim() || '~/Movies/Videogre/Recordings'}
+            outputDirectory={settings.outputDirectory.trim() || '~/Movies/Videorc/Recordings'}
             onAcknowledgedChange={setPrivacyAcknowledged}
           />
         ) : null}
@@ -196,7 +196,7 @@ function WorkflowStep({
     <FieldGroup>
       <Field>
         <FieldLabel>First session</FieldLabel>
-        <FieldDescription>Videogre will apply matching output defaults now. These can be changed later.</FieldDescription>
+        <FieldDescription>Videorc will apply matching output defaults now. These can be changed later.</FieldDescription>
         <ToggleGroup
           className="w-full items-stretch"
           orientation="vertical"

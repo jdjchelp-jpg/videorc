@@ -79,7 +79,7 @@ cp "${EXTRACTED_DIR}/LICENSE.md" "${INSTALL_DIR}/licenses/"
 cat > "${INSTALL_DIR}/NOTICE.txt" <<NOTICE
 This product includes FFmpeg as a separate executable.
 
-FFmpeg is licensed under the GNU Lesser General Public License (LGPL) version 2.1 or later unless GPL components are enabled. This Videogre bundle is built without --enable-gpl and without --enable-nonfree.
+FFmpeg is licensed under the GNU Lesser General Public License (LGPL) version 2.1 or later unless GPL components are enabled. This Videorc bundle is built without --enable-gpl and without --enable-nonfree.
 
 FFmpeg project: https://ffmpeg.org/
 NOTICE
@@ -92,7 +92,7 @@ Source SHA-256: ${SOURCE_SHA256}
 Exact configure command:
 ${EXTRACTED_DIR}/configure ${CONFIGURE_FLAGS[*]}
 
-Source code for this exact archive must be made available beside public Videogre binary downloads.
+Source code for this exact archive must be made available beside public Videorc binary downloads.
 SOURCE
 
 cat > "${INSTALL_DIR}/BUILD-CONFIG.txt" <<CONFIG

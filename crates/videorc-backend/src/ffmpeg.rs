@@ -1,4 +1,4 @@
-const BUNDLED_FFMPEG_PATH_ENV: &str = "VIDEOGRE_BUNDLED_FFMPEG_PATH";
+const BUNDLED_FFMPEG_PATH_ENV: &str = "VIDEORC_BUNDLED_FFMPEG_PATH";
 
 pub fn default_ffmpeg_path() -> String {
     std::env::var(BUNDLED_FFMPEG_PATH_ENV)

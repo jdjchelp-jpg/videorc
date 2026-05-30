@@ -46,7 +46,7 @@ use crate::storage::Database;
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::from_default_env().add_directive("videogre_backend=info".parse()?),
+            EnvFilter::from_default_env().add_directive("videorc_backend=info".parse()?),
         )
         .with_writer(std::io::stderr)
         .init();
@@ -72,7 +72,7 @@ async fn main() -> Result<()> {
     println!("READY {}", serde_json::to_string(&ready)?);
     std::io::stdout().flush()?;
 
-    state.emit_log("info", "Videogre backend ready.");
+    state.emit_log("info", "Videorc backend ready.");
     axum::serve(listener, app).await?;
     Ok(())
 }
@@ -140,7 +140,7 @@ async fn live_preview_handler(
     Response::builder()
         .header(
             header::CONTENT_TYPE,
-            "multipart/x-mixed-replace; boundary=videogre",
+            "multipart/x-mixed-replace; boundary=videorc",
         )
         .header(header::CACHE_CONTROL, "no-store")
         .body(Body::from_stream(stream))

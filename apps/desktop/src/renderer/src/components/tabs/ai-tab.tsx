@@ -107,7 +107,7 @@ export function AiTab({
             <ShieldCheck weight="fill" />
             <AlertTitle>Recordings stay local by default</AlertTitle>
             <AlertDescription>
-              Without consent, Videogre only extracts local audio. Uses OPENAI_API_KEY when present; artifacts are stored
+              Without consent, Videorc only extracts local audio. Uses OPENAI_API_KEY when present; artifacts are stored
               locally with each session.
             </AlertDescription>
           </Alert>

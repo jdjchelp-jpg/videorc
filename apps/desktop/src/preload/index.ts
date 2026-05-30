@@ -1,8 +1,8 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
-import type { BackendConnection, BackendLogEvent, VideogreApi } from '../shared/backend'
+import type { BackendConnection, BackendLogEvent, VideorcApi } from '../shared/backend'
 
-const api: VideogreApi = {
+const api: VideorcApi = {
   getBackendConnection: () => ipcRenderer.invoke('backend:get-connection'),
   getBackendLogs: () => ipcRenderer.invoke('backend:get-logs'),
   onBackendConnection: (callback) => {
@@ -21,4 +21,4 @@ const api: VideogreApi = {
   }
 }
 
-contextBridge.exposeInMainWorld('videogre', api)
+contextBridge.exposeInMainWorld('videorc', api)

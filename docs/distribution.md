@@ -1,4 +1,4 @@
-# Videogre Distribution Notes
+# Videorc Distribution Notes
 
 Status: packaging foundation, bundled macOS FFmpeg, and signed macOS release scaffolding.
 
@@ -19,11 +19,11 @@ pnpm dist:desktop
 Both commands first run the backend release build and stage the macOS FFmpeg bundle:
 
 ```sh
-cargo build --release -p videogre-backend
+cargo build --release -p videorc-backend
 pnpm ffmpeg:build:macos
 ```
 
-The packaged Electron main process launches `videogre-backend` from `process.resourcesPath`, while development still runs the backend through Cargo. Packaged builds prepend `Resources/ffmpeg/bin` to `PATH` and pass `VIDEOGRE_BUNDLED_FFMPEG_PATH` to the backend so the default FFmpeg path is the bundled executable. A custom FFmpeg path in Settings still overrides that default.
+The packaged Electron main process launches `videorc-backend` from `process.resourcesPath`, while development still runs the backend through Cargo. Packaged builds prepend `Resources/ffmpeg/bin` to `PATH` and pass `VIDEORC_BUNDLED_FFMPEG_PATH` to the backend so the default FFmpeg path is the bundled executable. A custom FFmpeg path in Settings still overrides that default.
 
 Run the packaged-app recording smoke test after `pnpm package:desktop`:
 
@@ -36,9 +36,9 @@ The smoke script launches the packaged `.app`, waits for the packaged backend to
 Useful overrides:
 
 ```sh
-VIDEOGRE_PACKAGED_APP_EXECUTABLE=/path/to/Videogre.app/Contents/MacOS/Videogre pnpm smoke:packaged
-VIDEOGRE_SMOKE_FFMPEG_PATH=/opt/homebrew/bin/ffmpeg pnpm smoke:packaged
-VIDEOGRE_SMOKE_OUTPUT_DIR=/tmp/videogre-smoke pnpm smoke:packaged
+VIDEORC_PACKAGED_APP_EXECUTABLE=/path/to/Videorc.app/Contents/MacOS/Videorc pnpm smoke:packaged
+VIDEORC_SMOKE_FFMPEG_PATH=/opt/homebrew/bin/ffmpeg pnpm smoke:packaged
+VIDEORC_SMOKE_OUTPUT_DIR=/tmp/videorc-smoke pnpm smoke:packaged
 ```
 
 Require the app-bundled FFmpeg path during smoke:
@@ -50,12 +50,12 @@ pnpm smoke:packaged:bundled
 ## Current macOS Target
 
 - Packaging tool: Electron Builder
-- App id: `dev.theorcdev.videogre`
-- Product name: `Videogre`
+- App id: `dev.theorcdev.videorc`
+- Product name: `Videorc`
 - Primary local target: unsigned macOS app directory
 - Local DMG target: unsigned
 - Production DMG target: signed and notarized when release secrets are present
-- App icon: generated from the current Videogre logo
+- App icon: generated from the current Videorc logo
 - FFmpeg: bundled LGPL-compatible executable for packaged macOS builds, with Settings override preserved
 
 ## Signing And Notarization
@@ -110,7 +110,7 @@ Bundle source:
 - The staged resource includes `NOTICE.txt`, `SOURCE.txt`, `BUILD-CONFIG.txt`, LGPL license texts, and the upstream license overview.
 - Generated FFmpeg binaries live under `vendor/ffmpeg/current/` and are intentionally ignored by git.
 
-The release process must make source for the exact FFmpeg archive available beside public Videogre binary downloads. See FFmpeg's [legal checklist](https://www.ffmpeg.org/legal.html) before changing configure flags or distribution strategy.
+The release process must make source for the exact FFmpeg archive available beside public Videorc binary downloads. See FFmpeg's [legal checklist](https://www.ffmpeg.org/legal.html) before changing configure flags or distribution strategy.
 
 ## Release Checklist
 
@@ -123,7 +123,7 @@ The release process must make source for the exact FFmpeg archive available besi
 - `pnpm package:desktop`
 - `pnpm smoke:packaged`
 - `pnpm smoke:packaged:bundled`
-- Launch the packaged app from `apps/desktop/release/mac*/Videogre.app`
+- Launch the packaged app from `apps/desktop/release/mac*/Videorc.app`
 - Confirm the packaged backend emits `READY`
 - Confirm FFmpeg unavailable states are visible and non-crashing
 - Record a short MKV using the bundled FFmpeg path

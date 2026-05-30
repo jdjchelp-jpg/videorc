@@ -380,10 +380,10 @@ pub fn default_database_path() -> PathBuf {
     if cfg!(target_os = "macos") {
         home.join("Library")
             .join("Application Support")
-            .join("Videogre")
-            .join("videogre.sqlite3")
+            .join("Videorc")
+            .join("videorc.sqlite3")
     } else {
-        home.join(".videogre").join("videogre.sqlite3")
+        home.join(".videorc").join("videorc.sqlite3")
     }
 }
 
@@ -416,8 +416,8 @@ mod tests {
         let path = default_database_path();
         let rendered = path.display().to_string();
 
-        assert!(rendered.contains("Videogre"));
-        assert!(rendered.ends_with("videogre.sqlite3"));
+        assert!(rendered.contains("Videorc"));
+        assert!(rendered.ends_with("videorc.sqlite3"));
     }
 
     #[test]

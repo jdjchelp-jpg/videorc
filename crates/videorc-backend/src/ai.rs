@@ -375,7 +375,7 @@ async fn transcribe_audio(
         .await
         .with_context(|| format!("Could not read {}", audio_path.display()))?;
     let file_part = multipart::Part::bytes(audio)
-        .file_name("videogre-audio.m4a")
+        .file_name("videorc-audio.m4a")
         .mime_str("audio/mp4")?;
     let form = multipart::Form::new()
         .text("model", transcription_model())
@@ -452,7 +452,7 @@ async fn generate_creator_intelligence(
             .join("\n")
     };
     let prompt = format!(
-        "You are Videogre's creator intelligence assistant for gaming and coding/tutorial recordings.\n\
+        "You are Videorc's creator intelligence assistant for gaming and coding/tutorial recordings.\n\
          Return strict JSON with keys highlights, smartZoom, noiseCleanup, silenceRemoval, and healthAssistant.\n\
          highlights: array of objects with timestamp, title, reason, suggestedUse.\n\
          smartZoom: array of objects with timestamp, action, subject, reason.\n\
@@ -603,7 +603,7 @@ fn render_publish_pack(artifacts: &[AiArtifact]) -> String {
 
     let title = title_description
         .and_then(|artifact| content_string(artifact, "title"))
-        .unwrap_or_else(|| "Untitled Videogre Session".to_string());
+        .unwrap_or_else(|| "Untitled Videorc Session".to_string());
     let description = title_description
         .and_then(|artifact| content_string(artifact, "description"))
         .unwrap_or_default();
@@ -785,14 +785,14 @@ fn push_markdown_list(markdown: &mut String, lines: Vec<String>) {
 }
 
 fn transcription_model() -> String {
-    std::env::var("VIDEOGRE_OPENAI_TRANSCRIPTION_MODEL")
+    std::env::var("VIDEORC_OPENAI_TRANSCRIPTION_MODEL")
         .ok()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| "gpt-4o-mini-transcribe".to_string())
 }
 
 fn text_model() -> String {
-    std::env::var("VIDEOGRE_OPENAI_TEXT_MODEL")
+    std::env::var("VIDEORC_OPENAI_TEXT_MODEL")
         .ok()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| "gpt-5-mini".to_string())

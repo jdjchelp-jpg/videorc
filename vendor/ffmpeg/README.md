@@ -1,6 +1,6 @@
 # Bundled FFmpeg
 
-Videogre packages FFmpeg as a separate executable resource for public macOS builds.
+Videorc packages FFmpeg as a separate executable resource for public macOS builds.
 
 The bundle must be built without `--enable-gpl` and without `--enable-nonfree`. The build script stages the current architecture at:
 

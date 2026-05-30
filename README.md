@@ -1,6 +1,6 @@
-# Videogre
+# Videorc
 
-Videogre is an AI-native desktop studio for creator recording and livestreaming workflows.
+Videorc is an AI-native desktop studio for creator recording and livestreaming workflows.
 
 This repository currently contains the technical spike:
 
@@ -37,13 +37,13 @@ pnpm dev
 The desktop app launches the Rust backend automatically. Recordings default to:
 
 ```text
-~/Movies/Videogre/Recordings
+~/Movies/Videorc/Recordings
 ```
 
 Session metadata is stored in:
 
 ```text
-~/Library/Application Support/Videogre/videogre.sqlite3
+~/Library/Application Support/Videorc/videorc.sqlite3
 ```
 
 ## Packaging
@@ -125,8 +125,8 @@ Optional model overrides:
 
 ```sh
 export OPENAI_API_KEY=...
-export VIDEOGRE_OPENAI_TRANSCRIPTION_MODEL=gpt-4o-mini-transcribe
-export VIDEOGRE_OPENAI_TEXT_MODEL=gpt-5-mini
+export VIDEORC_OPENAI_TRANSCRIPTION_MODEL=gpt-4o-mini-transcribe
+export VIDEORC_OPENAI_TEXT_MODEL=gpt-5-mini
 ```
 
 ## Verification

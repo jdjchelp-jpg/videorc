@@ -18,7 +18,7 @@ function createWindow(): void {
     height: 780,
     minWidth: 960,
     minHeight: 660,
-    title: 'Videogre',
+    title: 'Videorc',
     backgroundColor: '#ffffff',
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -60,7 +60,7 @@ function resolveCargoBinary(): string {
 }
 
 function resolvePackagedBackendBinary(): string {
-  return join(process.resourcesPath, process.platform === 'win32' ? 'videogre-backend.exe' : 'videogre-backend')
+  return join(process.resourcesPath, process.platform === 'win32' ? 'videorc-backend.exe' : 'videorc-backend')
 }
 
 function resolvePackagedFfmpegBinDir(): string | null {
@@ -82,7 +82,7 @@ function startBackend(): void {
   const cargoBinDir = join(homedir(), '.cargo', 'bin')
   const ffmpegBinDir = resolvePackagedFfmpegBinDir()
   const command = app.isPackaged ? resolvePackagedBackendBinary() : resolveCargoBinary()
-  const args = app.isPackaged ? [] : ['run', '--quiet', '-p', 'videogre-backend']
+  const args = app.isPackaged ? [] : ['run', '--quiet', '-p', 'videorc-backend']
   const pathEntries = [ffmpegBinDir, cargoBinDir, process.env.PATH].filter(Boolean)
 
   logBackend('info', `Launching backend from ${root}`)
@@ -94,8 +94,8 @@ function startBackend(): void {
     env: {
       ...process.env,
       PATH: pathEntries.join(delimiter),
-      VIDEOGRE_BUNDLED_FFMPEG_PATH: ffmpegBinDir ? join(ffmpegBinDir, 'ffmpeg') : '',
-      RUST_LOG: process.env.RUST_LOG ?? 'videogre_backend=info'
+      VIDEORC_BUNDLED_FFMPEG_PATH: ffmpegBinDir ? join(ffmpegBinDir, 'ffmpeg') : '',
+      RUST_LOG: process.env.RUST_LOG ?? 'videorc_backend=info'
     }
   })
 
@@ -132,7 +132,7 @@ function handleBackendStdout(text: string): void {
       try {
         backendConnection = JSON.parse(trimmed.slice('READY '.length)) as BackendConnection
         logBackend('info', `Backend ready on ${backendConnection.host}:${backendConnection.port}`)
-        if (process.env.VIDEOGRE_SMOKE_PRINT_BACKEND_READY === '1') {
+        if (process.env.VIDEORC_SMOKE_PRINT_BACKEND_READY === '1') {
           console.log(`[smoke] backend-ready ${JSON.stringify(backendConnection)}`)
         }
         BrowserWindow.getAllWindows().forEach((window) => {

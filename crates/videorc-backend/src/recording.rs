@@ -85,7 +85,7 @@ pub fn default_recordings_dir() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."))
         .join("Movies")
-        .join("Videogre")
+        .join("Videorc")
         .join("Recordings")
 }
 
@@ -137,7 +137,7 @@ pub async fn start_session(state: AppState, params: StartSessionParams) -> Resul
     let started_at = Utc::now();
     let output_path = params.output.record_enabled.then(|| {
         output_dir.join(format!(
-            "videogre-session-{}.mkv",
+            "videorc-session-{}.mkv",
             started_at.format("%Y%m%d-%H%M%S")
         ))
     });
@@ -1282,7 +1282,7 @@ fn append_live_preview_output_args(args: &mut Vec<String>) {
         "-f".to_string(),
         "mpjpeg".to_string(),
         "-boundary_tag".to_string(),
-        "videogre".to_string(),
+        "videorc".to_string(),
         "pipe:1".to_string(),
     ]);
 }
@@ -1717,12 +1717,12 @@ mod tests {
     }
 
     #[test]
-    fn default_recordings_dir_uses_videogre_movies_folder() {
+    fn default_recordings_dir_uses_videorc_movies_folder() {
         let path = default_recordings_dir();
         let rendered = path.display().to_string();
 
         assert!(rendered.contains("Movies"));
-        assert!(rendered.ends_with("Videogre/Recordings"));
+        assert!(rendered.ends_with("Videorc/Recordings"));
     }
 
     #[test]
@@ -1744,7 +1744,7 @@ mod tests {
                 microphone_index: Some(1),
             },
             &params,
-            Some(Path::new("/tmp/videogre-test.mkv")),
+            Some(Path::new("/tmp/videorc-test.mkv")),
             Some(&build_stream_url(&params.output.rtmp).unwrap()),
         )
         .unwrap();
@@ -1775,7 +1775,7 @@ mod tests {
                 microphone_index: Some(1),
             },
             &params,
-            Some(Path::new("/tmp/videogre-test.mkv")),
+            Some(Path::new("/tmp/videorc-test.mkv")),
             None,
         )
         .unwrap();
@@ -1796,7 +1796,7 @@ mod tests {
                 microphone_index: None,
             },
             &params,
-            Some(Path::new("/tmp/videogre-test.mkv")),
+            Some(Path::new("/tmp/videorc-test.mkv")),
             None,
         )
         .unwrap();
@@ -1816,7 +1816,7 @@ mod tests {
                 microphone_index: Some(1),
             },
             &params,
-            Some(Path::new("/tmp/videogre-test.mkv")),
+            Some(Path::new("/tmp/videorc-test.mkv")),
             None,
         )
         .unwrap();
@@ -1826,7 +1826,7 @@ mod tests {
         assert!(args.iter().any(|arg| arg == "-an"));
         assert!(args.iter().any(|arg| arg == "mjpeg"));
         assert!(args.iter().any(|arg| arg == "mpjpeg"));
-        assert!(args.iter().any(|arg| arg == "videogre"));
+        assert!(args.iter().any(|arg| arg == "videorc"));
         assert!(args.iter().any(|arg| arg == "pipe:1"));
     }
 
@@ -1860,7 +1860,7 @@ mod tests {
                 microphone_index: Some(1),
             },
             &params,
-            Some(Path::new("/tmp/videogre-test.mkv")),
+            Some(Path::new("/tmp/videorc-test.mkv")),
             None,
         )
         .unwrap();
@@ -1871,7 +1871,7 @@ mod tests {
                 microphone_index: None,
             },
             &params,
-            Some(Path::new("/tmp/videogre-test.mkv")),
+            Some(Path::new("/tmp/videorc-test.mkv")),
             None,
         )
         .unwrap();

@@ -1,3 +1,3 @@
 [workspace]
-members = ["crates/videogre-backend"]
+members = ["crates/videorc-backend"]
 resolver = "3"

@@ -2,15 +2,16 @@
 
 import { useTheme } from "next-themes"
 import { Toaster as Sonner, type ToasterProps } from "sonner"
-import { CheckCircleIcon, InfoIcon, WarningIcon, XCircleIcon, SpinnerIcon } from "@phosphor-icons/react"
+import { CheckCircleIcon, InfoIcon, WarningIcon, XCircleIcon, SpinnerIcon, XIcon } from "@phosphor-icons/react"
 
-const Toaster = ({ ...props }: ToasterProps) => {
+const Toaster = ({ closeButton = true, toastOptions, ...props }: ToasterProps) => {
   const { theme = "system" } = useTheme()
 
   return (
     <Sonner
       theme={theme as ToasterProps["theme"]}
       className="toaster group"
+      closeButton={closeButton}
       icons={{
         success: (
           <CheckCircleIcon className="size-4" />
@@ -27,6 +28,9 @@ const Toaster = ({ ...props }: ToasterProps) => {
         loading: (
           <SpinnerIcon className="size-4 animate-spin" />
         ),
+        close: (
+          <XIcon className="size-3.5" />
+        ),
       }}
       style={
         {
@@ -37,8 +41,11 @@ const Toaster = ({ ...props }: ToasterProps) => {
         } as React.CSSProperties
       }
       toastOptions={{
+        ...toastOptions,
+        closeButtonAriaLabel: toastOptions?.closeButtonAriaLabel ?? "Dismiss notification",
         classNames: {
-          toast: "cn-toast",
+          ...toastOptions?.classNames,
+          toast: ["cn-toast", toastOptions?.classNames?.toast].filter(Boolean).join(" "),
         },
       }}
       {...props}
