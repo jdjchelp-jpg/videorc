@@ -15,7 +15,7 @@ use crate::devices::find_avfoundation_screen_index;
 use crate::protocol::{
     CameraCorner, CameraShape, CameraSize, HealthLevel, PreviewSnapshot, PreviewSnapshotParams,
     RecordingState, RecordingStatus, RemuxSessionParams, RtmpPreset, RtmpSettings,
-    StartSessionParams,
+    StartSessionParams, StreamHealth, VideoPreset, VideoSettings,
 };
 use crate::state::AppState;
 use crate::storage::{NewSession, default_preview_dir};
@@ -54,6 +54,16 @@ pub fn default_recordings_dir() -> PathBuf {
         .join("Movies")
         .join("Videogre")
         .join("Recordings")
+}
+
+fn default_video_settings() -> VideoSettings {
+    VideoSettings {
+        preset: VideoPreset::Tutorial1440p30,
+        width: 2560,
+        height: 1440,
+        fps: 30,
+        bitrate_kbps: 8000,
+    }
 }
 
 pub fn idle_status() -> RecordingStatus {
@@ -207,6 +217,21 @@ pub async fn start_session(state: AppState, params: StartSessionParams) -> Resul
                 }
 
                 log_state.emit_log("warn", trimmed);
+                if let Some(stream_health) = parse_ffmpeg_stream_health(&log_session_id, trimmed) {
+                    if stream_health.dropped_frames.unwrap_or_default() > 0 {
+                        let _ = emit_health_event(
+                            &log_state,
+                            Some(&log_session_id),
+                            HealthLevel::Warn,
+                            "stream-dropped-frames",
+                            &format!(
+                                "FFmpeg reports {} dropped frames.",
+                                stream_health.dropped_frames.unwrap_or_default()
+                            ),
+                        );
+                    }
+                    log_state.emit_event("stream.health", stream_health);
+                }
                 if looks_like_ffmpeg_health_event(trimmed) {
                     let _ = emit_health_event(
                         &log_state,
@@ -328,6 +353,7 @@ pub async fn create_preview_snapshot(
             stream_enabled: false,
             output_directory: None,
             ffmpeg_path: Some(ffmpeg_path.clone()),
+            video: default_video_settings(),
             rtmp: RtmpSettings {
                 preset: RtmpPreset::Custom,
                 server_url: "rtmp://preview.invalid/live".to_string(),
@@ -558,8 +584,13 @@ fn ffmpeg_args(
         "-hide_banner".to_string(),
         "-loglevel".to_string(),
         "warning".to_string(),
+        "-stats".to_string(),
+        "-stats_period".to_string(),
+        "2".to_string(),
+        "-progress".to_string(),
+        "pipe:2".to_string(),
     ];
-    let input_layout = append_input_args(&mut args, capture, true);
+    let input_layout = append_input_args(&mut args, capture, true, &params.output.video);
 
     args.extend([
         "-filter_complex".to_string(),
@@ -571,13 +602,17 @@ fn ffmpeg_args(
     ]);
     args.extend([
         "-r".to_string(),
-        "30".to_string(),
+        params.output.video.fps.to_string(),
         "-pix_fmt".to_string(),
         "yuv420p".to_string(),
         "-c:v".to_string(),
         "h264_videotoolbox".to_string(),
         "-b:v".to_string(),
-        "6000k".to_string(),
+        format!("{}k", params.output.video.bitrate_kbps),
+        "-maxrate".to_string(),
+        format!("{}k", params.output.video.bitrate_kbps),
+        "-bufsize".to_string(),
+        format!("{}k", params.output.video.bitrate_kbps.saturating_mul(2)),
         "-c:a".to_string(),
         "aac".to_string(),
     ]);
@@ -621,7 +656,7 @@ fn preview_ffmpeg_args(
         "-loglevel".to_string(),
         "warning".to_string(),
     ];
-    let input_layout = append_input_args(&mut args, capture, false);
+    let input_layout = append_input_args(&mut args, capture, false, &params.output.video);
     args.extend([
         "-filter_complex".to_string(),
         video_filter(input_layout.camera_input_index, params, true),
@@ -648,6 +683,7 @@ fn append_input_args(
     args: &mut Vec<String>,
     capture: &CaptureInputs,
     include_audio: bool,
+    video: &VideoSettings,
 ) -> InputLayout {
     let audio_input_index = match capture.video {
         VideoInput::MacScreen { index } => {
@@ -655,7 +691,7 @@ fn append_input_args(
                 "-f".to_string(),
                 "avfoundation".to_string(),
                 "-framerate".to_string(),
-                "30".to_string(),
+                video.fps.to_string(),
                 "-capture_cursor".to_string(),
                 "1".to_string(),
                 "-i".to_string(),
@@ -676,7 +712,10 @@ fn append_input_args(
                 "-f".to_string(),
                 "lavfi".to_string(),
                 "-i".to_string(),
-                "testsrc2=size=1920x1080:rate=30".to_string(),
+                format!(
+                    "testsrc2=size={}x{}:rate={}",
+                    video.width, video.height, video.fps
+                ),
             ]);
             if include_audio {
                 args.extend([
@@ -702,7 +741,7 @@ fn append_input_args(
             "-f".to_string(),
             "avfoundation".to_string(),
             "-framerate".to_string(),
-            "30".to_string(),
+            video.fps.to_string(),
             "-i".to_string(),
             format!("{camera_index}:none"),
         ]);
@@ -730,7 +769,7 @@ fn video_filter(
     let base_scale = if preview {
         "scale=w=960:h=-2".to_string()
     } else {
-        tutorial_scale_filter()
+        output_scale_filter(&params.output.video)
     };
 
     if let Some(camera_input_index) = camera_input_index {
@@ -745,15 +784,19 @@ fn video_filter(
         let final_scale = if preview { ",scale=w=960:h=-2" } else { "" };
 
         return format!(
-            "[0:v]{base_scale},fps=30[base];{camera};[base][cam]overlay=x={x}:y={y}:format=auto{final_scale}[v]"
+            "[0:v]{base_scale},fps={}[base];{camera};[base][cam]overlay=x={x}:y={y}:format=auto{final_scale}[v]",
+            params.output.video.fps
         );
     }
 
-    format!("[0:v]{base_scale},fps=30[v]")
+    format!("[0:v]{base_scale},fps={}[v]", params.output.video.fps)
 }
 
-fn tutorial_scale_filter() -> String {
-    "scale=w='min(2560,iw)':h=-2".to_string()
+fn output_scale_filter(video: &VideoSettings) -> String {
+    format!(
+        "scale=w={}:h={}:force_original_aspect_ratio=decrease,pad={}:{}:(ow-iw)/2:(oh-ih)/2",
+        video.width, video.height, video.width, video.height
+    )
 }
 
 fn camera_chain_filter(camera_input_index: usize, params: &StartSessionParams) -> String {
@@ -783,6 +826,24 @@ fn validate_outputs(params: &StartSessionParams) -> Result<()> {
 
     if params.output.stream_enabled {
         build_stream_url(&params.output.rtmp)?;
+    }
+
+    validate_video_settings(&params.output.video)?;
+
+    Ok(())
+}
+
+fn validate_video_settings(video: &VideoSettings) -> Result<()> {
+    if !(640..=3840).contains(&video.width) || !(360..=2160).contains(&video.height) {
+        bail!("Video resolution must be between 640x360 and 3840x2160");
+    }
+
+    if !(24..=60).contains(&video.fps) {
+        bail!("Video FPS must be between 24 and 60");
+    }
+
+    if !(1_000..=50_000).contains(&video.bitrate_kbps) {
+        bail!("Video bitrate must be between 1000 and 50000 kbps");
     }
 
     Ok(())
@@ -923,6 +984,41 @@ fn looks_like_ffmpeg_health_event(line: &str) -> bool {
         || normalized.contains("connection")
 }
 
+fn parse_ffmpeg_stream_health(session_id: &str, line: &str) -> Option<StreamHealth> {
+    let fps = parse_stat_f64(line, "fps=");
+    let dropped_frames =
+        parse_stat_u64(line, "drop_frames=").or_else(|| parse_stat_u64(line, "drop="));
+    let speed = parse_stat_f64(line, "speed=");
+
+    if fps.is_none() && dropped_frames.is_none() && speed.is_none() {
+        return None;
+    }
+
+    Some(StreamHealth {
+        session_id: session_id.to_string(),
+        fps,
+        dropped_frames,
+        speed,
+        created_at: Utc::now().to_rfc3339(),
+    })
+}
+
+fn parse_stat_f64(line: &str, label: &str) -> Option<f64> {
+    stat_value(line, label)?
+        .trim_end_matches('x')
+        .parse::<f64>()
+        .ok()
+}
+
+fn parse_stat_u64(line: &str, label: &str) -> Option<u64> {
+    stat_value(line, label)?.parse::<u64>().ok()
+}
+
+fn stat_value<'a>(line: &'a str, label: &str) -> Option<&'a str> {
+    let start = line.find(label)? + label.len();
+    line[start..].split_whitespace().next()
+}
+
 pub type RecordingSlot = Arc<Mutex<Option<ActiveRecording>>>;
 
 #[cfg(test)]
@@ -952,6 +1048,7 @@ mod tests {
                 stream_enabled,
                 output_directory: None,
                 ffmpeg_path: None,
+                video: default_video_settings(),
                 rtmp: RtmpSettings {
                     preset: RtmpPreset::YouTube,
                     server_url: "rtmp://a.rtmp.youtube.com/live2".to_string(),
@@ -989,6 +1086,9 @@ mod tests {
         assert!(args.iter().any(|arg| arg.contains("[f=matroska")));
         assert!(args.iter().any(|arg| arg.contains("[f=flv")));
         assert!(args.contains(&"-filter_complex".to_string()));
+        assert!(args.contains(&"8000k".to_string()));
+        assert!(args.iter().any(|arg| arg.contains("pad=2560:1440")));
+        assert!(args.contains(&"pipe:2".to_string()));
     }
 
     #[test]
@@ -1011,8 +1111,32 @@ mod tests {
     }
 
     #[test]
+    fn rejects_invalid_video_settings() {
+        let mut params = base_params(true, false);
+        params.output.video.fps = 120;
+
+        assert!(validate_outputs(&params).is_err());
+    }
+
+    #[test]
     fn parses_avfoundation_device_ids() {
         assert_eq!(parse_avfoundation_id("camera:avfoundation:12"), Some(12));
         assert_eq!(parse_avfoundation_id("window:native-adapter-pending"), None);
+    }
+
+    #[test]
+    fn parses_ffmpeg_stream_health() {
+        let health = parse_ffmpeg_stream_health(
+            "session",
+            "frame=151 fps=29.97 q=-0.0 size=1024kB drop=3 speed=1.02x",
+        )
+        .unwrap();
+
+        assert_eq!(health.fps, Some(29.97));
+        assert_eq!(health.dropped_frames, Some(3));
+        assert_eq!(health.speed, Some(1.02));
+
+        let progress_health = parse_ffmpeg_stream_health("session", "drop_frames=7").unwrap();
+        assert_eq!(progress_health.dropped_frames, Some(7));
     }
 }

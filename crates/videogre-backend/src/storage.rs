@@ -403,6 +403,7 @@ mod tests {
     use super::*;
     use crate::protocol::{
         CameraCorner, CameraShape, CameraSize, OutputSettings, RtmpPreset, RtmpSettings,
+        VideoPreset, VideoSettings,
     };
 
     #[test]
@@ -433,6 +434,13 @@ mod tests {
             stream_enabled: true,
             output_directory: None,
             ffmpeg_path: None,
+            video: VideoSettings {
+                preset: VideoPreset::Tutorial1440p30,
+                width: 2560,
+                height: 1440,
+                fps: 30,
+                bitrate_kbps: 8000,
+            },
             rtmp: RtmpSettings {
                 preset: RtmpPreset::YouTube,
                 server_url: "rtmp://a.rtmp.youtube.com/live2".to_string(),

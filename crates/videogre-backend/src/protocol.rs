@@ -184,7 +184,30 @@ pub struct OutputSettings {
     pub stream_enabled: bool,
     pub output_directory: Option<String>,
     pub ffmpeg_path: Option<String>,
+    pub video: VideoSettings,
     pub rtmp: RtmpSettings,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VideoSettings {
+    pub preset: VideoPreset,
+    pub width: u32,
+    pub height: u32,
+    pub fps: u32,
+    pub bitrate_kbps: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum VideoPreset {
+    #[serde(rename = "tutorial-1080p30")]
+    Tutorial1080p30,
+    #[serde(rename = "tutorial-1440p30")]
+    Tutorial1440p30,
+    #[serde(rename = "stream-1080p60")]
+    Stream1080p60,
+    Custom,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -251,6 +274,16 @@ pub struct AudioMeterResult {
     pub peak_db: Option<f64>,
     pub mean_db: Option<f64>,
     pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamHealth {
+    pub session_id: String,
+    pub fps: Option<f64>,
+    pub dropped_frames: Option<u64>,
+    pub speed: Option<f64>,
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

@@ -97,6 +97,15 @@ export interface LayoutSettings {
 }
 
 export type RtmpPreset = 'youtube' | 'twitch' | 'x' | 'custom'
+export type VideoPreset = 'tutorial-1080p30' | 'tutorial-1440p30' | 'stream-1080p60' | 'custom'
+
+export interface VideoSettings {
+  preset: VideoPreset
+  width: number
+  height: number
+  fps: number
+  bitrateKbps: number
+}
 
 export interface RtmpSettings {
   preset: RtmpPreset
@@ -109,6 +118,7 @@ export interface OutputSettings {
   streamEnabled: boolean
   outputDirectory?: string
   ffmpegPath?: string
+  video: VideoSettings
   rtmp: RtmpSettings
 }
 
@@ -148,6 +158,14 @@ export interface AudioMeterResult {
   peakDb?: number
   meanDb?: number
   message?: string
+}
+
+export interface StreamHealth {
+  sessionId: string
+  fps?: number
+  droppedFrames?: number
+  speed?: number
+  createdAt: string
 }
 
 export type HealthLevel = 'info' | 'warn' | 'error'

@@ -343,6 +343,45 @@ h1 {
   accent-color: #176b5b;
 }
 
+.video-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.stream-health-card {
+  display: grid;
+  gap: 8px;
+  border: 1px solid #d7ccbb;
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 14px;
+  background: #fbf3e3;
+}
+
+.stream-health-card > span {
+  color: #6d665b;
+  font-size: 12px;
+  font-weight: 740;
+}
+
+.stream-health-card > div {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.stream-health-card strong {
+  min-height: 28px;
+  border-radius: 8px;
+  padding: 6px;
+  background: #fffdf8;
+  color: #2d2a25;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  text-align: center;
+}
+
 .consent-box {
   display: flex;
   align-items: flex-start;

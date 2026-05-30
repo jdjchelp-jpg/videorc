@@ -40,7 +40,10 @@ import type {
   RtmpPreset,
   SessionSummary,
   SourceSelection,
-  StartSessionParams
+  StartSessionParams,
+  StreamHealth,
+  VideoPreset,
+  VideoSettings
 } from '../../shared/backend'
 import { BackendClient } from './backendClient'
 
@@ -52,6 +55,7 @@ type SettingsState = {
 type CaptureConfig = {
   sources: SourceSelection
   layout: LayoutSettings
+  video: VideoSettings
   recordEnabled: boolean
   streamEnabled: boolean
   rtmpPreset: RtmpPreset
@@ -79,6 +83,37 @@ const rtmpDefaults: Record<RtmpPreset, string> = {
   custom: ''
 }
 
+const videoPresets: Record<VideoPreset, VideoSettings> = {
+  'tutorial-1080p30': {
+    preset: 'tutorial-1080p30',
+    width: 1920,
+    height: 1080,
+    fps: 30,
+    bitrateKbps: 6000
+  },
+  'tutorial-1440p30': {
+    preset: 'tutorial-1440p30',
+    width: 2560,
+    height: 1440,
+    fps: 30,
+    bitrateKbps: 8000
+  },
+  'stream-1080p60': {
+    preset: 'stream-1080p60',
+    width: 1920,
+    height: 1080,
+    fps: 60,
+    bitrateKbps: 9000
+  },
+  custom: {
+    preset: 'custom',
+    width: 1920,
+    height: 1080,
+    fps: 30,
+    bitrateKbps: 6000
+  }
+}
+
 const defaultCaptureConfig: CaptureConfig = {
   sources: {},
   layout: {
@@ -87,6 +122,7 @@ const defaultCaptureConfig: CaptureConfig = {
     cameraShape: 'rectangle',
     cameraMargin: 32
   },
+  video: videoPresets['tutorial-1440p30'],
   recordEnabled: true,
   streamEnabled: false,
   rtmpPreset: 'youtube',
@@ -141,6 +177,7 @@ export function App(): ReactElement {
   const [recording, setRecording] = useState<RecordingStatus>({ state: 'idle', message: 'Ready.' })
   const [logs, setLogs] = useState<BackendLogEvent[]>([])
   const [healthEvents, setHealthEvents] = useState<HealthEvent[]>([])
+  const [streamHealth, setStreamHealth] = useState<StreamHealth | null>(null)
   const [sessions, setSessions] = useState<SessionSummary[]>([])
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const [previewLoading, setPreviewLoading] = useState(false)
@@ -166,6 +203,7 @@ export function App(): ReactElement {
         streamEnabled: captureConfig.streamEnabled,
         outputDirectory: settings.outputDirectory.trim() || undefined,
         ffmpegPath: settings.ffmpegPath.trim() || undefined,
+        video: captureConfig.video,
         rtmp: {
           preset: captureConfig.rtmpPreset,
           serverUrl: captureConfig.rtmpServerUrl.trim(),
@@ -279,6 +317,9 @@ export function App(): ReactElement {
       }),
       nextClient.on('health.event', (payload) => {
         setHealthEvents((current) => [payload as HealthEvent, ...current].slice(0, 40))
+      }),
+      nextClient.on('stream.health', (payload) => {
+        setStreamHealth((current) => mergeStreamHealth(current, payload as StreamHealth))
       }),
       nextClient.on('ai.artifacts.changed', () => {
         void refreshSessions(nextClient)
@@ -404,6 +445,7 @@ export function App(): ReactElement {
     try {
       setLastError(null)
       setLastNotice(null)
+      setStreamHealth(null)
       const status = await client.request<RecordingStatus>('session.start', sessionParams)
       setRecording(status)
       await refreshSessions(client)
@@ -658,6 +700,75 @@ export function App(): ReactElement {
             </label>
           </div>
           <label className="field">
+            <span>Video preset</span>
+            <select
+              value={captureConfig.video.preset}
+              onChange={(event) => {
+                const preset = event.target.value as VideoPreset
+                setCaptureConfig((current) => ({
+                  ...current,
+                  video: videoPresets[preset]
+                }))
+              }}
+            >
+              <option value="tutorial-1440p30">Tutorial 1440p30</option>
+              <option value="tutorial-1080p30">Tutorial 1080p30</option>
+              <option value="stream-1080p60">Stream 1080p60</option>
+              <option value="custom">Custom</option>
+            </select>
+          </label>
+          <div className="video-grid">
+            <label className="field">
+              <span>Width</span>
+              <input
+                min={640}
+                max={3840}
+                type="number"
+                value={captureConfig.video.width}
+                onChange={(event) => updateVideo(setCaptureConfig, { width: Number(event.target.value) })}
+              />
+            </label>
+            <label className="field">
+              <span>Height</span>
+              <input
+                min={360}
+                max={2160}
+                type="number"
+                value={captureConfig.video.height}
+                onChange={(event) => updateVideo(setCaptureConfig, { height: Number(event.target.value) })}
+              />
+            </label>
+            <label className="field">
+              <span>FPS</span>
+              <input
+                min={24}
+                max={60}
+                type="number"
+                value={captureConfig.video.fps}
+                onChange={(event) => updateVideo(setCaptureConfig, { fps: Number(event.target.value) })}
+              />
+            </label>
+            <label className="field">
+              <span>Bitrate kbps</span>
+              <input
+                min={1000}
+                max={50000}
+                step={500}
+                type="number"
+                value={captureConfig.video.bitrateKbps}
+                onChange={(event) => updateVideo(setCaptureConfig, { bitrateKbps: Number(event.target.value) })}
+              />
+            </label>
+          </div>
+          <div className="stream-health-card">
+            <span>Output health</span>
+            <div>
+              <strong>{formatMetric(streamHealth?.fps, 'fps')}</strong>
+              <strong>{formatDroppedFrames(streamHealth?.droppedFrames)}</strong>
+              <strong>{formatMetric(streamHealth?.speed, 'x')}</strong>
+            </div>
+          </div>
+          <label className="field">
             <span>RTMP preset</span>
             <select
               value={captureConfig.rtmpPreset}
@@ -900,6 +1011,20 @@ function updateLayout(
   setCaptureConfig((current) => ({ ...current, layout: { ...current.layout, ...patch } }))
 }
 
+function updateVideo(
+  setCaptureConfig: Dispatch<SetStateAction<CaptureConfig>>,
+  patch: Partial<VideoSettings>
+): void {
+  setCaptureConfig((current) => ({
+    ...current,
+    video: {
+      ...current.video,
+      ...patch,
+      preset: 'custom'
+    }
+  }))
+}
+
 function Panel({
   children,
   className,
@@ -1007,10 +1132,10 @@ function setupChecklist({
       label: 'Output',
       detail: captureConfig.recordEnabled
         ? captureConfig.streamEnabled
-          ? 'Recording and streaming are enabled.'
-          : 'Local recording is enabled.'
+          ? `${captureConfig.video.width}x${captureConfig.video.height} ${captureConfig.video.fps} FPS record+stream.`
+          : `${captureConfig.video.width}x${captureConfig.video.height} ${captureConfig.video.fps} FPS recording.`
         : captureConfig.streamEnabled
-          ? 'Streaming is enabled.'
+          ? `${captureConfig.video.width}x${captureConfig.video.height} ${captureConfig.video.fps} FPS streaming.`
           : 'No output is enabled.',
       tone: captureConfig.recordEnabled || captureConfig.streamEnabled ? 'good' : 'warn'
     },
@@ -1068,6 +1193,28 @@ function durationLabel(startedAt: string, now: number): string {
 
 function formatDb(value?: number): string {
   return typeof value === 'number' ? `${value.toFixed(1)} dB` : 'Not checked'
+}
+
+function formatMetric(value: number | undefined, suffix: string): string {
+  return typeof value === 'number' ? `${value.toFixed(suffix === 'fps' ? 1 : 2)} ${suffix}` : `-- ${suffix}`
+}
+
+function formatDroppedFrames(value: number | undefined): string {
+  return typeof value === 'number' ? `${value} drop` : '-- drop'
+}
+
+function mergeStreamHealth(current: StreamHealth | null, update: StreamHealth): StreamHealth {
+  if (!current || current.sessionId !== update.sessionId) {
+    return update
+  }
+
+  return {
+    ...current,
+    ...update,
+    fps: update.fps ?? current.fps,
+    droppedFrames: update.droppedFrames ?? current.droppedFrames,
+    speed: update.speed ?? current.speed
+  }
 }
 
 function isEditableTarget(target: EventTarget | null): boolean {
