@@ -80,6 +80,11 @@ pnpm smoke:packaged:bundled
 
 See [distribution notes](docs/distribution.md) for signing, notarization, and FFmpeg distribution details.
 
+## Architecture Docs
+
+- [ADR 0001: OBS-Parity Native Capture Architecture](docs/adr/0001-obs-parity-native-capture-architecture.md)
+- [OBS parity source map](docs/obs-parity-source-map.md)
+
 ## Current State
 
 The technical spike, capture foundation, reliable recording preview path, first post-recording AI workflow, and first creator polish slice are implemented:
