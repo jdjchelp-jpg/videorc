@@ -3,8 +3,9 @@ use std::sync::Arc;
 use chrono::Utc;
 use tokio::sync::broadcast;
 
-use crate::protocol::{BackendLogEvent, ServerEvent};
+use crate::protocol::{BackendLogEvent, Scene, ServerEvent};
 use crate::recording::{LivePreviewSlot, RecordingSlot, initial_live_preview_state};
+use crate::scene::default_scene;
 use crate::storage::Database;
 
 const PREVIEW_FRAME_CHANNEL_CAPACITY: usize = 4;
@@ -17,6 +18,7 @@ pub struct AppState {
     pub recording: RecordingSlot,
     pub live_preview: LivePreviewSlot,
     pub preview_frames: broadcast::Sender<Vec<u8>>,
+    pub scene: Arc<tokio::sync::Mutex<Scene>>,
     pub database: Database,
 }
 
@@ -34,6 +36,7 @@ impl AppState {
             recording: Arc::new(tokio::sync::Mutex::new(None)),
             live_preview: Arc::new(tokio::sync::Mutex::new(initial_live_preview_state())),
             preview_frames: broadcast::channel(PREVIEW_FRAME_CHANNEL_CAPACITY).0,
+            scene: Arc::new(tokio::sync::Mutex::new(default_scene())),
             database,
         }
     }

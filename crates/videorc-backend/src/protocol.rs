@@ -213,6 +213,130 @@ pub enum CameraFit {
     Fill,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Scene {
+    pub id: String,
+    pub name: String,
+    pub sources: Vec<SceneSource>,
+    pub outputs: Vec<SceneOutput>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SceneSource {
+    pub id: String,
+    pub name: String,
+    pub kind: SceneSourceKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_id: Option<String>,
+    pub transform: SceneTransform,
+    pub default_transform: SceneTransform,
+    #[serde(default = "default_true")]
+    pub visible: bool,
+    #[serde(default)]
+    pub locked: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum SceneSourceKind {
+    Screen,
+    Window,
+    Camera,
+    TestPattern,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SceneTransform {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+    #[serde(default)]
+    pub crop_left: f64,
+    #[serde(default)]
+    pub crop_top: f64,
+    #[serde(default)]
+    pub crop_right: f64,
+    #[serde(default)]
+    pub crop_bottom: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SceneTransformPatch {
+    pub x: Option<f64>,
+    pub y: Option<f64>,
+    pub width: Option<f64>,
+    pub height: Option<f64>,
+    pub crop_left: Option<f64>,
+    pub crop_top: Option<f64>,
+    pub crop_right: Option<f64>,
+    pub crop_bottom: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SceneOutput {
+    pub id: String,
+    pub kind: SceneOutputKind,
+    pub width: u32,
+    pub height: u32,
+    pub fps: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum SceneOutputKind {
+    Preview,
+    Recording,
+    Stream,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SceneConfigParams {
+    pub sources: SourceSelection,
+    pub layout: LayoutSettings,
+    #[serde(default)]
+    pub video: Option<VideoSettings>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SceneTransformUpdateParams {
+    pub source_id: String,
+    pub transform: SceneTransformPatch,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SceneSourceParams {
+    pub source_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SceneSourceOrderParams {
+    pub source_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SceneSourceNudgeParams {
+    pub source_id: String,
+    pub direction_x: f64,
+    pub direction_y: f64,
+    #[serde(default)]
+    pub large: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
 fn default_camera_fit() -> CameraFit {
     CameraFit::Fill
 }

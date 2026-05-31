@@ -5,6 +5,7 @@ mod devices;
 mod ffmpeg;
 mod protocol;
 mod recording;
+mod scene;
 mod screen_capture;
 mod state;
 mod storage;
@@ -32,6 +33,10 @@ use recording::{
     create_preview_snapshot, idle_status, live_preview_status, preview_file_path, remux_session,
     shutdown_capture_processes, start_live_preview, start_session, stop_live_preview,
     stop_recording, subscribe_live_preview_frames,
+};
+use scene::{
+    nudge_source, reorder_sources, reset_source_transform, scene_from_capture_config,
+    update_source_transform,
 };
 use serde::Deserialize;
 use tokio::net::TcpListener;
@@ -311,6 +316,120 @@ async fn handle_text_message(state: &AppState, text: &str) -> ServerResponse {
             match serde_json::from_value::<protocol::AudioMeterParams>(command.params) {
                 Ok(params) => {
                     ServerResponse::ok(command.id, devices::sample_audio_meter(params).await)
+                }
+                Err(error) => {
+                    ServerResponse::error(command.id, "invalid-params", error.to_string())
+                }
+            }
+        }
+        "scene.get" => {
+            let scene = state.scene.lock().await.clone();
+            ServerResponse::ok(command.id, scene)
+        }
+        "scene.load_from_capture_config" => {
+            match serde_json::from_value::<protocol::SceneConfigParams>(command.params) {
+                Ok(params) => {
+                    let scene = scene_from_capture_config(params);
+                    {
+                        let mut guard = state.scene.lock().await;
+                        *guard = scene.clone();
+                    }
+                    state.emit_event("scene.changed", &scene);
+                    ServerResponse::ok(command.id, scene)
+                }
+                Err(error) => {
+                    ServerResponse::error(command.id, "invalid-params", error.to_string())
+                }
+            }
+        }
+        "scene.source.transform.update" => {
+            match serde_json::from_value::<protocol::SceneTransformUpdateParams>(command.params) {
+                Ok(params) => {
+                    let result = {
+                        let mut guard = state.scene.lock().await;
+                        update_source_transform(&mut guard, params)
+                    };
+                    match result {
+                        Ok(scene) => {
+                            state.emit_event("scene.changed", &scene);
+                            ServerResponse::ok(command.id, scene)
+                        }
+                        Err(error) => {
+                            ServerResponse::error(command.id, "scene-update-failed", error)
+                        }
+                    }
+                }
+                Err(error) => {
+                    ServerResponse::error(command.id, "invalid-params", error.to_string())
+                }
+            }
+        }
+        "scene.source.transform.reset" => {
+            match serde_json::from_value::<protocol::SceneSourceParams>(command.params) {
+                Ok(params) => {
+                    let result = {
+                        let mut guard = state.scene.lock().await;
+                        reset_source_transform(&mut guard, params)
+                    };
+                    match result {
+                        Ok(scene) => {
+                            state.emit_event("scene.changed", &scene);
+                            ServerResponse::ok(command.id, scene)
+                        }
+                        Err(error) => {
+                            ServerResponse::error(command.id, "scene-reset-failed", error)
+                        }
+                    }
+                }
+                Err(error) => {
+                    ServerResponse::error(command.id, "invalid-params", error.to_string())
+                }
+            }
+        }
+        "scene.source.nudge" => {
+            match serde_json::from_value::<protocol::SceneSourceNudgeParams>(command.params) {
+                Ok(params) => {
+                    let result = {
+                        let mut guard = state.scene.lock().await;
+                        nudge_source(
+                            &mut guard,
+                            &params.source_id,
+                            params.direction_x,
+                            params.direction_y,
+                            params.large,
+                        )
+                    };
+                    match result {
+                        Ok(scene) => {
+                            state.emit_event("scene.changed", &scene);
+                            ServerResponse::ok(command.id, scene)
+                        }
+                        Err(error) => {
+                            ServerResponse::error(command.id, "scene-nudge-failed", error)
+                        }
+                    }
+                }
+                Err(error) => {
+                    ServerResponse::error(command.id, "invalid-params", error.to_string())
+                }
+            }
+        }
+        "scene.sources.reorder" => {
+            match serde_json::from_value::<protocol::SceneSourceOrderParams>(command.params) {
+                Ok(params) => {
+                    let result = {
+                        let mut guard = state.scene.lock().await;
+                        reorder_sources(&mut guard, params)
+                    };
+                    match result {
+                        Ok(scene) => {
+                            state.emit_event("scene.changed", &scene);
+                            ServerResponse::ok(command.id, scene)
+                        }
+                        Err(error) => {
+                            ServerResponse::error(command.id, "scene-reorder-failed", error)
+                        }
+                    }
                 }
                 Err(error) => {
                     ServerResponse::error(command.id, "invalid-params", error.to_string())

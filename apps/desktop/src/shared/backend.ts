@@ -112,6 +112,83 @@ export interface LayoutSettings {
   cameraOffsetY: number
 }
 
+export type SceneSourceKind = 'screen' | 'window' | 'camera' | 'test-pattern'
+export type SceneOutputKind = 'preview' | 'recording' | 'stream'
+
+export interface Scene {
+  id: string
+  name: string
+  sources: SceneSource[]
+  outputs: SceneOutput[]
+}
+
+export interface SceneSource {
+  id: string
+  name: string
+  kind: SceneSourceKind
+  deviceId?: string
+  transform: SceneTransform
+  defaultTransform: SceneTransform
+  visible: boolean
+  locked: boolean
+}
+
+export interface SceneTransform {
+  x: number
+  y: number
+  width: number
+  height: number
+  cropLeft: number
+  cropTop: number
+  cropRight: number
+  cropBottom: number
+}
+
+export interface SceneTransformPatch {
+  x?: number
+  y?: number
+  width?: number
+  height?: number
+  cropLeft?: number
+  cropTop?: number
+  cropRight?: number
+  cropBottom?: number
+}
+
+export interface SceneOutput {
+  id: string
+  kind: SceneOutputKind
+  width: number
+  height: number
+  fps: number
+}
+
+export interface SceneConfigParams {
+  sources: SourceSelection
+  layout: LayoutSettings
+  video?: VideoSettings
+}
+
+export interface SceneTransformUpdateParams {
+  sourceId: string
+  transform: SceneTransformPatch
+}
+
+export interface SceneSourceParams {
+  sourceId: string
+}
+
+export interface SceneSourceOrderParams {
+  sourceIds: string[]
+}
+
+export interface SceneSourceNudgeParams {
+  sourceId: string
+  directionX: number
+  directionY: number
+  large?: boolean
+}
+
 export type RtmpPreset = 'youtube' | 'twitch' | 'x' | 'custom'
 export type VideoPreset = 'tutorial-1080p30' | 'tutorial-1440p30' | 'stream-1080p60' | 'custom'
 
