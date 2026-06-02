@@ -175,14 +175,25 @@ pub async fn start_session(state: AppState, params: StartSessionParams) -> Resul
             started_at.format("%Y%m%d-%H%M%S")
         ))
     });
-    let stream_target = params
-        .output
-        .stream_enabled
-        .then(|| build_stream_url(&params.output.rtmp))
-        .transpose()?;
-    let stream_url = stream_target
-        .as_ref()
-        .map(|target| target.redacted_url.clone());
+    let stream_targets: Vec<StreamTarget> = if params.output.stream_enabled {
+        match params
+            .streaming
+            .as_ref()
+            .filter(|streaming| streaming.enabled)
+        {
+            Some(streaming) => stream_targets_from_streaming(streaming)?,
+            None => vec![build_stream_url(&params.output.rtmp)?],
+        }
+    } else {
+        Vec::new()
+    };
+    let stream_url = (!stream_targets.is_empty()).then(|| {
+        stream_targets
+            .iter()
+            .map(|target| target.redacted_url.clone())
+            .collect::<Vec<_>>()
+            .join(", ")
+    });
     let mode = output_mode(params.output.record_enabled, params.output.stream_enabled);
     let container =
         container_for_outputs(params.output.record_enabled, params.output.stream_enabled);
@@ -205,13 +216,8 @@ pub async fn start_session(state: AppState, params: StartSessionParams) -> Resul
     state
         .database
         .save_setting("last_capture_session", &params)?;
-    let configured_targets = params
-        .streaming
-        .as_ref()
-        .filter(|streaming| streaming.enabled)
-        .and_then(|streaming| stream_targets_from_streaming(streaming).ok());
-    if let Some(targets) = configured_targets {
-        let redacted = targets
+    if !stream_targets.is_empty() {
+        let redacted = stream_targets
             .iter()
             .map(|target| target.redacted_url.clone())
             .collect::<Vec<_>>()
@@ -221,8 +227,8 @@ pub async fn start_session(state: AppState, params: StartSessionParams) -> Resul
             HealthLevel::Info,
             "stream-targets-configured",
             &format!(
-                "Configured {} stream destination(s): {redacted}. Multi-destination fan-out activates with the FFmpeg tee.",
-                targets.len()
+                "Streaming to {} destination(s): {redacted}",
+                stream_targets.len()
             ),
             None,
         );
@@ -290,12 +296,7 @@ pub async fn start_session(state: AppState, params: StartSessionParams) -> Resul
         *diagnostics = initial_diagnostics.clone();
     }
     state.emit_event("diagnostics.stats", initial_diagnostics);
-    let args = ffmpeg_args(
-        &capture,
-        &params,
-        output_path.as_deref(),
-        stream_target.as_ref(),
-    )?;
+    let args = ffmpeg_args(&capture, &params, output_path.as_deref(), &stream_targets)?;
 
     state.emit_event(
         "recording.status",
@@ -1747,7 +1748,7 @@ fn ffmpeg_args(
     capture: &CaptureInputs,
     params: &StartSessionParams,
     output_path: Option<&Path>,
-    stream_target: Option<&StreamTarget>,
+    stream_targets: &[StreamTarget],
 ) -> Result<Vec<String>> {
     let mut args = vec![
         "-y".to_string(),
@@ -1792,32 +1793,48 @@ fn ffmpeg_args(
         &mut args,
         &input_layout,
         &params.audio,
-        stream_target.is_some(),
+        !stream_targets.is_empty(),
     );
 
-    match (output_path, stream_target) {
-        (Some(path), Some(target)) => {
-            args.extend([
-                "-f".to_string(),
-                "tee".to_string(),
-                format!(
-                    "[f=matroska:onfail=abort]{}|[f=flv:onfail=ignore:flvflags=no_duration_filesize]{}",
-                    path.display(),
-                    target.url
-                ),
-            ]);
+    let stream_legs = stream_targets
+        .iter()
+        .map(|target| {
+            format!(
+                "[f=flv:onfail=ignore:flvflags=no_duration_filesize]{}",
+                escape_tee_target(&target.url)
+            )
+        })
+        .collect::<Vec<_>>();
+
+    match (output_path, stream_targets) {
+        // Local recording only.
+        (Some(path), []) => args.push(path.display().to_string()),
+        // Local recording + one or more streams: tee the MKV (onfail=abort) and
+        // every RTMP leg (onfail=ignore so a failing platform does not kill the
+        // recording or the other streams).
+        (Some(path), _) => {
+            let mut legs = vec![format!(
+                "[f=matroska:onfail=abort]{}",
+                escape_tee_target(&path.display().to_string())
+            )];
+            legs.extend(stream_legs);
+            args.extend(["-f".to_string(), "tee".to_string(), legs.join("|")]);
         }
-        (Some(path), None) => args.push(path.display().to_string()),
-        (None, Some(target)) => {
+        // A single stream uses a plain FLV output (the proven path).
+        (None, [single]) => {
             args.extend([
                 "-flvflags".to_string(),
                 "no_duration_filesize".to_string(),
                 "-f".to_string(),
                 "flv".to_string(),
-                target.url.clone(),
+                single.url.clone(),
             ]);
         }
-        (None, None) => bail!("At least one output target is required"),
+        // Multiple streams without local recording: tee of FLV legs only.
+        (None, targets) if !targets.is_empty() => {
+            args.extend(["-f".to_string(), "tee".to_string(), stream_legs.join("|")]);
+        }
+        (None, _) => bail!("At least one output target is required"),
     }
 
     args.extend(["-map".to_string(), "[preview]".to_string()]);
@@ -2494,6 +2511,16 @@ fn redact_stream_url(url: &str) -> String {
     }
 }
 
+fn escape_tee_target(target: &str) -> String {
+    // The tee muxer uses `|` to separate slave outputs and `[]` for per-output
+    // options; backslash-escape those so URLs/paths cannot break the filtergraph.
+    target
+        .replace('\\', "\\\\")
+        .replace('|', "\\|")
+        .replace('[', "\\[")
+        .replace(']', "\\]")
+}
+
 fn resolve_stream_target(target: &StreamTargetSettings) -> Result<StreamTarget> {
     let server = target.server_url.trim().trim_end_matches('/');
     if server.is_empty() {
@@ -2963,6 +2990,99 @@ mod tests {
     }
 
     #[test]
+    fn record_plus_multistream_tees_every_target() {
+        let params = base_params(true, true);
+        let streaming = streaming_for(&[
+            (
+                StreamPlatform::Youtube,
+                "rtmp://a.rtmp.youtube.com/live2",
+                "yt",
+            ),
+            (StreamPlatform::Twitch, "rtmp://live.twitch.tv/app", "tw"),
+            (StreamPlatform::X, "rtmp://x.example/app", "xk"),
+        ]);
+        let targets = stream_targets_from_streaming(&streaming).unwrap();
+        let args = ffmpeg_args(
+            &CaptureInputs {
+                video: VideoInput::TestPattern,
+                camera_index: None,
+                microphone: None,
+            },
+            &params,
+            Some(Path::new("/tmp/videorc-test.mkv")),
+            &targets,
+        )
+        .unwrap();
+
+        assert!(args.contains(&"tee".to_string()));
+        let tee = args.iter().find(|arg| arg.contains("[f=matroska")).unwrap();
+        assert!(tee.contains("[f=matroska:onfail=abort]/tmp/videorc-test.mkv"));
+        assert!(tee.contains("onfail=ignore"));
+        assert_eq!(
+            tee.matches("[f=flv").count(),
+            3,
+            "expected 3 flv legs: {tee}"
+        );
+        assert!(tee.contains("rtmp://a.rtmp.youtube.com/live2/yt"));
+        assert!(tee.contains("rtmp://live.twitch.tv/app/tw"));
+        assert!(tee.contains("rtmp://x.example/app/xk"));
+    }
+
+    #[test]
+    fn stream_only_multistream_tees_flv_without_recording() {
+        let params = base_params(false, true);
+        let streaming = streaming_for(&[
+            (
+                StreamPlatform::Youtube,
+                "rtmp://a.rtmp.youtube.com/live2",
+                "yt",
+            ),
+            (StreamPlatform::Twitch, "rtmp://live.twitch.tv/app", "tw"),
+        ]);
+        let targets = stream_targets_from_streaming(&streaming).unwrap();
+        let args = ffmpeg_args(
+            &CaptureInputs {
+                video: VideoInput::TestPattern,
+                camera_index: None,
+                microphone: None,
+            },
+            &params,
+            None,
+            &targets,
+        )
+        .unwrap();
+
+        assert!(args.contains(&"tee".to_string()));
+        let tee = args.iter().find(|arg| arg.contains("[f=flv")).unwrap();
+        assert!(!tee.contains("[f=matroska"));
+        assert_eq!(tee.matches("[f=flv").count(), 2);
+    }
+
+    #[test]
+    fn single_stream_only_uses_plain_flv_output() {
+        let params = base_params(false, true);
+        let targets = vec![build_stream_url(&params.output.rtmp).unwrap()];
+        let args = ffmpeg_args(
+            &CaptureInputs {
+                video: VideoInput::TestPattern,
+                camera_index: None,
+                microphone: None,
+            },
+            &params,
+            None,
+            &targets,
+        )
+        .unwrap();
+
+        assert!(!args.contains(&"tee".to_string()));
+        assert!(
+            args.windows(2)
+                .any(|window| window[0] == "-f" && window[1] == "flv")
+        );
+        assert!(args.contains(&"rtmp://a.rtmp.youtube.com/live2/abc123".to_string()));
+    }
+
+    #[test]
     fn camera_overlay_position_uses_corner_in_preset_mode() {
         let params = base_params(true, false);
         let (x, y) = camera_overlay_position(&params.layout, &params.output.video);
@@ -3257,7 +3377,7 @@ mod tests {
             },
             &params,
             Some(Path::new("/tmp/videorc-test.mkv")),
-            Some(&build_stream_url(&params.output.rtmp).unwrap()),
+            &[build_stream_url(&params.output.rtmp).unwrap()],
         )
         .unwrap();
 
@@ -3298,7 +3418,7 @@ mod tests {
             },
             &params,
             Some(Path::new("/tmp/videorc-test.mkv")),
-            None,
+            &[],
         )
         .unwrap();
 
@@ -3330,7 +3450,7 @@ mod tests {
             },
             &params,
             Some(Path::new("/tmp/videorc-test.mkv")),
-            None,
+            &[],
         )
         .unwrap();
 
@@ -3375,7 +3495,7 @@ mod tests {
             },
             &params,
             Some(Path::new("/tmp/videorc-test.mkv")),
-            None,
+            &[],
         )
         .unwrap();
 
@@ -3388,7 +3508,7 @@ mod tests {
             },
             &params,
             Some(Path::new("/tmp/videorc-test.mkv")),
-            None,
+            &[],
         )
         .unwrap();
 
@@ -3413,7 +3533,7 @@ mod tests {
             },
             &params,
             Some(Path::new("/tmp/videorc-test.mkv")),
-            None,
+            &[],
         )
         .unwrap();
 
@@ -3435,7 +3555,7 @@ mod tests {
             },
             &params,
             Some(Path::new("/tmp/videorc-test.mkv")),
-            None,
+            &[],
         )
         .unwrap();
 
@@ -3457,7 +3577,7 @@ mod tests {
             },
             &params,
             Some(Path::new("/tmp/videorc-test.mkv")),
-            None,
+            &[],
         )
         .unwrap();
 
@@ -3640,7 +3760,7 @@ mod tests {
             },
             &params,
             Some(Path::new("/tmp/videorc-test.mkv")),
-            None,
+            &[],
         )
         .unwrap();
         let without_mic = ffmpeg_args(
@@ -3651,7 +3771,7 @@ mod tests {
             },
             &params,
             Some(Path::new("/tmp/videorc-test.mkv")),
-            None,
+            &[],
         )
         .unwrap();
 
