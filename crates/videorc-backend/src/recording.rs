@@ -1834,6 +1834,26 @@ async fn prepare_native_audio_source(
     }
 }
 
+/// Builds the `-f tee` output args with per-slave FIFO isolation. Each slave runs in
+/// its own buffered thread, so a slow, distant, or reconnecting RTMP endpoint cannot
+/// back-pressure the shared encoder and stall the other platforms (or the local
+/// recording) — the classic cause of "one platform makes them all lag." On sustained
+/// overflow the lagging slave drops packets instead of blocking everyone; the queue
+/// is large enough that the disk-backed recording leg never drops in practice. We do
+/// not enable fifo auto-recovery, so a leg that fails to open still surfaces the
+/// `Slave muxer #N failed` line that drives the per-target failure status (M5).
+fn tee_output_args(spec: String) -> Vec<String> {
+    vec![
+        "-f".to_string(),
+        "tee".to_string(),
+        "-use_fifo".to_string(),
+        "1".to_string(),
+        "-fifo_options".to_string(),
+        "queue_size=512:drop_pkts_on_overflow=1".to_string(),
+        spec,
+    ]
+}
+
 fn ffmpeg_args(
     capture: &CaptureInputs,
     params: &StartSessionParams,
@@ -1927,7 +1947,7 @@ fn ffmpeg_args(
                 escape_tee_target(&path.display().to_string())
             )];
             legs.extend(stream_legs);
-            args.extend(["-f".to_string(), "tee".to_string(), legs.join("|")]);
+            args.extend(tee_output_args(legs.join("|")));
         }
         // A single stream uses a plain FLV output (the proven path).
         (None, [single]) => {
@@ -1941,7 +1961,7 @@ fn ffmpeg_args(
         }
         // Multiple streams without local recording: tee of FLV legs only.
         (None, targets) if !targets.is_empty() => {
-            args.extend(["-f".to_string(), "tee".to_string(), stream_legs.join("|")]);
+            args.extend(tee_output_args(stream_legs.join("|")));
         }
         (None, _) => bail!("At least one output target is required"),
     }
@@ -3350,6 +3370,13 @@ mod tests {
                 .any(|window| window[0] == "-flags" && window[1] == "+global_header"),
             "record + multistream tee must force global extradata: {args:?}"
         );
+        // FIFO-isolate each slave so a slow platform cannot back-pressure the encoder
+        // and stall the others (or the recording).
+        assert!(
+            args.windows(2)
+                .any(|window| window[0] == "-use_fifo" && window[1] == "1"),
+            "tee must isolate slaves with a fifo: {args:?}"
+        );
     }
 
     #[test]
@@ -3386,6 +3413,11 @@ mod tests {
             args.windows(2)
                 .any(|window| window[0] == "-flags" && window[1] == "+global_header"),
             "stream-only tee must force global extradata: {args:?}"
+        );
+        assert!(
+            args.windows(2)
+                .any(|window| window[0] == "-use_fifo" && window[1] == "1"),
+            "stream-only tee must isolate slaves with a fifo: {args:?}"
         );
     }
 

@@ -151,3 +151,28 @@ without restarting FFmpeg — which interrupts every other platform and the loca
 recording. That restart-continuity behaviour needs its own UX decision (new
 recording file? gap handling?), so M5 ships **Stop all** + **Continue streaming**
 (dismiss) and leaves **Retry** for M5b.
+
+## Real-platform hardening (M7 findings)
+
+Two issues surfaced during real YouTube + Twitch go-lives and were fixed in the
+shared encode / tee (`recording.rs` `ffmpeg_args`):
+
+- **YouTube never went live (Twitch did).** The videotoolbox encode had no pinned
+  GOP, so keyframes were irregular/long. YouTube refuses to ingest without a regular
+  keyframe cadence; Twitch tolerates it. Fixed with `-g {2*fps}` +
+  `-force_key_frames expr:gte(t,n_forced*2)` (verified: probed output carries
+  keyframes at exactly 0,2,4,6…s on both the recording and the streamed legs).
+
+- **Every platform was laggy when multistreaming.** The `tee` was synchronous, so
+  the slowest/most-distant RTMP endpoint back-pressured the shared encoder and
+  starved the others. Fixed by isolating each slave behind its own buffered thread
+  (`-use_fifo 1 -fifo_options queue_size=512:drop_pkts_on_overflow=1`): a lagging
+  platform drops packets to itself instead of stalling everyone, and the disk-backed
+  recording leg never overflows in practice. Auto-recovery is intentionally **off**
+  so a failed leg still emits `Slave muxer #N failed`, preserving the M5 per-target
+  failure status.
+
+Note the hard ceiling that no code can remove: one shared encode means the upload is
+`bitrate × enabled platforms`, and the encode quality is capped by the strictest
+platform (Twitch ≈ 1080p / 6000 kbps). Per-platform transcoding would require
+multiple encodes and is out of scope for v1.
