@@ -95,6 +95,7 @@ export type StudioContextValue = {
   captureConfig: CaptureConfig
   setCaptureConfig: Dispatch<SetStateAction<CaptureConfig>>
   patchLayout: (patch: Partial<LayoutSettings>) => void
+  applyCameraPreset: (patch: Partial<LayoutSettings>) => void
   patchVideo: (patch: Partial<VideoSettings>) => void
   applyVideoPreset: (preset: VideoPreset) => void
   applyRtmpPreset: (preset: RtmpPreset) => void
@@ -107,6 +108,7 @@ export type StudioContextValue = {
   reloadSceneFromCaptureConfig: () => Promise<void>
   resetSceneSource: (sourceId?: string) => Promise<void>
   nudgeSceneSource: (sourceId: string, directionX: number, directionY: number, large?: boolean) => Promise<void>
+  commitCameraTransform: (sourceId: string, x: number, y: number) => Promise<void>
   setSceneSourceVisible: (sourceId: string, visible: boolean) => Promise<void>
   moveSceneSource: (sourceId: string, direction: -1 | 1) => Promise<void>
   openSystemPermission: (pane: SystemPermissionPane) => Promise<void>
@@ -441,18 +443,49 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [appendLog, applyPreviewLiveStatus, connection, refreshSessions, reportError, settings.ffmpegPath])
 
-  const reloadSceneFromCaptureConfig = useCallback(async () => {
-    if (!client || wsStatus !== 'connected') {
-      return
-    }
+  const loadScene = useCallback(
+    async (config: Pick<CaptureConfig, 'sources' | 'layout' | 'video'>) => {
+      if (!client || wsStatus !== 'connected') {
+        return
+      }
 
-    const nextScene = await client.request<Scene>('scene.load_from_capture_config', {
+      const nextScene = await client.request<Scene>('scene.load_from_capture_config', config)
+      applyScene(nextScene)
+    },
+    [applyScene, client, wsStatus]
+  )
+
+  const reloadSceneFromCaptureConfig = useCallback(async () => {
+    await loadScene({
       sources: captureConfig.sources,
       layout: captureConfig.layout,
       video: captureConfig.video
     })
-    applyScene(nextScene)
-  }, [applyScene, captureConfig.layout, captureConfig.sources, captureConfig.video, client, wsStatus])
+  }, [captureConfig.layout, captureConfig.sources, captureConfig.video, loadScene])
+
+  const patchLayout = useCallback((patch: Partial<LayoutSettings>) => {
+    setCaptureConfig((current) => ({ ...current, layout: { ...current.layout, ...patch } }))
+  }, [])
+
+  const syncCameraTransformToLayout = useCallback(
+    (nextScene: Scene) => {
+      const camera = nextScene.sources.find((source) => source.kind === 'camera')
+      if (!camera) {
+        return
+      }
+
+      patchLayout({
+        cameraTransformMode: 'custom',
+        cameraTransform: {
+          x: camera.transform.x,
+          y: camera.transform.y,
+          width: camera.transform.width,
+          height: camera.transform.height
+        }
+      })
+    },
+    [patchLayout]
+  )
 
   const refreshBackend = useCallback(async () => {
     if (!client) {
@@ -500,11 +533,14 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       try {
         const nextScene = await client.request<Scene>('scene.source.transform.reset', { sourceId })
         applyScene(nextScene)
+        if (nextScene.sources.find((source) => source.id === sourceId)?.kind === 'camera') {
+          patchLayout({ cameraTransformMode: 'preset', cameraTransform: null })
+        }
       } catch (error) {
         reportError(error)
       }
     },
-    [applyScene, client, reportError, selectedSceneSourceId]
+    [applyScene, client, patchLayout, reportError, selectedSceneSourceId]
   )
 
   const nudgeSceneSource = useCallback(
@@ -521,11 +557,14 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
           large
         })
         applyScene(nextScene)
+        if (nextScene.sources.find((source) => source.id === sourceId)?.kind === 'camera') {
+          syncCameraTransformToLayout(nextScene)
+        }
       } catch (error) {
         reportError(error)
       }
     },
-    [applyScene, client, reportError]
+    [applyScene, client, reportError, syncCameraTransformToLayout]
   )
 
   const setSceneSourceVisible = useCallback(
@@ -574,6 +613,45 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       }
     },
     [applyScene, client, reportError, scene]
+  )
+
+  const commitCameraTransform = useCallback(
+    async (sourceId: string, x: number, y: number) => {
+      if (!client) {
+        return
+      }
+
+      try {
+        const nextScene = await client.request<Scene>('scene.source.transform.update', {
+          sourceId,
+          transform: { x, y }
+        })
+        applyScene(nextScene)
+        syncCameraTransformToLayout(nextScene)
+      } catch (error) {
+        reportError(error)
+      }
+    },
+    [applyScene, client, reportError, syncCameraTransformToLayout]
+  )
+
+  const applyCameraPreset = useCallback(
+    (patch: Partial<LayoutSettings>) => {
+      const layout: LayoutSettings = {
+        ...captureConfig.layout,
+        ...patch,
+        cameraTransformMode: 'preset',
+        cameraTransform: null
+      }
+      setCaptureConfig((current) => ({
+        ...current,
+        layout: { ...current.layout, ...patch, cameraTransformMode: 'preset', cameraTransform: null }
+      }))
+      if (sceneEditMode) {
+        void loadScene({ sources: captureConfig.sources, layout, video: captureConfig.video }).catch(reportError)
+      }
+    },
+    [captureConfig.layout, captureConfig.sources, captureConfig.video, loadScene, reportError, sceneEditMode]
   )
 
   const refreshPreview = useCallback(async () => {
@@ -835,10 +913,6 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     [client, reportError]
   )
 
-  const patchLayout = useCallback((patch: Partial<LayoutSettings>) => {
-    setCaptureConfig((current) => ({ ...current, layout: { ...current.layout, ...patch } }))
-  }, [])
-
   const patchVideo = useCallback((patch: Partial<VideoSettings>) => {
     setCaptureConfig((current) => ({
       ...current,
@@ -914,7 +988,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
         void refreshPreview()
       }
 
-      if (sceneEditMode && selectedSceneSourceId) {
+      if (sceneEditMode && selectedSceneSourceId && !isSessionActive) {
         const large = event.shiftKey
         if (event.key === 'ArrowUp') {
           event.preventDefault()
@@ -948,6 +1022,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
   }, [
     canStart,
     canStop,
+    isSessionActive,
     nudgeSceneSource,
     refreshPreview,
     resetSceneSource,
@@ -999,6 +1074,8 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     reloadSceneFromCaptureConfig,
     resetSceneSource,
     nudgeSceneSource,
+    commitCameraTransform,
+    applyCameraPreset,
     setSceneSourceVisible,
     moveSceneSource,
     openSystemPermission,

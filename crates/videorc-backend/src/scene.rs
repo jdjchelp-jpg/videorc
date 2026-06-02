@@ -1,8 +1,8 @@
 use crate::protocol::{
-    CameraCorner, CameraFit, CameraShape, CameraSize, Scene, SceneConfigParams, SceneOutput,
-    SceneOutputKind, SceneSource, SceneSourceKind, SceneSourceOrderParams, SceneSourceParams,
-    SceneSourceVisibilityParams, SceneTransform, SceneTransformPatch, SceneTransformUpdateParams,
-    SourceSelection,
+    CameraCorner, CameraFit, CameraShape, CameraSize, CameraTransformMode, Scene,
+    SceneConfigParams, SceneOutput, SceneOutputKind, SceneSource, SceneSourceKind,
+    SceneSourceOrderParams, SceneSourceParams, SceneSourceVisibilityParams, SceneTransform,
+    SceneTransformPatch, SceneTransformUpdateParams, SourceSelection,
 };
 
 const DEFAULT_SCENE_ID: &str = "scene:default";
@@ -196,14 +196,24 @@ fn camera_source(
     output_width: u32,
     output_height: u32,
 ) -> SceneSource {
-    let transform = camera_transform(layout, output_width, output_height);
+    let default_transform = camera_transform(layout, output_width, output_height);
+    // A dragged camera (custom mode) overrides position only; size/crop and the
+    // default_transform stay tied to the corner/size preset so Reset restores it.
+    let transform = match (layout.camera_transform_mode, layout.camera_transform) {
+        (CameraTransformMode::Custom, Some(custom)) => sanitize_transform(SceneTransform {
+            x: custom.x,
+            y: custom.y,
+            ..default_transform.clone()
+        }),
+        _ => default_transform.clone(),
+    };
     SceneSource {
         id: CAMERA_SOURCE_ID.to_string(),
         name: "Camera".to_string(),
         kind: SceneSourceKind::Camera,
         device_id: Some(camera_id),
-        transform: transform.clone(),
-        default_transform: transform,
+        transform,
+        default_transform,
         visible: true,
         locked: false,
     }
@@ -398,7 +408,7 @@ fn find_source_mut<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{LayoutPreset, LayoutSettings, SourceSelection};
+    use crate::protocol::{CameraTransform, LayoutPreset, LayoutSettings, SourceSelection};
 
     fn base_params() -> SceneConfigParams {
         SceneConfigParams {
@@ -411,6 +421,8 @@ mod tests {
             },
             layout: LayoutSettings {
                 layout_preset: LayoutPreset::ScreenCamera,
+                camera_transform_mode: CameraTransformMode::Preset,
+                camera_transform: None,
                 camera_corner: CameraCorner::BottomRight,
                 camera_size: CameraSize::Medium,
                 camera_shape: CameraShape::Rectangle,
@@ -423,6 +435,32 @@ mod tests {
             },
             video: None,
         }
+    }
+
+    #[test]
+    fn custom_transform_moves_camera_without_touching_default() {
+        let mut params = base_params();
+        params.layout.camera_transform_mode = CameraTransformMode::Custom;
+        params.layout.camera_transform = Some(CameraTransform {
+            x: 0.4,
+            y: 0.3,
+            width: 0.25,
+            height: 0.25,
+        });
+
+        let scene = scene_from_capture_config(params);
+        let camera = scene
+            .sources
+            .iter()
+            .find(|source| source.kind == SceneSourceKind::Camera)
+            .expect("camera source present");
+
+        assert!((camera.transform.x - 0.4).abs() < 1e-6);
+        assert!((camera.transform.y - 0.3).abs() < 1e-6);
+        // default_transform stays the bottom-right corner preset so Reset restores it.
+        assert!(camera.default_transform.x > 0.6);
+        assert!(camera.default_transform.y > 0.6);
+        assert_ne!(camera.default_transform.x, camera.transform.x);
     }
 
     #[test]

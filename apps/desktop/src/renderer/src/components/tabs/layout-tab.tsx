@@ -49,8 +49,11 @@ export function LayoutTab(): ReactElement {
     setSelectedSceneSourceId,
     resetSceneSource,
     nudgeSceneSource,
+    commitCameraTransform,
+    applyCameraPreset,
     setSceneSourceVisible,
-    moveSceneSource
+    moveSceneSource,
+    isSessionActive
   } = useStudio()
   const layout = captureConfig.layout
   const selectedSource = scene?.sources.find((source) => source.id === selectedSceneSourceId)
@@ -98,6 +101,8 @@ export function LayoutTab(): ReactElement {
             sceneEditMode={sceneEditMode}
             selectedSceneSourceId={selectedSceneSourceId}
             onSelectSceneSource={setSelectedSceneSourceId}
+            onCameraDragCommit={commitCameraTransform}
+            dragDisabled={isSessionActive}
           />
         </PanelSection>
 
@@ -108,6 +113,16 @@ export function LayoutTab(): ReactElement {
             </FieldContent>
             <Switch checked={sceneEditMode} id="layout-edit-mode" onCheckedChange={setSceneEditMode} />
           </Field>
+
+          {isSessionActive ? (
+            <p className="text-xs text-muted-foreground">
+              Layout editing is paused while a recording or streaming session is active.
+            </p>
+          ) : sceneEditMode ? (
+            <p className="text-xs text-muted-foreground">
+              Drag the camera in the preview to reposition it. Arrow keys nudge, R resets.
+            </p>
+          ) : null}
 
           <div className="flex flex-col gap-2">
             {scene?.sources.length ? (
@@ -137,7 +152,12 @@ export function LayoutTab(): ReactElement {
                   <div className="truncate text-sm font-semibold">{selectedSource.name}</div>
                   <div className="text-xs text-muted-foreground">{transformLabel(selectedSource)}</div>
                 </div>
-                <Button size="sm" variant="outline" onClick={() => void resetSceneSource(selectedSource.id)}>
+                <Button
+                  disabled={isSessionActive}
+                  size="sm"
+                  variant="outline"
+                  onClick={() => void resetSceneSource(selectedSource.id)}
+                >
                   Reset
                 </Button>
               </div>
@@ -145,7 +165,7 @@ export function LayoutTab(): ReactElement {
                 <span />
                 <Button
                   aria-label="Nudge source up"
-                  disabled={!sceneEditMode}
+                  disabled={!sceneEditMode || isSessionActive}
                   size="icon"
                   variant="outline"
                   onClick={() => void nudgeSceneSource(selectedSource.id, 0, -1)}
@@ -155,7 +175,7 @@ export function LayoutTab(): ReactElement {
                 <span />
                 <Button
                   aria-label="Nudge source left"
-                  disabled={!sceneEditMode}
+                  disabled={!sceneEditMode || isSessionActive}
                   size="icon"
                   variant="outline"
                   onClick={() => void nudgeSceneSource(selectedSource.id, -1, 0)}
@@ -164,7 +184,7 @@ export function LayoutTab(): ReactElement {
                 </Button>
                 <Button
                   aria-label="Nudge source down"
-                  disabled={!sceneEditMode}
+                  disabled={!sceneEditMode || isSessionActive}
                   size="icon"
                   variant="outline"
                   onClick={() => void nudgeSceneSource(selectedSource.id, 0, 1)}
@@ -173,7 +193,7 @@ export function LayoutTab(): ReactElement {
                 </Button>
                 <Button
                   aria-label="Nudge source right"
-                  disabled={!sceneEditMode}
+                  disabled={!sceneEditMode || isSessionActive}
                   size="icon"
                   variant="outline"
                   onClick={() => void nudgeSceneSource(selectedSource.id, 1, 0)}
@@ -192,9 +212,9 @@ export function LayoutTab(): ReactElement {
           <ToggleGroup
             className="w-full"
             type="single"
-            value={layout.cameraCorner}
+            value={layout.cameraTransformMode === 'custom' ? '' : layout.cameraCorner}
             variant="outline"
-            onValueChange={(value) => value && patchLayout({ cameraCorner: value as CameraCorner })}
+            onValueChange={(value) => value && applyCameraPreset({ cameraCorner: value as CameraCorner })}
           >
             <ToggleGroupItem value="top-left">Top L</ToggleGroupItem>
             <ToggleGroupItem value="top-right">Top R</ToggleGroupItem>
@@ -210,7 +230,7 @@ export function LayoutTab(): ReactElement {
               type="single"
               value={layout.cameraSize}
               variant="outline"
-              onValueChange={(value) => value && patchLayout({ cameraSize: value as CameraSize })}
+              onValueChange={(value) => value && applyCameraPreset({ cameraSize: value as CameraSize })}
             >
               <ToggleGroupItem value="small">S</ToggleGroupItem>
               <ToggleGroupItem value="medium">M</ToggleGroupItem>

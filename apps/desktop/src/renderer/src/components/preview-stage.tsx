@@ -1,5 +1,13 @@
 import { ArrowsClockwise, FolderOpen, GearSix, Image, PencilSimpleLine, VideoCamera } from '@phosphor-icons/react'
-import { useEffect, useMemo, useState, type CSSProperties, type ReactElement } from 'react'
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
+  type ReactElement
+} from 'react'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -12,7 +20,33 @@ const SIZE_FRACTION: Record<LayoutSettings['cameraSize'], string> = {
   large: '34%'
 }
 
+type SceneSource = Scene['sources'][number]
+
+type CameraDrag = {
+  pointerId: number
+  sourceId: string
+  startClientX: number
+  startClientY: number
+  originX: number
+  originY: number
+  maxX: number
+  maxY: number
+  posX: number
+  posY: number
+}
+
 function cameraBoxStyle(layout: LayoutSettings): CSSProperties {
+  if (layout.cameraTransformMode === 'custom' && layout.cameraTransform) {
+    const transform = layout.cameraTransform
+    return {
+      position: 'absolute',
+      left: `${transform.x * 100}%`,
+      top: `${transform.y * 100}%`,
+      width: `${transform.width * 100}%`,
+      height: `${transform.height * 100}%`
+    }
+  }
+
   const margin = `${layout.cameraMargin / 16}rem`
   const style: CSSProperties = {
     width: SIZE_FRACTION[layout.cameraSize],
@@ -34,6 +68,10 @@ function cameraBoxStyle(layout: LayoutSettings): CSSProperties {
   return style
 }
 
+function clampRange(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value))
+}
+
 export function PreviewStage({
   previewUrl,
   previewLoading,
@@ -47,6 +85,8 @@ export function PreviewStage({
   sceneEditMode = false,
   selectedSceneSourceId,
   onSelectSceneSource,
+  onCameraDragCommit,
+  dragDisabled = false,
   className
 }: {
   previewUrl: string | null
@@ -61,6 +101,8 @@ export function PreviewStage({
   sceneEditMode?: boolean
   selectedSceneSourceId?: string | null
   onSelectSceneSource?: (sourceId: string) => void
+  onCameraDragCommit?: (sourceId: string, x: number, y: number) => void
+  dragDisabled?: boolean
   className?: string
 }): ReactElement {
   const [imageFailed, setImageFailed] = useState(false)
@@ -102,6 +144,65 @@ export function PreviewStage({
     const timer = window.setInterval(updateFrame, 80)
     return () => window.clearInterval(timer)
   }, [isLive, latestFrameUrl, previewUrl])
+
+  const stageRef = useRef<HTMLDivElement | null>(null)
+  const [cameraDrag, setCameraDrag] = useState<CameraDrag | null>(null)
+
+  const beginCameraDrag = (event: ReactPointerEvent<HTMLButtonElement>, source: SceneSource): void => {
+    event.preventDefault()
+    onSelectSceneSource?.(source.id)
+    event.currentTarget.setPointerCapture(event.pointerId)
+    setCameraDrag({
+      pointerId: event.pointerId,
+      sourceId: source.id,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      originX: source.transform.x,
+      originY: source.transform.y,
+      maxX: Math.max(0, 1 - source.transform.width),
+      maxY: Math.max(0, 1 - source.transform.height),
+      posX: source.transform.x,
+      posY: source.transform.y
+    })
+  }
+
+  const updateCameraDrag = (event: ReactPointerEvent<HTMLButtonElement>): void => {
+    const rect = stageRef.current?.getBoundingClientRect()
+    if (!rect) {
+      return
+    }
+    setCameraDrag((current) => {
+      if (!current || event.pointerId !== current.pointerId) {
+        return current
+      }
+      const deltaX = (event.clientX - current.startClientX) / rect.width
+      const deltaY = (event.clientY - current.startClientY) / rect.height
+      return {
+        ...current,
+        posX: clampRange(current.originX + deltaX, 0, current.maxX),
+        posY: clampRange(current.originY + deltaY, 0, current.maxY)
+      }
+    })
+  }
+
+  const endCameraDrag = (event: ReactPointerEvent<HTMLButtonElement>): void => {
+    const current = cameraDrag
+    if (current && event.pointerId === current.pointerId) {
+      const rect = stageRef.current?.getBoundingClientRect()
+      if (rect) {
+        const x = clampRange(current.originX + (event.clientX - current.startClientX) / rect.width, 0, current.maxX)
+        const y = clampRange(current.originY + (event.clientY - current.startClientY) / rect.height, 0, current.maxY)
+        const moved = Math.abs(x - current.originX) > 1e-4 || Math.abs(y - current.originY) > 1e-4
+        if (moved) {
+          onCameraDragCommit?.(current.sourceId, x, y)
+        }
+      }
+      if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId)
+      }
+    }
+    setCameraDrag(null)
+  }
 
   return (
     <div className={cn('flex flex-col gap-3', className)}>
@@ -153,11 +254,17 @@ export function PreviewStage({
           </Badge>
         ) : null}
         {sceneEditMode && scene ? (
-          <div className="pointer-events-none absolute inset-0">
+          <div ref={stageRef} className="pointer-events-none absolute inset-0">
             {scene.sources
               .filter((source) => source.visible)
               .map((source) => {
                 const selected = source.id === selectedSceneSourceId
+                const draggable = source.kind === 'camera' && !dragDisabled && Boolean(onCameraDragCommit)
+                const dragging = cameraDrag?.sourceId === source.id
+                const transform =
+                  cameraDrag && cameraDrag.sourceId === source.id
+                    ? { ...source.transform, x: cameraDrag.posX, y: cameraDrag.posY }
+                    : source.transform
                 return (
                   <button
                     aria-label={`Select ${source.name}`}
@@ -166,12 +273,17 @@ export function PreviewStage({
                       'appearance-none p-0',
                       selected
                         ? 'border-primary bg-primary/10 ring-2 ring-primary/40'
-                        : 'border-primary/50 bg-primary/5 hover:bg-primary/10'
+                        : 'border-primary/50 bg-primary/5 hover:bg-primary/10',
+                      draggable && (dragging ? 'cursor-grabbing' : 'cursor-grab')
                     )}
                     key={source.id}
-                    style={sceneSourceStyle(source.transform)}
+                    style={sceneSourceStyle(transform)}
                     type="button"
                     onClick={() => onSelectSceneSource?.(source.id)}
+                    onPointerDown={draggable ? (event) => beginCameraDrag(event, source) : undefined}
+                    onPointerMove={draggable ? updateCameraDrag : undefined}
+                    onPointerUp={draggable ? endCameraDrag : undefined}
+                    onPointerCancel={draggable ? endCameraDrag : undefined}
                   >
                     <span className="absolute -top-6 left-0 rounded-md bg-background/95 px-1.5 py-0.5 text-[10px] font-medium text-foreground shadow-sm">
                       {source.name}

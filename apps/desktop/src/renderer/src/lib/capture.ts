@@ -1,5 +1,7 @@
 import type {
   AudioSettings,
+  CameraTransform,
+  CameraTransformMode,
   LayoutPreset,
   LayoutSettings,
   RtmpPreset,
@@ -89,6 +91,8 @@ export const defaultCaptureConfig: CaptureConfig = {
   sources: {},
   layout: {
     layoutPreset: 'screen-camera',
+    cameraTransformMode: 'preset',
+    cameraTransform: null,
     cameraCorner: 'bottom-right',
     cameraSize: 'medium',
     cameraShape: 'rectangle',
@@ -174,8 +178,32 @@ function isLayoutPreset(value: unknown): value is LayoutPreset {
   return typeof value === 'string' && (LAYOUT_PRESET_VALUES as readonly string[]).includes(value)
 }
 
+function clampUnit(value: number): number {
+  return Math.min(1, Math.max(0, value))
+}
+
+function normalizeCameraTransform(value: unknown): CameraTransform | null {
+  if (!value || typeof value !== 'object') {
+    return null
+  }
+
+  const candidate = value as Partial<CameraTransform>
+  const x = Number(candidate.x)
+  const y = Number(candidate.y)
+  const width = Number(candidate.width)
+  const height = Number(candidate.height)
+  if (![x, y, width, height].every((entry) => Number.isFinite(entry)) || width <= 0 || height <= 0) {
+    return null
+  }
+
+  return { x: clampUnit(x), y: clampUnit(y), width: clampUnit(width), height: clampUnit(height) }
+}
+
 export function normalizeLayoutSettings(layout: unknown): LayoutSettings {
   const candidate = layout && typeof layout === 'object' ? (layout as Partial<LayoutSettings>) : {}
+  const cameraTransform = normalizeCameraTransform(candidate.cameraTransform)
+  const cameraTransformMode: CameraTransformMode =
+    candidate.cameraTransformMode === 'custom' && cameraTransform ? 'custom' : 'preset'
 
   return {
     ...defaultCaptureConfig.layout,
@@ -183,6 +211,8 @@ export function normalizeLayoutSettings(layout: unknown): LayoutSettings {
     layoutPreset: isLayoutPreset(candidate.layoutPreset)
       ? candidate.layoutPreset
       : defaultCaptureConfig.layout.layoutPreset,
+    cameraTransformMode,
+    cameraTransform: cameraTransformMode === 'custom' ? cameraTransform : null,
     cameraMargin: clampNumber(candidate.cameraMargin, defaultCaptureConfig.layout.cameraMargin, 8, 96),
     cameraZoom: clampNumber(candidate.cameraZoom, defaultCaptureConfig.layout.cameraZoom, 100, 200),
     cameraOffsetX: clampNumber(candidate.cameraOffsetX, defaultCaptureConfig.layout.cameraOffsetX, -100, 100),

@@ -224,11 +224,15 @@ pub struct SourceSelection {
     pub test_pattern: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct LayoutSettings {
     #[serde(default = "default_layout_preset")]
     pub layout_preset: LayoutPreset,
+    #[serde(default = "default_camera_transform_mode")]
+    pub camera_transform_mode: CameraTransformMode,
+    #[serde(default)]
+    pub camera_transform: Option<CameraTransform>,
     pub camera_corner: CameraCorner,
     pub camera_size: CameraSize,
     pub camera_shape: CameraShape,
@@ -283,6 +287,22 @@ pub enum LayoutPreset {
     ScreenOnly,
     CameraOnly,
     SideBySide,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum CameraTransformMode {
+    Preset,
+    Custom,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CameraTransform {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -428,6 +448,10 @@ fn default_layout_preset() -> LayoutPreset {
     LayoutPreset::ScreenCamera
 }
 
+fn default_camera_transform_mode() -> CameraTransformMode {
+    CameraTransformMode::Preset
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OutputSettings {
@@ -537,7 +561,7 @@ pub struct PreviewSnapshot {
     pub created_at: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct PreviewLiveParams {
     pub sources: SourceSelection,
@@ -847,6 +871,13 @@ mod tests {
     fn layout_settings_round_trips_explicit_preset() {
         let layout = LayoutSettings {
             layout_preset: LayoutPreset::SideBySide,
+            camera_transform_mode: CameraTransformMode::Custom,
+            camera_transform: Some(CameraTransform {
+                x: 0.5,
+                y: 0.25,
+                width: 0.3,
+                height: 0.2,
+            }),
             camera_corner: CameraCorner::BottomRight,
             camera_size: CameraSize::Medium,
             camera_shape: CameraShape::Rectangle,
@@ -859,7 +890,39 @@ mod tests {
         };
         let json = serde_json::to_string(&layout).unwrap();
         assert!(json.contains("\"layoutPreset\":\"side-by-side\""));
+        assert!(json.contains("\"cameraTransformMode\":\"custom\""));
         let restored: LayoutSettings = serde_json::from_str(&json).unwrap();
         assert_eq!(restored, layout);
+    }
+
+    #[test]
+    fn camera_transform_mode_serializes_to_kebab_case() {
+        assert_eq!(
+            serde_json::to_value(CameraTransformMode::Preset).unwrap(),
+            serde_json::json!("preset")
+        );
+        assert_eq!(
+            serde_json::to_value(CameraTransformMode::Custom).unwrap(),
+            serde_json::json!("custom")
+        );
+    }
+
+    #[test]
+    fn layout_settings_default_transform_mode_is_preset() {
+        // Settings persisted before camera drag existed migrate to preset / no transform.
+        let legacy = serde_json::json!({
+            "cameraCorner": "bottom-right",
+            "cameraSize": "medium",
+            "cameraShape": "rectangle",
+            "cameraMargin": 32,
+            "cameraFit": "fill",
+            "cameraMirror": false,
+            "cameraZoom": 100,
+            "cameraOffsetX": 0,
+            "cameraOffsetY": 0
+        });
+        let layout: LayoutSettings = serde_json::from_value(legacy).unwrap();
+        assert_eq!(layout.camera_transform_mode, CameraTransformMode::Preset);
+        assert!(layout.camera_transform.is_none());
     }
 }

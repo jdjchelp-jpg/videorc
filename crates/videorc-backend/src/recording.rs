@@ -24,10 +24,10 @@ use crate::ffmpeg::resolve_ffmpeg_path;
 use crate::pipeline::{RecordingPipeline, container_for_outputs, container_key};
 use crate::protocol::{
     AudioSettings, AudioTrack, AudioTrackSource, CameraCorner, CameraFit, CameraShape, CameraSize,
-    HealthLevel, PreviewLiveParams, PreviewLiveSource, PreviewLiveState, PreviewLiveStatus,
-    PreviewSnapshot, PreviewSnapshotParams, RecordingPipelineStage, RecordingState,
-    RecordingStatus, RemuxSessionParams, RtmpPreset, RtmpSettings, StartSessionParams,
-    StreamHealth, VideoPreset, VideoSettings,
+    CameraTransformMode, HealthLevel, PreviewLiveParams, PreviewLiveSource, PreviewLiveState,
+    PreviewLiveStatus, PreviewSnapshot, PreviewSnapshotParams, RecordingPipelineStage,
+    RecordingState, RecordingStatus, RemuxSessionParams, RtmpPreset, RtmpSettings,
+    StartSessionParams, StreamHealth, VideoPreset, VideoSettings,
 };
 use crate::screen_capture::{parse_screencapturekit_display_id, parse_screencapturekit_window_id};
 use crate::state::AppState;
@@ -2148,13 +2148,7 @@ fn video_filter(
 
     if let Some(camera_input_index) = camera_input_index {
         let camera = camera_chain_filter(camera_input_index, params);
-        let margin = scaled_camera_margin(&params.layout, &params.output.video);
-        let (x, y) = match params.layout.camera_corner {
-            CameraCorner::TopLeft => (format!("{margin}"), format!("{margin}")),
-            CameraCorner::TopRight => (format!("W-w-{margin}"), format!("{margin}")),
-            CameraCorner::BottomLeft => (format!("{margin}"), format!("H-h-{margin}")),
-            CameraCorner::BottomRight => (format!("W-w-{margin}"), format!("H-h-{margin}")),
-        };
+        let (x, y) = camera_overlay_position(&params.layout, &params.output.video);
         let final_scale = if preview { ",scale=w=960:h=-2" } else { "" };
 
         return format!(
@@ -2242,6 +2236,34 @@ fn scaled_camera_box_size(
 
 fn scaled_camera_margin(layout: &crate::protocol::LayoutSettings, video: &VideoSettings) -> u32 {
     scale_camera_dimension(layout.camera_margin.min(160), camera_output_scale(video))
+}
+
+/// Builds the FFmpeg `overlay` x/y expressions for the camera box. In `custom`
+/// mode the normalized dragged position drives `W*x`/`H*y` (clamped so the box
+/// stays on-canvas); otherwise the camera sits in its corner/size preset.
+fn camera_overlay_position(
+    layout: &crate::protocol::LayoutSettings,
+    video: &VideoSettings,
+) -> (String, String) {
+    if let (CameraTransformMode::Custom, Some(transform)) =
+        (layout.camera_transform_mode, layout.camera_transform)
+    {
+        let (cam_width, cam_height) =
+            scaled_camera_box_size(&layout.camera_size, &layout.camera_shape, video);
+        let max_x = 1.0 - f64::from(cam_width) / f64::from(video.width.max(1));
+        let max_y = 1.0 - f64::from(cam_height) / f64::from(video.height.max(1));
+        let x = transform.x.clamp(0.0, max_x.max(0.0));
+        let y = transform.y.clamp(0.0, max_y.max(0.0));
+        return (format!("W*{x:.5}"), format!("H*{y:.5}"));
+    }
+
+    let margin = scaled_camera_margin(layout, video);
+    match layout.camera_corner {
+        CameraCorner::TopLeft => (format!("{margin}"), format!("{margin}")),
+        CameraCorner::TopRight => (format!("W-w-{margin}"), format!("{margin}")),
+        CameraCorner::BottomLeft => (format!("{margin}"), format!("H-h-{margin}")),
+        CameraCorner::BottomRight => (format!("W-w-{margin}"), format!("H-h-{margin}")),
+    }
 }
 
 fn camera_output_scale(video: &VideoSettings) -> f64 {
@@ -2575,8 +2597,8 @@ pub type LivePreviewSlot = Arc<Mutex<LivePreviewState>>;
 mod tests {
     use super::*;
     use crate::protocol::{
-        CameraCorner, CameraFit, CameraShape, CameraSize, LayoutPreset, LayoutSettings,
-        OutputSettings, PreviewLiveParams, RtmpSettings, SourceSelection,
+        CameraCorner, CameraFit, CameraShape, CameraSize, CameraTransform, LayoutPreset,
+        LayoutSettings, OutputSettings, PreviewLiveParams, RtmpSettings, SourceSelection,
     };
 
     fn base_params(record_enabled: bool, stream_enabled: bool) -> StartSessionParams {
@@ -2590,6 +2612,8 @@ mod tests {
             },
             layout: LayoutSettings {
                 layout_preset: LayoutPreset::ScreenCamera,
+                camera_transform_mode: CameraTransformMode::Preset,
+                camera_transform: None,
                 camera_corner: CameraCorner::BottomRight,
                 camera_size: CameraSize::Medium,
                 camera_shape: CameraShape::Rectangle,
@@ -2614,6 +2638,36 @@ mod tests {
             },
             audio: Default::default(),
         }
+    }
+
+    #[test]
+    fn camera_overlay_position_uses_corner_in_preset_mode() {
+        let params = base_params(true, false);
+        let (x, y) = camera_overlay_position(&params.layout, &params.output.video);
+        assert!(
+            x.starts_with("W-w-"),
+            "expected bottom-right x expr, got {x}"
+        );
+        assert!(
+            y.starts_with("H-h-"),
+            "expected bottom-right y expr, got {y}"
+        );
+    }
+
+    #[test]
+    fn camera_overlay_position_uses_normalized_offsets_in_custom_mode() {
+        let mut params = base_params(true, false);
+        params.layout.camera_transform_mode = CameraTransformMode::Custom;
+        params.layout.camera_transform = Some(CameraTransform {
+            x: 0.25,
+            y: 0.5,
+            width: 0.3,
+            height: 0.3,
+        });
+
+        let (x, y) = camera_overlay_position(&params.layout, &params.output.video);
+        assert_eq!(x, "W*0.25000");
+        assert_eq!(y, "H*0.50000");
     }
 
     fn ffmpeg_inputs(args: &[String]) -> Vec<&str> {

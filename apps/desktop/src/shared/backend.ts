@@ -126,9 +126,19 @@ export type CameraSize = 'small' | 'medium' | 'large'
 export type CameraShape = 'rectangle' | 'circle'
 export type CameraFit = 'fit' | 'fill'
 export type LayoutPreset = 'screen-camera' | 'screen-only' | 'camera-only' | 'side-by-side'
+export type CameraTransformMode = 'preset' | 'custom'
+
+export interface CameraTransform {
+  x: number
+  y: number
+  width: number
+  height: number
+}
 
 export interface LayoutSettings {
   layoutPreset: LayoutPreset
+  cameraTransformMode: CameraTransformMode
+  cameraTransform: CameraTransform | null
   cameraCorner: CameraCorner
   cameraSize: CameraSize
   cameraShape: CameraShape
