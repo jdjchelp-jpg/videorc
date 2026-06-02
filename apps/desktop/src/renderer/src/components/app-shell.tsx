@@ -8,9 +8,10 @@ import { AiTab } from '@/components/tabs/ai-tab'
 import { DiagnosticsTab } from '@/components/tabs/diagnostics-tab'
 import { LayoutTab } from '@/components/tabs/layout-tab'
 import { LibraryTab } from '@/components/tabs/library-tab'
-import { OutputsTab } from '@/components/tabs/outputs-tab'
+import { RecordingTab } from '@/components/tabs/recording-tab'
 import { SettingsTab } from '@/components/tabs/settings-tab'
 import { SourcesTab } from '@/components/tabs/sources-tab'
+import { StreamingTab } from '@/components/tabs/streaming-tab'
 import { StudioTab } from '@/components/tabs/studio-tab'
 import { ThemeToggle } from '@/components/theme-toggle'
 import { Button } from '@/components/ui/button'
@@ -102,8 +103,11 @@ export function AppShell(): ReactElement {
           <TabsContent value="layout">
             <LayoutTab />
           </TabsContent>
-          <TabsContent value="outputs">
-            <OutputsTab />
+          <TabsContent value="recording">
+            <RecordingTab />
+          </TabsContent>
+          <TabsContent value="streaming">
+            <StreamingTab />
           </TabsContent>
           <TabsContent value="library">
             <LibraryTab onOpenInAi={openInAi} />

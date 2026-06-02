@@ -15,6 +15,7 @@ import { toast } from 'sonner'
 
 import { BackendClient } from '@/backendClient'
 import {
+  bridgeStreamingToLegacy,
   defaultSettings,
   loadCaptureConfig,
   loadJson,
@@ -47,6 +48,8 @@ import type {
   SessionSummary,
   StartSessionParams,
   StreamHealth,
+  StreamingSettings,
+  StreamTargetSettings,
   SystemPermissionPane,
   VideoPreset,
   VideoSettings
@@ -99,6 +102,7 @@ export type StudioContextValue = {
   patchVideo: (patch: Partial<VideoSettings>) => void
   applyVideoPreset: (preset: VideoPreset) => void
   applyRtmpPreset: (preset: RtmpPreset) => void
+  patchStreamingTarget: (targetId: string, patch: Partial<StreamTargetSettings>) => void
   // notices
   lastError: string | null
   runtimeInfo: RuntimeInfo | null
@@ -934,6 +938,31 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     }))
   }, [])
 
+  const patchStreamingTarget = useCallback((targetId: string, patch: Partial<StreamTargetSettings>) => {
+    setCaptureConfig((current) => {
+      const now = new Date().toISOString()
+      const targets = current.streaming.targets.map((target) => {
+        if (target.id !== targetId) {
+          return target
+        }
+        const next: StreamTargetSettings = { ...target, ...patch, updatedAt: now }
+        if (typeof patch.streamKey === 'string') {
+          next.streamKeyPresent = patch.streamKey.trim().length > 0
+        }
+        return next
+      })
+      const enabledTargetIds = targets.filter((target) => target.enabled).map((target) => target.id)
+      const streaming: StreamingSettings = {
+        ...current.streaming,
+        targets,
+        enabled: enabledTargetIds.length > 0,
+        mode: enabledTargetIds.length > 1 ? 'multi' : 'single',
+        enabledTargetIds
+      }
+      return bridgeStreamingToLegacy({ ...current, streaming })
+    })
+  }, [])
+
   const canStart = !startBlockedReason
   const canStop =
     wsStatus === 'connected' &&
@@ -1069,6 +1098,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     patchVideo,
     applyVideoPreset,
     applyRtmpPreset,
+    patchStreamingTarget,
     lastError,
     runtimeInfo,
     refreshBackend,

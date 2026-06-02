@@ -1,11 +1,10 @@
-import { Broadcast, FileVideo } from '@phosphor-icons/react'
+import { FileVideo } from '@phosphor-icons/react'
 import type { ReactElement } from 'react'
 
 import { PanelSection } from '@/components/panel-section'
-import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Field, FieldContent, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui/field'
+import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import {
   Select,
@@ -17,25 +16,16 @@ import {
 } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { useStudio } from '@/hooks/use-studio'
-import type { RtmpPreset, SessionSummary, VideoPreset } from '@/lib/backend'
+import type { SessionSummary, VideoPreset } from '@/lib/backend'
 import { dayLabel, durationMsLabel } from '@/lib/format'
 
-export function OutputsTab(): ReactElement {
-  const {
-    captureConfig,
-    setCaptureConfig,
-    patchVideo,
-    applyVideoPreset,
-    applyRtmpPreset,
-    streamReady,
-    sessions,
-    remuxSession
-  } = useStudio()
+export function RecordingTab(): ReactElement {
+  const { captureConfig, setCaptureConfig, patchVideo, applyVideoPreset, sessions, remuxSession } = useStudio()
   const { video } = captureConfig
   const outputSessions = sessions.filter((session) => session.outputPath || session.streamPreset)
 
   return (
-    <div className="grid gap-4 lg:grid-cols-2">
+    <div className="grid gap-4">
       <PanelSection
         action={
           <Switch
@@ -96,71 +86,6 @@ export function OutputsTab(): ReactElement {
       </PanelSection>
 
       <PanelSection
-        action={
-          <Switch
-            aria-label="Stream RTMP"
-            checked={captureConfig.streamEnabled}
-            onCheckedChange={(checked) => setCaptureConfig((current) => ({ ...current, streamEnabled: checked }))}
-          />
-        }
-        description="Optional RTMP companion output. Stream keys are stored only here, never shown in Studio."
-        icon={Broadcast}
-        title="Streaming"
-      >
-        {captureConfig.streamEnabled && !streamReady ? (
-          <Alert variant="warning">
-            <Broadcast weight="fill" />
-            <AlertTitle>Stream target incomplete</AlertTitle>
-            <AlertDescription>An RTMP server and stream key are required before a session can start.</AlertDescription>
-          </Alert>
-        ) : null}
-
-        <FieldGroup>
-          <Field>
-            <FieldLabel htmlFor="rtmp-preset">RTMP preset</FieldLabel>
-            <Select value={captureConfig.rtmpPreset} onValueChange={(value) => applyRtmpPreset(value as RtmpPreset)}>
-              <SelectTrigger className="w-full" id="rtmp-preset">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectGroup>
-                  <SelectItem value="youtube">YouTube</SelectItem>
-                  <SelectItem value="twitch">Twitch</SelectItem>
-                  <SelectItem value="x">X / Twitter</SelectItem>
-                  <SelectItem value="custom">Custom RTMP</SelectItem>
-                </SelectGroup>
-              </SelectContent>
-            </Select>
-          </Field>
-          <Field>
-            <FieldLabel htmlFor="rtmp-server">RTMP server</FieldLabel>
-            <Input
-              id="rtmp-server"
-              placeholder="rtmp://server/app"
-              value={captureConfig.rtmpServerUrl}
-              onChange={(event) =>
-                setCaptureConfig((current) => ({ ...current, rtmpServerUrl: event.target.value }))
-              }
-            />
-          </Field>
-          <Field>
-            <FieldLabel htmlFor="stream-key">Stream key</FieldLabel>
-            <Input
-              autoComplete="off"
-              id="stream-key"
-              placeholder="manual stream key"
-              type="password"
-              value={captureConfig.streamKey}
-              onChange={(event) => setCaptureConfig((current) => ({ ...current, streamKey: event.target.value }))}
-            />
-            <FieldDescription>Kept locally and only sent to the RTMP server when streaming.</FieldDescription>
-          </Field>
-        </FieldGroup>
-
-      </PanelSection>
-
-      <PanelSection
-        className="lg:col-span-2"
         description="Completed local recording artifacts live here."
         icon={FileVideo}
         title="Recording artifacts"
@@ -179,13 +104,7 @@ export function OutputsTab(): ReactElement {
   )
 }
 
-function OutputSessionRow({
-  session,
-  onRemux
-}: {
-  session: SessionSummary
-  onRemux: () => void
-}): ReactElement {
+function OutputSessionRow({ session, onRemux }: { session: SessionSummary; onRemux: () => void }): ReactElement {
   const canRemux = Boolean(session.status === 'completed' && session.outputPath?.endsWith('.mkv') && !session.mp4Path)
 
   return (

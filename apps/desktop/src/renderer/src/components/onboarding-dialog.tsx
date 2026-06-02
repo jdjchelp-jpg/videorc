@@ -83,7 +83,7 @@ export function OnboardingDialog({
       return 'sources'
     }
     if (workflow === 'stream' && !streamReady) {
-      return 'outputs'
+      return 'streaming'
     }
     return 'studio'
   }, [health?.ffmpeg.available, selectedCaptureDevice, streamReady, workflow])
@@ -269,9 +269,9 @@ function SetupStepView({
           <Monitor data-icon="inline-start" />
           Sources
         </Button>
-        <Button size="sm" variant="outline" onClick={() => onOpenTab('outputs')}>
+        <Button size="sm" variant="outline" onClick={() => onOpenTab('streaming')}>
           <Broadcast data-icon="inline-start" />
-          Outputs
+          Streaming
         </Button>
         <Button size="sm" variant="outline" onClick={() => onOpenTab('settings')}>
           <GearSix data-icon="inline-start" />
@@ -348,10 +348,10 @@ function FinishStep({
           onClick={() => onComplete('sources')}
         />
         <DestinationButton
-          recommended={recommendedTab === 'outputs'}
+          recommended={recommendedTab === 'streaming'}
           icon={Broadcast}
-          label="Outputs"
-          onClick={() => onComplete('outputs')}
+          label="Streaming"
+          onClick={() => onComplete('streaming')}
         />
         <DestinationButton
           recommended={recommendedTab === 'studio'}

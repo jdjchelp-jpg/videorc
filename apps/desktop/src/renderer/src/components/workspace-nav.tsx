@@ -1,5 +1,6 @@
 import {
   Broadcast,
+  FileVideo,
   FilmReel,
   Gauge,
   GearSix,
@@ -15,7 +16,8 @@ export type WorkspaceTab =
   | 'studio'
   | 'sources'
   | 'layout'
-  | 'outputs'
+  | 'recording'
+  | 'streaming'
   | 'library'
   | 'ai'
   | 'diagnostics'
@@ -31,7 +33,8 @@ export const WORKSPACE_TABS: WorkspaceTabMeta[] = [
   { id: 'studio', label: 'Studio', icon: VideoCamera },
   { id: 'sources', label: 'Sources', icon: Monitor },
   { id: 'layout', label: 'Layout', icon: Layout },
-  { id: 'outputs', label: 'Outputs', icon: Broadcast },
+  { id: 'recording', label: 'Recording', icon: FileVideo },
+  { id: 'streaming', label: 'Streaming', icon: Broadcast },
   { id: 'library', label: 'Library', icon: FilmReel },
   { id: 'ai', label: 'AI', icon: Sparkle },
   { id: 'diagnostics', label: 'Diagnostics', icon: Gauge },

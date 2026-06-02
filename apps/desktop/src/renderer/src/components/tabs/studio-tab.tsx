@@ -166,18 +166,6 @@ export function StudioTab(): ReactElement {
                   }
                 />
               </Field>
-              <Field orientation="horizontal">
-                <FieldContent>
-                  <FieldLabel htmlFor="studio-stream">Stream RTMP</FieldLabel>
-                </FieldContent>
-                <Switch
-                  checked={captureConfig.streamEnabled}
-                  id="studio-stream"
-                  onCheckedChange={(checked) =>
-                    setCaptureConfig((current) => ({ ...current, streamEnabled: checked }))
-                  }
-                />
-              </Field>
             </div>
           </PanelSection>
 
@@ -297,7 +285,7 @@ function pipelineStatusLabel(status: string): string {
 
 function studioBlocker(studio: ReturnType<typeof useStudio>): {
   title: string
-  jumpTo?: 'sources' | 'outputs' | 'settings'
+  jumpTo?: 'sources' | 'recording' | 'streaming' | 'settings'
   jumpLabel?: string
 } | null {
   const { wsStatus, outputEnabled, captureConfig, streamReady, health } = studio
@@ -306,10 +294,10 @@ function studioBlocker(studio: ReturnType<typeof useStudio>): {
     return { title: 'Backend not connected' }
   }
   if (!outputEnabled) {
-    return { title: 'No output enabled', jumpTo: 'outputs', jumpLabel: 'Open Outputs' }
+    return { title: 'No output enabled', jumpTo: 'recording', jumpLabel: 'Open Recording' }
   }
   if (captureConfig.streamEnabled && !streamReady) {
-    return { title: 'Stream target incomplete', jumpTo: 'outputs', jumpLabel: 'Open Outputs' }
+    return { title: 'Stream target incomplete', jumpTo: 'streaming', jumpLabel: 'Open Streaming' }
   }
   if (health && !health.ffmpeg.available) {
     return { title: 'FFmpeg unavailable', jumpTo: 'settings', jumpLabel: 'Open Settings' }

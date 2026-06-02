@@ -400,6 +400,39 @@ export function migrateStreamingSettings(loaded: Partial<CaptureConfig>): Stream
   }
 }
 
+export function isStreamTargetReady(target: StreamTargetSettings): boolean {
+  if (!target.serverUrl.trim()) {
+    return false
+  }
+  if (target.urlMode === 'full-url') {
+    return true
+  }
+  return target.streamKey.trim().length > 0
+}
+
+// Until the backend consumes the per-target model (M3), keep the legacy single
+// RTMP fields in sync with the primary enabled target so the existing go-live
+// path still streams to one platform.
+export function bridgeStreamingToLegacy(config: CaptureConfig): CaptureConfig {
+  const { streaming } = config
+  const primary = streaming.enabled
+    ? (streaming.targets.find((target) => target.enabled && isStreamTargetReady(target)) ??
+      streaming.targets.find((target) => target.enabled))
+    : undefined
+
+  if (primary) {
+    return {
+      ...config,
+      streamEnabled: true,
+      rtmpPreset: primary.platform,
+      rtmpServerUrl: primary.serverUrl,
+      streamKey: primary.streamKey
+    }
+  }
+
+  return { ...config, streamEnabled: false }
+}
+
 export function clampNumber(value: unknown, fallback: number, min: number, max: number): number {
   const parsed = Number(value)
   if (!Number.isFinite(parsed)) {
