@@ -1,6 +1,12 @@
+use std::ffi::CString;
+use std::fs::File;
+use std::io::{self, Write};
+use std::os::fd::FromRawFd;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex as StdMutex};
+use std::thread::{self, JoinHandle};
 
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
@@ -58,6 +64,8 @@ const MJPEG_BOUNDARY: &[u8] = b"--videorc";
 const MJPEG_HEADER_END: &[u8] = b"\r\n\r\n";
 const PREVIEW_READ_BUFFER_BYTES: usize = 64 * 1024;
 const MAX_PENDING_PREVIEW_BYTES: usize = 8 * 1024 * 1024;
+const SCREEN_OVERLAY_FPS: u32 = 4;
+const SCREEN_OVERLAY_FIFO_OPEN_RETRY: std::time::Duration = std::time::Duration::from_millis(20);
 
 #[derive(Debug)]
 pub struct ActiveRecording {
@@ -72,7 +80,72 @@ pub struct ActiveRecording {
     pub audio_tracks: Vec<AudioTrack>,
     pub pipeline: RecordingPipeline,
     pub native_audio: Option<NativeAudioCaptureSession>,
+    pub screen_overlay: Option<ScreenOverlaySession>,
     pub stop_requested: bool,
+}
+
+#[derive(Debug)]
+pub struct ScreenOverlaySession {
+    fifo_path: PathBuf,
+    width: u32,
+    height: u32,
+    current_frame: Arc<StdMutex<Vec<u8>>>,
+    stop: Arc<AtomicBool>,
+    writer: Option<JoinHandle<()>>,
+}
+
+impl ScreenOverlaySession {
+    fn start(
+        fifo_path: PathBuf,
+        width: u32,
+        height: u32,
+        initial_image_path: Option<String>,
+    ) -> Result<Self> {
+        let transparent = transparent_overlay_frame(width, height);
+        let initial = match initial_image_path {
+            Some(path) => screen_overlay_frame_from_path(Path::new(&path), width, height)
+                .unwrap_or_else(|_| transparent.clone()),
+            None => transparent,
+        };
+        let current_frame = Arc::new(StdMutex::new(initial));
+        let stop = Arc::new(AtomicBool::new(false));
+        let writer_path = fifo_path.clone();
+        let writer_frame = current_frame.clone();
+        let writer_stop = stop.clone();
+        let writer = thread::spawn(move || {
+            write_screen_overlay_frames(writer_path, writer_frame, writer_stop, width, height);
+        });
+
+        Ok(Self {
+            fifo_path,
+            width,
+            height,
+            current_frame,
+            stop,
+            writer: Some(writer),
+        })
+    }
+
+    pub fn set_image_path(&self, path: Option<&str>) -> Result<()> {
+        let next_frame = match path {
+            Some(path) => screen_overlay_frame_from_path(Path::new(path), self.width, self.height)?,
+            None => transparent_overlay_frame(self.width, self.height),
+        };
+        if let Ok(mut current) = self.current_frame.lock() {
+            *current = next_frame;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for ScreenOverlaySession {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(writer) = self.writer.take() {
+            let _ = writer.join();
+        }
+        let _ = std::fs::remove_file(&self.fifo_path);
+    }
 }
 
 #[derive(Debug)]
@@ -105,6 +178,13 @@ impl ActiveRecording {
             duration_ms: None,
             message,
         }
+    }
+
+    pub fn set_active_screen_path(&self, path: Option<&str>) -> Result<()> {
+        if let Some(overlay) = &self.screen_overlay {
+            overlay.set_image_path(path)?;
+        }
+        Ok(())
     }
 }
 
@@ -302,6 +382,9 @@ pub async fn start_session(state: AppState, params: StartSessionParams) -> Resul
         )?;
     }
     emit_audio_track_health_events(&state, &session_id, &params, &audio_tracks)?;
+    let active_screen = state.database.active_stream_screen()?;
+    let screen_overlay_fifo = screen_overlay_fifo_path(&session_id);
+    create_screen_overlay_fifo(&screen_overlay_fifo)?;
 
     let mut pipeline = RecordingPipeline::new(
         params.output.record_enabled,
@@ -314,7 +397,19 @@ pub async fn start_session(state: AppState, params: StartSessionParams) -> Resul
         *diagnostics = initial_diagnostics.clone();
     }
     state.emit_event("diagnostics.stats", initial_diagnostics);
-    let args = ffmpeg_args(&capture, &params, output_path.as_deref(), &stream_targets)?;
+    let screen_overlay = ScreenOverlayInput {
+        fifo_path: screen_overlay_fifo.clone(),
+        width: params.output.video.width,
+        height: params.output.video.height,
+        fps: SCREEN_OVERLAY_FPS,
+    };
+    let args = ffmpeg_args(
+        &capture,
+        &params,
+        output_path.as_deref(),
+        &stream_targets,
+        Some(&screen_overlay),
+    )?;
 
     state.emit_event(
         "recording.status",
@@ -357,6 +452,12 @@ pub async fn start_session(state: AppState, params: StartSessionParams) -> Resul
         pipeline,
         native_audio: native_audio_source
             .map(|prepared| attach_fifo_writer(prepared.source, prepared.fifo_path)),
+        screen_overlay: Some(ScreenOverlaySession::start(
+            screen_overlay_fifo,
+            params.output.video.width,
+            params.output.video.height,
+            active_screen.map(|screen| screen.image_path),
+        )?),
         stop_requested: false,
     };
     let running_state = if params.output.stream_enabled && !params.output.record_enabled {
@@ -1859,6 +1960,7 @@ fn ffmpeg_args(
     params: &StartSessionParams,
     output_path: Option<&Path>,
     stream_targets: &[StreamTarget],
+    screen_overlay: Option<&ScreenOverlayInput>,
 ) -> Result<Vec<String>> {
     let mut args = vec![
         "-y".to_string(),
@@ -1871,8 +1973,19 @@ fn ffmpeg_args(
         "-progress".to_string(),
         "pipe:2".to_string(),
     ];
-    let input_layout = append_input_args(&mut args, capture, true, &params.output.video);
-    let filter = recording_video_filter(input_layout.camera_input_index, params, true);
+    let input_layout = append_input_args(
+        &mut args,
+        capture,
+        true,
+        &params.output.video,
+        screen_overlay,
+    );
+    let filter = recording_video_filter(
+        input_layout.camera_input_index,
+        input_layout.screen_overlay_input_index,
+        params,
+        true,
+    );
 
     args.extend([
         "-filter_complex".to_string(),
@@ -1983,7 +2096,7 @@ fn preview_ffmpeg_args(
         "-loglevel".to_string(),
         "warning".to_string(),
     ];
-    let input_layout = append_input_args(&mut args, capture, false, &params.output.video);
+    let input_layout = append_input_args(&mut args, capture, false, &params.output.video, None);
     args.extend([
         "-filter_complex".to_string(),
         video_filter(input_layout.camera_input_index, params, true),
@@ -2010,7 +2123,7 @@ fn live_preview_ffmpeg_args(
         "-loglevel".to_string(),
         "warning".to_string(),
     ];
-    let input_layout = append_input_args(&mut args, capture, false, &params.output.video);
+    let input_layout = append_input_args(&mut args, capture, false, &params.output.video, None);
     args.extend([
         "-filter_complex".to_string(),
         live_preview_filter(input_layout.camera_input_index, params),
@@ -2024,7 +2137,16 @@ fn live_preview_ffmpeg_args(
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct InputLayout {
     camera_input_index: Option<usize>,
+    screen_overlay_input_index: Option<usize>,
     audio_inputs: Vec<AudioInput>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ScreenOverlayInput {
+    fifo_path: PathBuf,
+    width: u32,
+    height: u32,
+    fps: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2039,6 +2161,7 @@ fn append_input_args(
     capture: &CaptureInputs,
     include_audio: bool,
     video: &VideoSettings,
+    screen_overlay: Option<&ScreenOverlayInput>,
 ) -> InputLayout {
     let mut next_input_index = 0;
     let mut audio_inputs = Vec::new();
@@ -2101,11 +2224,19 @@ fn append_input_args(
     let camera_input_index = capture.camera_index.map(|camera_index| {
         let input_index = next_input_index;
         append_avfoundation_video_input(args, camera_index, video.fps, false);
+        next_input_index += 1;
+        input_index
+    });
+
+    let screen_overlay_input_index = screen_overlay.map(|overlay| {
+        let input_index = next_input_index;
+        append_screen_overlay_input(args, overlay);
         input_index
     });
 
     InputLayout {
         camera_input_index,
+        screen_overlay_input_index,
         audio_inputs,
     }
 }
@@ -2193,6 +2324,128 @@ fn append_avfoundation_video_input(
         args.extend(["-capture_cursor".to_string(), "1".to_string()]);
     }
     args.extend(["-i".to_string(), format!("{device_index}:none")]);
+}
+
+fn append_screen_overlay_input(args: &mut Vec<String>, overlay: &ScreenOverlayInput) {
+    args.extend([
+        "-thread_queue_size".to_string(),
+        "4".to_string(),
+        "-f".to_string(),
+        "rawvideo".to_string(),
+        "-pix_fmt".to_string(),
+        "rgba".to_string(),
+        "-s".to_string(),
+        format!("{}x{}", overlay.width, overlay.height),
+        "-framerate".to_string(),
+        overlay.fps.to_string(),
+        "-i".to_string(),
+        overlay.fifo_path.display().to_string(),
+    ]);
+}
+
+fn screen_overlay_fifo_path(session_id: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("videorc-screen-overlay-{session_id}.rgba"))
+}
+
+fn create_screen_overlay_fifo(path: &Path) -> Result<()> {
+    if path.exists() {
+        std::fs::remove_file(path).with_context(|| {
+            format!(
+                "Could not remove stale Screen overlay FIFO {}",
+                path.display()
+            )
+        })?;
+    }
+
+    let c_path = CString::new(path.display().to_string())
+        .context("Screen overlay FIFO path contained an interior NUL byte")?;
+    let status = unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) };
+    if status != 0 {
+        return Err(io::Error::last_os_error())
+            .with_context(|| format!("Could not create Screen overlay FIFO {}", path.display()));
+    }
+
+    Ok(())
+}
+
+fn open_screen_overlay_fifo_writer(path: &Path, stop: &AtomicBool) -> io::Result<File> {
+    let c_path = CString::new(path.display().to_string()).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid Screen overlay FIFO path",
+        )
+    })?;
+
+    while !stop.load(Ordering::Relaxed) {
+        let fd = unsafe { libc::open(c_path.as_ptr(), libc::O_WRONLY | libc::O_NONBLOCK) };
+        if fd >= 0 {
+            let _ = unsafe { libc::fcntl(fd, libc::F_SETFL, 0) };
+            return Ok(unsafe { File::from_raw_fd(fd) });
+        }
+
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() != Some(libc::ENXIO) {
+            return Err(error);
+        }
+        thread::sleep(SCREEN_OVERLAY_FIFO_OPEN_RETRY);
+    }
+
+    Err(io::Error::new(
+        io::ErrorKind::Interrupted,
+        "Screen overlay writer stopped before FIFO opened",
+    ))
+}
+
+fn write_screen_overlay_frames(
+    path: PathBuf,
+    current_frame: Arc<StdMutex<Vec<u8>>>,
+    stop: Arc<AtomicBool>,
+    width: u32,
+    height: u32,
+) {
+    let mut file = match open_screen_overlay_fifo_writer(&path, &stop) {
+        Ok(file) => file,
+        Err(error) => {
+            tracing::warn!("Could not open Screen overlay FIFO: {error}");
+            return;
+        }
+    };
+    let transparent = transparent_overlay_frame(width, height);
+    let frame_interval =
+        std::time::Duration::from_millis(1000 / u64::from(SCREEN_OVERLAY_FPS.max(1)));
+
+    while !stop.load(Ordering::Relaxed) {
+        let frame = current_frame
+            .lock()
+            .map(|frame| frame.clone())
+            .unwrap_or_else(|_| transparent.clone());
+        let frame = if frame.len() == transparent.len() {
+            frame
+        } else {
+            transparent.clone()
+        };
+        if let Err(error) = file.write_all(&frame) {
+            tracing::warn!("Could not write Screen overlay frame: {error}");
+            break;
+        }
+        thread::sleep(frame_interval);
+    }
+}
+
+fn transparent_overlay_frame(width: u32, height: u32) -> Vec<u8> {
+    vec![0; width as usize * height as usize * 4]
+}
+
+fn screen_overlay_frame_from_path(path: &Path, width: u32, height: u32) -> Result<Vec<u8>> {
+    let image = image::open(path)
+        .with_context(|| format!("Could not decode Screen image {}", path.display()))?
+        .into_rgba8();
+    let image = if image.width() == width && image.height() == height {
+        image
+    } else {
+        image::imageops::resize(&image, width, height, image::imageops::FilterType::Triangle)
+    };
+    Ok(image.into_raw())
 }
 
 fn append_audio_output_args(args: &mut Vec<String>, input_layout: &InputLayout) {
@@ -2316,17 +2569,28 @@ fn test_tone_audio_track() -> AudioTrack {
 
 fn recording_video_filter(
     camera_input_index: Option<usize>,
+    screen_overlay_input_index: Option<usize>,
     params: &StartSessionParams,
     include_live_preview: bool,
 ) -> String {
     let scene = video_filter(camera_input_index, params, false);
+    let video = if let Some(overlay_index) = screen_overlay_input_index {
+        format!("{scene};[v][{overlay_index}:v]overlay=x=0:y=0:format=auto:repeatlast=1[v_screen]")
+    } else {
+        scene
+    };
+    let video_label = if screen_overlay_input_index.is_some() {
+        "v_screen"
+    } else {
+        "v"
+    };
     if include_live_preview {
         format!(
-            "{scene};[v]split=2[v_main][v_preview];[v_preview]{}[preview]",
+            "{video};[{video_label}]split=2[v_main][v_preview];[v_preview]{}[preview]",
             live_preview_scale_filter()
         )
     } else {
-        format!("{scene};[v]null[v_main]")
+        format!("{video};[{video_label}]null[v_main]")
     }
 }
 
@@ -3346,6 +3610,7 @@ mod tests {
             &params,
             Some(Path::new("/tmp/videorc-test.mkv")),
             &targets,
+            None,
         )
         .unwrap();
 
@@ -3400,6 +3665,7 @@ mod tests {
             &params,
             None,
             &targets,
+            None,
         )
         .unwrap();
 
@@ -3434,6 +3700,7 @@ mod tests {
             &params,
             None,
             &targets,
+            None,
         )
         .unwrap();
 
@@ -3506,6 +3773,7 @@ mod tests {
             },
             true,
             &params.output.video,
+            None,
         );
 
         assert!(layout.camera_input_index.is_none());
@@ -3741,6 +4009,7 @@ mod tests {
             &params,
             Some(Path::new("/tmp/videorc-test.mkv")),
             &[build_stream_url(&params.output.rtmp).unwrap()],
+            None,
         )
         .unwrap();
 
@@ -3781,6 +4050,60 @@ mod tests {
     }
 
     #[test]
+    fn recording_pipeline_adds_screen_overlay_fifo_without_changing_audio_mapping() {
+        let params = base_params(true, true);
+        let overlay = ScreenOverlayInput {
+            fifo_path: PathBuf::from("/tmp/videorc-screen-overlay-test.rgba"),
+            width: params.output.video.width,
+            height: params.output.video.height,
+            fps: SCREEN_OVERLAY_FPS,
+        };
+        let args = ffmpeg_args(
+            &CaptureInputs {
+                video: VideoInput::MacScreen { index: 3 },
+                camera_index: Some(0),
+                microphone: Some(MicrophoneInput::AvFoundation { index: 1 }),
+            },
+            &params,
+            Some(Path::new("/tmp/videorc-test.mkv")),
+            &[build_stream_url(&params.output.rtmp).unwrap()],
+            Some(&overlay),
+        )
+        .unwrap();
+
+        assert_eq!(
+            ffmpeg_inputs(&args),
+            vec![
+                "3:none",
+                ":1",
+                "0:none",
+                "/tmp/videorc-screen-overlay-test.rgba"
+            ]
+        );
+        assert_eq!(
+            input_arg_value(&args, "/tmp/videorc-screen-overlay-test.rgba", "-f"),
+            Some("rawvideo")
+        );
+        assert_eq!(
+            input_arg_value(&args, "/tmp/videorc-screen-overlay-test.rgba", "-pix_fmt"),
+            Some("rgba")
+        );
+        assert_eq!(
+            input_arg_value(&args, "/tmp/videorc-screen-overlay-test.rgba", "-s"),
+            Some("2560x1440")
+        );
+        assert_eq!(
+            input_arg_value(&args, "/tmp/videorc-screen-overlay-test.rgba", "-framerate"),
+            Some("4")
+        );
+        assert!(args.iter().any(|arg| arg == "1:a?"));
+        assert!(!args.iter().any(|arg| arg == "3:a?"));
+        let filter = arg_value(&args, "-filter_complex").unwrap();
+        assert!(filter.contains("[v][3:v]overlay=x=0:y=0"));
+        assert!(filter.contains("[v_screen]split=2[v_main][v_preview]"));
+    }
+
+    #[test]
     fn mac_recording_uses_dedicated_microphone_audio_input() {
         let params = base_params(true, false);
         let args = ffmpeg_args(
@@ -3792,6 +4115,7 @@ mod tests {
             &params,
             Some(Path::new("/tmp/videorc-test.mkv")),
             &[],
+            None,
         )
         .unwrap();
 
@@ -3824,6 +4148,7 @@ mod tests {
             &params,
             Some(Path::new("/tmp/videorc-test.mkv")),
             &[],
+            None,
         )
         .unwrap();
 
@@ -3869,6 +4194,7 @@ mod tests {
             &params,
             Some(Path::new("/tmp/videorc-test.mkv")),
             &[],
+            None,
         )
         .unwrap();
 
@@ -3882,6 +4208,7 @@ mod tests {
             &params,
             Some(Path::new("/tmp/videorc-test.mkv")),
             &[],
+            None,
         )
         .unwrap();
 
@@ -3907,6 +4234,7 @@ mod tests {
             &params,
             Some(Path::new("/tmp/videorc-test.mkv")),
             &[],
+            None,
         )
         .unwrap();
 
@@ -3929,6 +4257,7 @@ mod tests {
             &params,
             Some(Path::new("/tmp/videorc-test.mkv")),
             &[],
+            None,
         )
         .unwrap();
 
@@ -3951,6 +4280,7 @@ mod tests {
             &params,
             Some(Path::new("/tmp/videorc-test.mkv")),
             &[],
+            None,
         )
         .unwrap();
 
@@ -4076,7 +4406,7 @@ mod tests {
     #[test]
     fn recording_camera_overlay_scales_to_match_idle_preview_size() {
         let recording = base_params(true, false);
-        let recording_filter = recording_video_filter(Some(1), &recording, true);
+        let recording_filter = recording_video_filter(Some(1), None, &recording, true);
         let preview_session = live_preview_session_params(
             PreviewLiveParams {
                 sources: recording.sources.clone(),
@@ -4134,6 +4464,7 @@ mod tests {
             &params,
             Some(Path::new("/tmp/videorc-test.mkv")),
             &[],
+            None,
         )
         .unwrap();
         let without_mic = ffmpeg_args(
@@ -4145,6 +4476,7 @@ mod tests {
             &params,
             Some(Path::new("/tmp/videorc-test.mkv")),
             &[],
+            None,
         )
         .unwrap();
 
@@ -4244,7 +4576,7 @@ mod tests {
         params.layout.camera_mirror = true;
         params.layout.camera_fit = CameraFit::Fit;
 
-        let recording = recording_video_filter(Some(1), &params, false);
+        let recording = recording_video_filter(Some(1), None, &params, false);
         let preview_session = live_preview_session_params(
             PreviewLiveParams {
                 sources: params.sources.clone(),

@@ -603,6 +603,11 @@ async fn handle_text_message(state: &AppState, text: &str) -> ServerResponse {
                         Ok(screens) => {
                             state.emit_event("screens.changed", screens.clone());
                             if let Ok(active) = state.database.active_stream_screen() {
+                                if active.is_none()
+                                    && let Some(recording) = state.recording.lock().await.as_ref()
+                                {
+                                    let _ = recording.set_active_screen_path(None);
+                                }
                                 state.emit_event("screens.active.changed", active);
                             }
                             ServerResponse::ok(command.id, screens)
@@ -644,6 +649,16 @@ async fn handle_text_message(state: &AppState, text: &str) -> ServerResponse {
             match serde_json::from_value::<protocol::ScreenIdParams>(command.params) {
                 Ok(params) => match state.database.activate_stream_screen(&params.screen_id) {
                     Ok(screen) => {
+                        if let Some(recording) = state.recording.lock().await.as_ref()
+                            && let Err(error) =
+                                recording.set_active_screen_path(Some(&screen.image_path))
+                        {
+                            return ServerResponse::error(
+                                command.id,
+                                "screen-activate-failed",
+                                error.to_string(),
+                            );
+                        }
                         state.emit_event("screens.active.changed", Some(screen.clone()));
                         ServerResponse::ok(command.id, screen)
                     }
@@ -660,6 +675,15 @@ async fn handle_text_message(state: &AppState, text: &str) -> ServerResponse {
         }
         "screens.clear" => match state.database.clear_active_stream_screen() {
             Ok(()) => {
+                if let Some(recording) = state.recording.lock().await.as_ref()
+                    && let Err(error) = recording.set_active_screen_path(None)
+                {
+                    return ServerResponse::error(
+                        command.id,
+                        "screen-clear-failed",
+                        error.to_string(),
+                    );
+                }
                 state.emit_event(
                     "screens.active.changed",
                     Option::<protocol::StreamScreen>::None,
