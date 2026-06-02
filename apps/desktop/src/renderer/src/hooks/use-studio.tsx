@@ -928,7 +928,9 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     setCaptureConfig((current) => ({
       ...current,
       rtmpPreset: preset,
-      rtmpServerUrl: rtmpDefaults[preset] || current.rtmpServerUrl
+      rtmpServerUrl: rtmpDefaults[preset] || current.rtmpServerUrl,
+      // Stream keys are platform-specific — never carry one across a platform switch.
+      streamKey: ''
     }))
   }, [])
 
