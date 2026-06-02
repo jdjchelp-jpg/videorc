@@ -1878,6 +1878,17 @@ fn ffmpeg_args(
         format!("{}k", params.output.video.bitrate_kbps),
         "-bufsize".to_string(),
         format!("{}k", params.output.video.bitrate_kbps.saturating_mul(2)),
+        // Pin a 2-second keyframe interval (closed GOP). YouTube — and HLS/DVR on
+        // every platform — will not go live without a regular keyframe cadence, while
+        // Twitch tolerates an irregular GOP. That difference is exactly why an
+        // unpinned videotoolbox encode reaches Twitch but never appears on YouTube.
+        // `-g` bounds the max interval; `-force_key_frames` guarantees exact 2s
+        // alignment, and because there is one shared encoder every tee leg (and the
+        // MKV) inherits it.
+        "-g".to_string(),
+        params.output.video.fps.saturating_mul(2).to_string(),
+        "-force_key_frames".to_string(),
+        "expr:gte(t,n_forced*2)".to_string(),
         // Required for the `tee` fan-out: a single shared videotoolbox encoder feeds
         // the matroska and flv slaves, which both need the H.264 SPS/PPS carried as
         // global extradata. Without this the matroska slave fails its header write
@@ -3719,6 +3730,16 @@ mod tests {
         assert_eq!(arg_value(&args, "-b:a"), Some("160k"));
         assert_eq!(arg_value(&args, "-realtime"), Some("1"));
         assert_eq!(arg_value(&args, "-prio_speed"), Some("1"));
+        // A pinned 2-second keyframe interval so YouTube (and HLS/DVR) go live.
+        assert_eq!(
+            arg_value(&args, "-force_key_frames"),
+            Some("expr:gte(t,n_forced*2)")
+        );
+        let fps = arg_value(&args, "-r")
+            .and_then(|value| value.parse::<u32>().ok())
+            .expect("fps arg present");
+        let expected_gop = (fps * 2).to_string();
+        assert_eq!(arg_value(&args, "-g"), Some(expected_gop.as_str()));
         assert!(args.contains(&"8000k".to_string()));
         assert!(args.iter().any(|arg| arg.contains("pad=2560:1440")));
         assert!(args.contains(&"pipe:2".to_string()));
