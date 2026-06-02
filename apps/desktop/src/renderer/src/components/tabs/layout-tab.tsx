@@ -66,11 +66,12 @@ export function LayoutTab(): ReactElement {
           <div className="flex flex-wrap gap-2">
             {LAYOUT_PRESETS.map((preset) => (
               <button
-                aria-pressed={preset.enabled}
-                className="cursor-default rounded-xl border bg-card p-3 text-left text-sm font-medium transition-colors aria-pressed:border-primary aria-pressed:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-50"
+                aria-pressed={layout.layoutPreset === preset.id}
+                className="cursor-pointer rounded-xl border bg-card p-3 text-left text-sm font-medium transition-colors aria-pressed:border-primary aria-pressed:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-50"
                 disabled={!preset.enabled}
                 key={preset.id}
                 type="button"
+                onClick={() => patchLayout({ layoutPreset: preset.id })}
               >
                 <div>{preset.label}</div>
                 {!preset.enabled ? (

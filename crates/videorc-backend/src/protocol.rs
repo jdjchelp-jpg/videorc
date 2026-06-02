@@ -227,6 +227,8 @@ pub struct SourceSelection {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct LayoutSettings {
+    #[serde(default = "default_layout_preset")]
+    pub layout_preset: LayoutPreset,
     pub camera_corner: CameraCorner,
     pub camera_size: CameraSize,
     pub camera_shape: CameraShape,
@@ -272,6 +274,15 @@ pub enum CameraShape {
 pub enum CameraFit {
     Fit,
     Fill,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum LayoutPreset {
+    ScreenCamera,
+    ScreenOnly,
+    CameraOnly,
+    SideBySide,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -411,6 +422,10 @@ fn default_camera_fit() -> CameraFit {
 
 fn default_camera_zoom() -> u32 {
     100
+}
+
+fn default_layout_preset() -> LayoutPreset {
+    LayoutPreset::ScreenCamera
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -791,5 +806,60 @@ impl ServerEvent {
             event: event.into(),
             payload: serde_json::to_value(payload).expect("serializable event payload"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn layout_preset_serializes_to_kebab_case() {
+        assert_eq!(
+            serde_json::to_value(LayoutPreset::ScreenCamera).unwrap(),
+            serde_json::json!("screen-camera")
+        );
+        assert_eq!(
+            serde_json::to_value(LayoutPreset::SideBySide).unwrap(),
+            serde_json::json!("side-by-side")
+        );
+    }
+
+    #[test]
+    fn layout_settings_defaults_missing_preset_to_screen_camera() {
+        // Settings persisted before layoutPreset existed must migrate to screen-camera.
+        let legacy = serde_json::json!({
+            "cameraCorner": "bottom-right",
+            "cameraSize": "medium",
+            "cameraShape": "rectangle",
+            "cameraMargin": 32,
+            "cameraFit": "fill",
+            "cameraMirror": false,
+            "cameraZoom": 100,
+            "cameraOffsetX": 0,
+            "cameraOffsetY": 0
+        });
+        let layout: LayoutSettings = serde_json::from_value(legacy).unwrap();
+        assert_eq!(layout.layout_preset, LayoutPreset::ScreenCamera);
+    }
+
+    #[test]
+    fn layout_settings_round_trips_explicit_preset() {
+        let layout = LayoutSettings {
+            layout_preset: LayoutPreset::SideBySide,
+            camera_corner: CameraCorner::BottomRight,
+            camera_size: CameraSize::Medium,
+            camera_shape: CameraShape::Rectangle,
+            camera_margin: 32,
+            camera_fit: CameraFit::Fill,
+            camera_mirror: false,
+            camera_zoom: 100,
+            camera_offset_x: 0,
+            camera_offset_y: 0,
+        };
+        let json = serde_json::to_string(&layout).unwrap();
+        assert!(json.contains("\"layoutPreset\":\"side-by-side\""));
+        let restored: LayoutSettings = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored, layout);
     }
 }

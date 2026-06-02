@@ -125,8 +125,10 @@ export type CameraCorner = 'top-left' | 'top-right' | 'bottom-left' | 'bottom-ri
 export type CameraSize = 'small' | 'medium' | 'large'
 export type CameraShape = 'rectangle' | 'circle'
 export type CameraFit = 'fit' | 'fill'
+export type LayoutPreset = 'screen-camera' | 'screen-only' | 'camera-only' | 'side-by-side'
 
 export interface LayoutSettings {
+  layoutPreset: LayoutPreset
   cameraCorner: CameraCorner
   cameraSize: CameraSize
   cameraShape: CameraShape

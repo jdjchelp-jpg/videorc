@@ -1,5 +1,6 @@
 import type {
   AudioSettings,
+  LayoutPreset,
   LayoutSettings,
   RtmpPreset,
   SourceSelection,
@@ -87,6 +88,7 @@ export const videoPresets: Record<VideoPreset, VideoSettings> = {
 export const defaultCaptureConfig: CaptureConfig = {
   sources: {},
   layout: {
+    layoutPreset: 'screen-camera',
     cameraCorner: 'bottom-right',
     cameraSize: 'medium',
     cameraShape: 'rectangle',
@@ -161,12 +163,26 @@ export function normalizeAudioSettings(audio: unknown): AudioSettings {
   }
 }
 
+const LAYOUT_PRESET_VALUES: readonly LayoutPreset[] = [
+  'screen-camera',
+  'screen-only',
+  'camera-only',
+  'side-by-side'
+]
+
+function isLayoutPreset(value: unknown): value is LayoutPreset {
+  return typeof value === 'string' && (LAYOUT_PRESET_VALUES as readonly string[]).includes(value)
+}
+
 export function normalizeLayoutSettings(layout: unknown): LayoutSettings {
   const candidate = layout && typeof layout === 'object' ? (layout as Partial<LayoutSettings>) : {}
 
   return {
     ...defaultCaptureConfig.layout,
     ...candidate,
+    layoutPreset: isLayoutPreset(candidate.layoutPreset)
+      ? candidate.layoutPreset
+      : defaultCaptureConfig.layout.layoutPreset,
     cameraMargin: clampNumber(candidate.cameraMargin, defaultCaptureConfig.layout.cameraMargin, 8, 96),
     cameraZoom: clampNumber(candidate.cameraZoom, defaultCaptureConfig.layout.cameraZoom, 100, 200),
     cameraOffsetX: clampNumber(candidate.cameraOffsetX, defaultCaptureConfig.layout.cameraOffsetX, -100, 100),

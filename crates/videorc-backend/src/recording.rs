@@ -2575,8 +2575,8 @@ pub type LivePreviewSlot = Arc<Mutex<LivePreviewState>>;
 mod tests {
     use super::*;
     use crate::protocol::{
-        CameraCorner, CameraFit, CameraShape, CameraSize, LayoutSettings, OutputSettings,
-        PreviewLiveParams, RtmpSettings, SourceSelection,
+        CameraCorner, CameraFit, CameraShape, CameraSize, LayoutPreset, LayoutSettings,
+        OutputSettings, PreviewLiveParams, RtmpSettings, SourceSelection,
     };
 
     fn base_params(record_enabled: bool, stream_enabled: bool) -> StartSessionParams {
@@ -2589,6 +2589,7 @@ mod tests {
                 test_pattern: false,
             },
             layout: LayoutSettings {
+                layout_preset: LayoutPreset::ScreenCamera,
                 camera_corner: CameraCorner::BottomRight,
                 camera_size: CameraSize::Medium,
                 camera_shape: CameraShape::Rectangle,

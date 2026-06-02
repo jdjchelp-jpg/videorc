@@ -553,8 +553,8 @@ pub fn default_artifacts_dir() -> PathBuf {
 mod tests {
     use super::*;
     use crate::protocol::{
-        CameraCorner, CameraFit, CameraShape, CameraSize, OutputSettings, PermissionPane,
-        RtmpPreset, RtmpSettings, VideoPreset, VideoSettings,
+        CameraCorner, CameraFit, CameraShape, CameraSize, LayoutPreset, OutputSettings,
+        PermissionPane, RtmpPreset, RtmpSettings, VideoPreset, VideoSettings,
     };
 
     fn test_database() -> Database {
@@ -583,6 +583,7 @@ mod tests {
                 test_pattern: false,
             },
             layout: LayoutSettings {
+                layout_preset: LayoutPreset::ScreenCamera,
                 camera_corner: CameraCorner::BottomRight,
                 camera_size: CameraSize::Medium,
                 camera_shape: CameraShape::Rectangle,
@@ -626,6 +627,7 @@ mod tests {
     #[test]
     fn session_payload_round_trips_through_json() {
         let layout = LayoutSettings {
+            layout_preset: LayoutPreset::ScreenOnly,
             camera_corner: CameraCorner::BottomRight,
             camera_size: CameraSize::Medium,
             camera_shape: CameraShape::Circle,

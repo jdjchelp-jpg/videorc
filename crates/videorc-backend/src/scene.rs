@@ -398,7 +398,7 @@ fn find_source_mut<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{LayoutSettings, SourceSelection};
+    use crate::protocol::{LayoutPreset, LayoutSettings, SourceSelection};
 
     fn base_params() -> SceneConfigParams {
         SceneConfigParams {
@@ -410,6 +410,7 @@ mod tests {
                 test_pattern: false,
             },
             layout: LayoutSettings {
+                layout_preset: LayoutPreset::ScreenCamera,
                 camera_corner: CameraCorner::BottomRight,
                 camera_size: CameraSize::Medium,
                 camera_shape: CameraShape::Rectangle,
