@@ -531,6 +531,32 @@ async fn handle_text_message(state: &AppState, text: &str) -> ServerResponse {
                 ServerResponse::error(command.id, "sessions-list-failed", error.to_string())
             }
         },
+        "screens.list" => match state.database.list_stream_screens() {
+            Ok(screens) => ServerResponse::ok(command.id, screens),
+            Err(error) => {
+                ServerResponse::error(command.id, "screens-list-failed", error.to_string())
+            }
+        },
+        "screens.importImage" => {
+            match serde_json::from_value::<protocol::ImportScreenImageParams>(command.params) {
+                Ok(params) => match state.database.import_screen_image(&params.path) {
+                    Ok(screen) => {
+                        if let Ok(screens) = state.database.list_stream_screens() {
+                            state.emit_event("screens.changed", screens);
+                        }
+                        ServerResponse::ok(command.id, screen)
+                    }
+                    Err(error) => ServerResponse::error(
+                        command.id,
+                        "screen-import-failed",
+                        error.to_string(),
+                    ),
+                },
+                Err(error) => {
+                    ServerResponse::error(command.id, "invalid-params", error.to_string())
+                }
+            }
+        },
         "session.remux_mp4" => {
             match serde_json::from_value::<protocol::RemuxSessionParams>(command.params) {
                 Ok(params) => match remux_session(state.clone(), params).await {

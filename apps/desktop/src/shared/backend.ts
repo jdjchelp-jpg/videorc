@@ -596,6 +596,23 @@ export interface SessionSummary {
   aiArtifacts: AiArtifact[]
 }
 
+export type StreamScreenStatus = 'ready' | 'missing'
+
+export interface StreamScreen {
+  id: string
+  name: string
+  imagePath: string
+  thumbnailPath?: string
+  sortOrder: number
+  status: StreamScreenStatus
+  createdAt: string
+  updatedAt: string
+}
+
+export interface ImportScreenImageParams {
+  path: string
+}
+
 export interface RuntimeInfo {
   isPackaged: boolean
   permissionTargetName: string

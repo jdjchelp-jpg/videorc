@@ -9,7 +9,8 @@ use uuid::Uuid;
 use crate::diagnostics::permission_pane_for_log;
 use crate::protocol::{
     AiArtifact, AiArtifactKind, AiArtifactStatus, HealthEvent, HealthLevel, LayoutSettings,
-    OutputSettings, SessionLogEntry, SessionSummary, SourceSelection,
+    OutputSettings, SessionLogEntry, SessionSummary, SourceSelection, StreamScreen,
+    StreamScreenStatus,
 };
 
 #[derive(Clone)]
@@ -331,6 +332,71 @@ impl Database {
         Ok(())
     }
 
+    pub fn import_screen_image(&self, image_path: &str) -> Result<StreamScreen> {
+        let conn = self.lock()?;
+        let now = Utc::now().to_rfc3339();
+        let next_order: i64 = conn.query_row(
+            "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM stream_screens",
+            [],
+            |row| row.get(0),
+        )?;
+        let screen = StreamScreen {
+            id: Uuid::new_v4().to_string(),
+            name: screen_name_from_path(image_path),
+            image_path: image_path.to_string(),
+            thumbnail_path: None,
+            sort_order: next_order,
+            status: if std::path::Path::new(image_path).exists() {
+                StreamScreenStatus::Ready
+            } else {
+                StreamScreenStatus::Missing
+            },
+            created_at: now.clone(),
+            updated_at: now,
+        };
+
+        conn.execute(
+            "INSERT INTO stream_screens (
+                id, name, image_path, thumbnail_path, sort_order, status, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                screen.id,
+                screen.name,
+                screen.image_path,
+                screen.thumbnail_path,
+                screen.sort_order,
+                serde_json::to_string(&screen.status)?,
+                screen.created_at,
+                screen.updated_at,
+            ],
+        )?;
+        Ok(screen)
+    }
+
+    pub fn list_stream_screens(&self) -> Result<Vec<StreamScreen>> {
+        let conn = self.lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, name, image_path, thumbnail_path, sort_order, status, created_at, updated_at
+             FROM stream_screens
+             ORDER BY sort_order ASC, created_at ASC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let status_json: String = row.get(5)?;
+            Ok(StreamScreen {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                image_path: row.get(2)?,
+                thumbnail_path: row.get(3)?,
+                sort_order: row.get(4)?,
+                status: serde_json::from_str(&status_json).unwrap_or(StreamScreenStatus::Missing),
+                created_at: row.get(6)?,
+                updated_at: row.get(7)?,
+            })
+        })?;
+
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     fn migrate(&self) -> Result<()> {
         let conn = self.lock()?;
         conn.execute_batch(
@@ -391,6 +457,17 @@ impl Database {
             CREATE TABLE IF NOT EXISTS app_settings (
                 key TEXT PRIMARY KEY,
                 value_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS stream_screens (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                image_path TEXT NOT NULL,
+                thumbnail_path TEXT,
+                sort_order INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
             ",
@@ -547,6 +624,31 @@ pub fn default_artifacts_dir() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."))
         .join("Artifacts")
+}
+
+fn screen_name_from_path(image_path: &str) -> String {
+    let stem = std::path::Path::new(image_path)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("Screen");
+    let words = stem
+        .replace(['-', '_'], " ")
+        .split_whitespace()
+        .map(title_case_word)
+        .collect::<Vec<_>>();
+    if words.is_empty() {
+        "Screen".to_string()
+    } else {
+        words.join(" ")
+    }
+}
+
+fn title_case_word(word: &str) -> String {
+    let mut chars = word.chars();
+    match chars.next() {
+        Some(first) => format!("{}{}", first.to_uppercase(), chars.as_str().to_lowercase()),
+        None => String::new(),
+    }
 }
 
 #[cfg(test)]
@@ -770,5 +872,26 @@ mod tests {
                 .as_deref(),
             Some("/tmp/videorc-test.mp4")
         );
+    }
+
+    #[test]
+    fn imported_screen_images_infer_names_and_persist_in_order() {
+        let database = test_database();
+
+        let first = database
+            .import_screen_image("/tmp/be-right_back.png")
+            .unwrap();
+        let second = database.import_screen_image("/tmp/ending.png").unwrap();
+
+        assert_eq!(first.name, "Be Right Back");
+        assert_eq!(first.status, StreamScreenStatus::Missing);
+        assert_eq!(first.sort_order, 0);
+        assert_eq!(second.name, "Ending");
+        assert_eq!(second.sort_order, 1);
+
+        let screens = database.list_stream_screens().unwrap();
+        assert_eq!(screens.len(), 2);
+        assert_eq!(screens[0].id, first.id);
+        assert_eq!(screens[1].id, second.id);
     }
 }

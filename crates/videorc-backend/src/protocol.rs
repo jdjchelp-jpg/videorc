@@ -748,6 +748,32 @@ pub struct SessionSummary {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
+pub enum StreamScreenStatus {
+    Ready,
+    Missing,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamScreen {
+    pub id: String,
+    pub name: String,
+    pub image_path: String,
+    pub thumbnail_path: Option<String>,
+    pub sort_order: i64,
+    pub status: StreamScreenStatus,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportScreenImageParams {
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
 pub enum PermissionPane {
     Privacy,
     ScreenRecording,
