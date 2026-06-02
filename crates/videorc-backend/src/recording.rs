@@ -2251,7 +2251,7 @@ fn side_by_side_video_filter(
     // Each region covers its area (scale to fill + center crop) so the two halves
     // tile the canvas with no black gap between them.
     let screen = format!(
-        "[0:v]setpts=PTS-STARTPTS,scale={screen_width}:{height}:force_original_aspect_ratio=increase,crop={screen_width}:{height},fps={fps}[sbs_screen]"
+        "[0:v]setpts=PTS-STARTPTS,scale={screen_width}:{height}:force_original_aspect_ratio=increase,crop={screen_width}:{height},fps={fps},format=yuv420p[sbs_screen]"
     );
     let camera = match camera_input_index {
         Some(index) => {
@@ -2261,9 +2261,13 @@ fn side_by_side_video_filter(
                 ""
             };
             let frame = camera_frame_filter(camera_width, height, &params.layout);
-            format!("[{index}:v]setpts=PTS-STARTPTS,{mirror}{frame},fps={fps}[sbs_camera]")
+            format!(
+                "[{index}:v]setpts=PTS-STARTPTS,{mirror}{frame},fps={fps},format=yuv420p[sbs_camera]"
+            )
         }
-        None => format!("color=c=black:s={camera_width}x{height}:r={fps}[sbs_camera]"),
+        None => {
+            format!("color=c=black:s={camera_width}x{height}:r={fps},format=yuv420p[sbs_camera]")
+        }
     };
     let (left, right) = match params.layout.side_by_side_camera_side {
         SideBySideCameraSide::Right => ("sbs_screen", "sbs_camera"),

@@ -1,5 +1,12 @@
 import { existsSync, mkdirSync, statSync } from 'node:fs'
 
+export const LAYOUT_PRESET_SCENARIOS = [
+  { preset: 'screen-camera', label: 'Screen + camera' },
+  { preset: 'screen-only', label: 'Screen only' },
+  { preset: 'camera-only', label: 'Camera only' },
+  { preset: 'side-by-side', label: 'Side-by-side' }
+]
+
 export async function runBackendRecordingSmoke({
   connection,
   ffmpegPath,
@@ -7,7 +14,8 @@ export async function runBackendRecordingSmoke({
   timeoutMs = 45000,
   recordingMs = 1000,
   label = 'App',
-  onHealth
+  onHealth,
+  scenarios = LAYOUT_PRESET_SCENARIOS
 }) {
   mkdirSync(outputDirectory, { recursive: true })
 
@@ -22,29 +30,47 @@ export async function runBackendRecordingSmoke({
     await onHealth?.({ health, ffmpegPath })
     console.log(`${label} smoke using FFmpeg: ${ffmpegPath}`)
 
-    const started = await request(ws, timeoutMs, 'session.start', sessionParams({ outputDirectory, ffmpegPath }))
-    if (!['recording', 'streaming'].includes(started.state)) {
-      throw new Error(`Expected recording state after start, got ${started.state}.`)
+    // Drive every layout preset through real FFmpeg with the test pattern so each
+    // composed filtergraph (overlay, screen-only, camera-only, side-by-side) is
+    // validated end to end and the recording finalizes.
+    const results = []
+    for (const scenario of scenarios) {
+      results.push(
+        await recordScenario({ ws, timeoutMs, recordingMs, label, outputDirectory, ffmpegPath, scenario })
+      )
     }
-
-    await sleep(recordingMs)
-
-    const stopped = await request(ws, timeoutMs, 'session.stop')
-    const outputPath = stopped.outputPath ?? started.outputPath
-    if (!outputPath || !existsSync(outputPath)) {
-      throw new Error(`Recording output was not created: ${outputPath ?? 'missing path'}`)
-    }
-
-    const size = statSync(outputPath).size
-    if (size <= 0) {
-      throw new Error(`Recording output is empty: ${outputPath}`)
-    }
-
-    console.log(`${label} smoke recording created: ${outputPath} (${size} bytes)`)
-    return { outputPath, size }
+    return results
   } finally {
     ws?.close()
   }
+}
+
+async function recordScenario({ ws, timeoutMs, recordingMs, label, outputDirectory, ffmpegPath, scenario }) {
+  const started = await request(
+    ws,
+    timeoutMs,
+    'session.start',
+    sessionParams({ outputDirectory, ffmpegPath, preset: scenario.preset })
+  )
+  if (!['recording', 'streaming'].includes(started.state)) {
+    throw new Error(`[${scenario.label}] Expected recording state after start, got ${started.state}.`)
+  }
+
+  await sleep(recordingMs)
+
+  const stopped = await request(ws, timeoutMs, 'session.stop')
+  const outputPath = stopped.outputPath ?? started.outputPath
+  if (!outputPath || !existsSync(outputPath)) {
+    throw new Error(`[${scenario.label}] Recording output was not created: ${outputPath ?? 'missing path'}`)
+  }
+
+  const size = statSync(outputPath).size
+  if (size <= 0) {
+    throw new Error(`[${scenario.label}] Recording output is empty: ${outputPath}`)
+  }
+
+  console.log(`${label} smoke [${scenario.label}] recording created: ${outputPath} (${size} bytes)`)
+  return { preset: scenario.preset, outputPath, size }
 }
 
 function connectBackend(connection, timeoutMs) {
@@ -105,12 +131,15 @@ function request(ws, timeoutMs, method, params) {
   })
 }
 
-function sessionParams({ outputDirectory, ffmpegPath }) {
+function sessionParams({ outputDirectory, ffmpegPath, preset = 'screen-camera' }) {
   return {
     sources: {
       testPattern: true
     },
     layout: {
+      layoutPreset: preset,
+      cameraTransformMode: 'preset',
+      cameraTransform: null,
       cameraCorner: 'bottom-right',
       cameraSize: 'medium',
       cameraShape: 'rectangle',
@@ -119,7 +148,9 @@ function sessionParams({ outputDirectory, ffmpegPath }) {
       cameraMirror: false,
       cameraZoom: 100,
       cameraOffsetX: 0,
-      cameraOffsetY: 0
+      cameraOffsetY: 0,
+      sideBySideSplit: '70-30',
+      sideBySideCameraSide: 'right'
     },
     output: {
       recordEnabled: true,

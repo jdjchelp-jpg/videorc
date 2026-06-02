@@ -52,7 +52,7 @@ Run the development app smoke test:
 pnpm smoke:dev
 ```
 
-The smoke test launches `pnpm dev`, waits for the Electron-launched backend, records a short test-pattern MKV through the authenticated backend protocol, stops the session, and verifies that the file was written. It does not require camera, microphone, or screen permissions.
+The smoke test launches `pnpm dev`, waits for the Electron-launched backend, and records a short test-pattern MKV for each layout preset (screen + camera, screen only, camera only, and side-by-side) through the authenticated backend protocol, stopping each session and verifying every file was written. It does not require camera, microphone, or screen permissions.
 
 ## Packaging
 
@@ -92,14 +92,16 @@ See [distribution notes](docs/distribution.md) for signing, notarization, and FF
 
 - [ADR 0001: OBS-Parity Native Capture Architecture](docs/adr/0001-obs-parity-native-capture-architecture.md)
 - [OBS parity source map](docs/obs-parity-source-map.md)
+- [Layout presets manual test checklist](docs/layout-presets-manual-checklist.md)
 
 ## Current State
 
 The technical spike, capture foundation, reliable recording preview path, first post-recording AI workflow, and first creator polish slice are implemented:
 
 - screen/window, camera, and microphone selection
-- one v1 layout: screen/window plus camera corner
-- camera corner, size, shape, and margin settings
+- four layout presets: screen + camera, screen only, camera only, and side-by-side
+- draggable camera positioning, plus corner, size, shape, and margin settings
+- side-by-side split presets (50/50, 60/40, 70/30) with selectable camera side
 - local recording, RTMP streaming, or record while streaming
 - selectable output presets for 1080p30, 1440p30, and 1080p60 with bitrate controls
 - manual RTMP presets for YouTube, Twitch, X, and Custom
