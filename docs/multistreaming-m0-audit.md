@@ -97,3 +97,24 @@ as platform requirements change.
   for the secret-storage slice (M1b).
 - Streaming tab / Recording rename (M2), backend session wiring (M3), tee
   multi-output (M4) — per plan phase order.
+
+## M6 verification — local RTMP smoke (proven)
+
+The tee fan-out is now proven end to end by `pnpm smoke:multistream`
+(`scripts/smoke-multistream-app.mjs`): it stands up one local `ffmpeg -listen 1`
+RTMP server per destination, runs a real record + simulcast session through the
+backend protocol, and asserts that bytes arrive at **every** target while the local
+recording still finalizes. No Docker or external services; uses the test pattern,
+so no camera/mic/screen permissions are required.
+
+The first run surfaced a real bug that only the *executed* pipeline could catch
+(the M4 tests only assert the command string): the tee's `matroska` slave failed
+its header write — `Could not write header (incorrect codec parameters ?)` — because
+one shared `h264_videotoolbox` encoder feeds all slaves and the matroska/flv muxers
+need the H.264 SPS/PPS as **global** extradata. With `onfail=abort` on the matroska
+leg, that took down the whole fan-out (0 frames, 293-byte MKV, nothing streamed).
+
+**Fix:** force `-flags +global_header` on the session encode (`recording.rs`
+`ffmpeg_args`). Re-run result: three RTMP targets each received an identical byte
+count (~48 MB) fanned out from a single encode, and the local recording finalized
+(~48 MB MP4). Regression is locked in by assertions in the M4 tee tests.

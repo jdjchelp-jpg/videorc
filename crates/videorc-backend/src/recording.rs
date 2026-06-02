@@ -1788,6 +1788,14 @@ fn ffmpeg_args(
         format!("{}k", params.output.video.bitrate_kbps),
         "-bufsize".to_string(),
         format!("{}k", params.output.video.bitrate_kbps.saturating_mul(2)),
+        // Required for the `tee` fan-out: a single shared videotoolbox encoder feeds
+        // the matroska and flv slaves, which both need the H.264 SPS/PPS carried as
+        // global extradata. Without this the matroska slave fails its header write
+        // ("Could not write header (incorrect codec parameters ?)") and, because it is
+        // onfail=abort, takes down the entire tee. Harmless for the single mkv/flv
+        // outputs (those muxers request global headers from the encoder anyway).
+        "-flags".to_string(),
+        "+global_header".to_string(),
     ]);
     append_audio_encoding_args(
         &mut args,
@@ -3026,6 +3034,15 @@ mod tests {
         assert!(tee.contains("rtmp://a.rtmp.youtube.com/live2/yt"));
         assert!(tee.contains("rtmp://live.twitch.tv/app/tw"));
         assert!(tee.contains("rtmp://x.example/app/xk"));
+        // The tee shares one encoder across the matroska + flv slaves, so the H.264
+        // SPS/PPS must be emitted as global extradata or the matroska slave fails its
+        // header write and aborts the whole fan-out. Locked in by an end-to-end local
+        // RTMP smoke (scripts/smoke-multistream-app.mjs).
+        assert!(
+            args.windows(2)
+                .any(|window| window[0] == "-flags" && window[1] == "+global_header"),
+            "record + multistream tee must force global extradata: {args:?}"
+        );
     }
 
     #[test]
@@ -3056,6 +3073,13 @@ mod tests {
         let tee = args.iter().find(|arg| arg.contains("[f=flv")).unwrap();
         assert!(!tee.contains("[f=matroska"));
         assert_eq!(tee.matches("[f=flv").count(), 2);
+        // The stream-only tee fans one encoder across multiple flv slaves, which also
+        // need the H.264 SPS/PPS as global extradata.
+        assert!(
+            args.windows(2)
+                .any(|window| window[0] == "-flags" && window[1] == "+global_header"),
+            "stream-only tee must force global extradata: {args:?}"
+        );
     }
 
     #[test]

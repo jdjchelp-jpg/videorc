@@ -73,7 +73,7 @@ async function recordScenario({ ws, timeoutMs, recordingMs, label, outputDirecto
   return { preset: scenario.preset, outputPath, size }
 }
 
-function connectBackend(connection, timeoutMs) {
+export function connectBackend(connection, timeoutMs) {
   return new Promise((resolveConnection, rejectConnection) => {
     const url = `ws://${connection.host}:${connection.port}/ws?token=${encodeURIComponent(connection.token)}`
     let ws
@@ -95,7 +95,7 @@ function connectBackend(connection, timeoutMs) {
   })
 }
 
-function request(ws, timeoutMs, method, params) {
+export function request(ws, timeoutMs, method, params) {
   const id = `smoke-${Date.now()}-${Math.random().toString(16).slice(2)}`
   return new Promise((resolveRequest, rejectRequest) => {
     const timer = setTimeout(() => {

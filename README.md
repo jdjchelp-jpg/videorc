@@ -54,6 +54,14 @@ pnpm smoke:dev
 
 The smoke test launches `pnpm dev`, waits for the Electron-launched backend, and records a short test-pattern MKV for each layout preset (screen + camera, screen only, camera only, and side-by-side) through the authenticated backend protocol, stopping each session and verifying every file was written. It does not require camera, microphone, or screen permissions.
 
+Run the local multi-platform streaming smoke test:
+
+```sh
+pnpm smoke:multistream
+```
+
+This proves the simulcast `tee` fan-out end to end without any external services. It stands up one local FFmpeg RTMP listener per destination, drives a real record + stream session that fans a single encode out to all of them, and verifies that bytes arrive at **every** target while the local recording still finalizes. Set `VIDEORC_SMOKE_TARGETS` (1–4) to change how many destinations are exercised. Like `smoke:dev`, it uses the test pattern and needs no camera, microphone, or screen permissions.
+
 ## Packaging
 
 Create a local unsigned macOS app bundle with the Rust backend included:
