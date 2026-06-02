@@ -63,6 +63,7 @@ export function StudioTab(): ReactElement {
   const audioSummary =
     recording.audioTracks?.map((track) => track.label).join(' + ') ?? (selectedMicrophone ? 'Microphone' : 'None')
   const pipelineSummary = recording.pipeline ? pipelineStatusLabel(recording.pipeline.finalization) : 'Ready'
+  const startLabel = startButtonLabel(captureConfig.recordEnabled, captureConfig.streamEnabled)
 
   return (
     <div className="flex flex-col gap-4">
@@ -124,7 +125,7 @@ export function StudioTab(): ReactElement {
                 onClick={startSession}
               >
                 <Play data-icon="inline-start" weight="fill" />
-                {startRequestPending ? 'Starting…' : 'Start session'}
+                {startRequestPending ? 'Starting…' : startLabel}
               </Button>
               <Button
                 className="flex-1"
@@ -281,6 +282,19 @@ function pipelineStatusLabel(status: string): string {
     default:
       return 'Running'
   }
+}
+
+function startButtonLabel(recordEnabled: boolean, streamEnabled: boolean): string {
+  if (recordEnabled && streamEnabled) {
+    return 'Start Livestream + Record'
+  }
+  if (streamEnabled) {
+    return 'Start Livestream'
+  }
+  if (recordEnabled) {
+    return 'Start Recording'
+  }
+  return 'Start Session'
 }
 
 function studioBlocker(studio: ReturnType<typeof useStudio>): {

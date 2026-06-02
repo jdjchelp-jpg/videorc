@@ -82,7 +82,9 @@ export function SourcesTab(): ReactElement {
                   sources: {
                     ...current.sources,
                     screenId: selectedDevice?.kind === 'screen' ? captureId : undefined,
-                    windowId: selectedDevice?.kind === 'window' ? captureId : undefined
+                    screenName: selectedDevice?.kind === 'screen' ? selectedDevice.name : undefined,
+                    windowId: selectedDevice?.kind === 'window' ? captureId : undefined,
+                    windowName: selectedDevice?.kind === 'window' ? selectedDevice.name : undefined
                   }
                 }
               })
@@ -95,7 +97,17 @@ export function SourcesTab(): ReactElement {
             label="Camera"
             value={captureConfig.sources.cameraId}
             onChange={(cameraId) =>
-              setCaptureConfig((current) => ({ ...current, sources: { ...current.sources, cameraId } }))
+              setCaptureConfig((current) => {
+                const selectedCamera = cameras.find((device) => device.id === cameraId)
+                return {
+                  ...current,
+                  sources: {
+                    ...current.sources,
+                    cameraId,
+                    cameraName: selectedCamera?.name
+                  }
+                }
+              })
             }
           />
           <SourceSelect
@@ -105,7 +117,17 @@ export function SourcesTab(): ReactElement {
             label="Microphone"
             value={captureConfig.sources.microphoneId}
             onChange={(microphoneId) =>
-              setCaptureConfig((current) => ({ ...current, sources: { ...current.sources, microphoneId } }))
+              setCaptureConfig((current) => {
+                const selectedMicrophone = microphones.find((device) => device.id === microphoneId)
+                return {
+                  ...current,
+                  sources: {
+                    ...current.sources,
+                    microphoneId,
+                    microphoneName: selectedMicrophone?.name
+                  }
+                }
+              })
             }
           />
         </div>

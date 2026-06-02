@@ -115,9 +115,13 @@ export interface StartRecordingParams {
 
 export interface SourceSelection {
   screenId?: string
+  screenName?: string
   windowId?: string
+  windowName?: string
   cameraId?: string
+  cameraName?: string
   microphoneId?: string
+  microphoneName?: string
   testPattern?: boolean
 }
 
