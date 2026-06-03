@@ -154,7 +154,7 @@ export VIDEORC_OPENAI_TEXT_MODEL=gpt-5-mini
 
 ## Verification
 
-Pushes to `main` and pull requests run the non-packaged local acceptance gate in GitHub Actions.
+Pushes to `main` and pull requests run the same non-packaged local acceptance checks in GitHub Actions.
 
 Run the full non-packaged local acceptance gate:
 

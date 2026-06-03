@@ -40,7 +40,52 @@ jobs:
             brew install ffmpeg
           fi
 
-      - name: Verify
-        run: |
-          cargo fmt --check --all
-          pnpm smoke:local-gates
+      - name: Format
+        run: cargo fmt --check --all
+
+      - name: TypeScript typecheck
+        run: pnpm typecheck
+
+      - name: Build desktop app
+        run: pnpm build
+
+      - name: Backend tests
+        run: cargo test -p videorc-backend
+
+      - name: Backend clippy
+        run: cargo clippy -p videorc-backend -- -D warnings
+
+      - name: OAuth loopback smoke
+        timeout-minutes: 5
+        run: pnpm smoke:oauth
+
+      - name: OAuth guard smoke
+        timeout-minutes: 5
+        run: pnpm smoke:oauth-guards
+
+      - name: Source persistence smoke
+        run: pnpm smoke:sources
+
+      - name: Start labels smoke
+        run: pnpm smoke:start-labels
+
+      - name: Streaming secrets smoke
+        run: pnpm smoke:streaming-secrets
+
+      - name: Platform lifecycle smoke
+        run: pnpm smoke:platform-lifecycle
+
+      - name: Screens switching smoke
+        timeout-minutes: 10
+        run: pnpm smoke:screens
+
+      - name: Multistream smoke
+        timeout-minutes: 10
+        run: pnpm smoke:multistream
+
+      - name: Dev app smoke
+        timeout-minutes: 10
+        run: pnpm smoke:dev
+
+      - name: Provider readiness smoke
+        run: pnpm smoke:provider-readiness

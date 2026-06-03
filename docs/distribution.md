@@ -74,7 +74,7 @@ Unsigned local builds are useful for smoke testing only. The production release 
 pnpm dist:desktop:signed
 ```
 
-The GitHub Actions workflow at `.github/workflows/ci.yml` runs `cargo fmt --check --all` and `pnpm smoke:local-gates` for pushes to `main` and pull requests.
+The GitHub Actions workflow at `.github/workflows/ci.yml` runs the same non-packaged local acceptance checks as `pnpm smoke:local-gates` for pushes to `main` and pull requests, split into named steps so hosted-runner failures identify the exact gate.
 
 The release workflow at `.github/workflows/release-macos.yml` installs a smoke-test FFmpeg binary if the runner does not already provide one, runs the same local gates, and then runs `pnpm dist:desktop:signed` for manual dispatches and `v*` tags. The smoke-test FFmpeg install is only for CI verification; packaged releases still use the bundled LGPL-compatible FFmpeg built by `pnpm ffmpeg:build:macos`.
 
