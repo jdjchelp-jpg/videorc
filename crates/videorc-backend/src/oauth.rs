@@ -750,23 +750,30 @@ fn provider_credential_status(
     let client_id_source = credential_source(optional_env(client_id_env), bundled_client_id);
     let client_id_present = client_id_source != OAuthCredentialSource::Missing;
     let client_secret_present = optional_env(client_secret_env).is_some();
+    let ready = client_id_present && (pkce || client_secret_present);
     let label = stream_platform_label(platform);
     OAuthProviderCredentialStatus {
         platform,
-        ready: client_id_present,
+        ready,
         client_id_present,
         client_secret_present,
         client_id_source,
         pkce,
-        message: match client_id_source {
-            OAuthCredentialSource::Environment => {
-                format!("{label} OAuth is using {client_id_env}.")
-            }
-            OAuthCredentialSource::Bundled => {
-                format!("{label} OAuth is using the bundled Videogre client ID.")
-            }
-            OAuthCredentialSource::Missing => {
-                format!("{label} OAuth requires {client_id_env}.")
+        message: if !client_id_present {
+            format!("{label} OAuth requires {client_id_env}.")
+        } else if !pkce && !client_secret_present {
+            format!("{label} OAuth also needs its runtime client secret before connecting.")
+        } else {
+            match client_id_source {
+                OAuthCredentialSource::Environment => {
+                    format!("{label} OAuth is using {client_id_env}.")
+                }
+                OAuthCredentialSource::Bundled => {
+                    format!("{label} OAuth is using the bundled Videogre client ID.")
+                }
+                OAuthCredentialSource::Missing => {
+                    unreachable!("client ID presence was checked above")
+                }
             }
         },
     }
@@ -1224,5 +1231,38 @@ mod tests {
             credential_source(None, None),
             OAuthCredentialSource::Missing
         );
+    }
+
+    #[test]
+    fn non_pkce_provider_status_requires_runtime_client_secret() {
+        let status = provider_credential_status(
+            StreamPlatform::Twitch,
+            "VIDEORC_TEST_TWITCH_CLIENT_ID",
+            "VIDEORC_TEST_TWITCH_CLIENT_SECRET",
+            Some("bundled-twitch-client"),
+            false,
+        );
+
+        assert!(status.client_id_present);
+        assert!(!status.client_secret_present);
+        assert!(!status.pkce);
+        assert!(!status.ready);
+        assert!(status.message.contains("client secret"));
+    }
+
+    #[test]
+    fn pkce_provider_status_can_be_ready_without_client_secret() {
+        let status = provider_credential_status(
+            StreamPlatform::Youtube,
+            "VIDEORC_TEST_YOUTUBE_CLIENT_ID",
+            "VIDEORC_TEST_YOUTUBE_CLIENT_SECRET",
+            Some("bundled-youtube-client"),
+            true,
+        );
+
+        assert!(status.client_id_present);
+        assert!(!status.client_secret_present);
+        assert!(status.pkce);
+        assert!(status.ready);
     }
 }
