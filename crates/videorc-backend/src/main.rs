@@ -79,6 +79,7 @@ use crate::youtube::{
     YouTubeBroadcastTransitionResult,
 };
 use crate::youtube::{
+    YouTubeChannelListParams, YouTubeChannelListRequest, YouTubeChannelListResult,
     YouTubeStreamStatusParams, YouTubeStreamStatusRequest, YouTubeStreamStatusResult,
 };
 
@@ -600,6 +601,28 @@ async fn youtube_stream_status(
             access_token,
             account_id: credential.account.account_id,
             stream_id: params.stream_id,
+            api_base_url: None,
+        },
+        &reqwest::Client::new(),
+    )
+    .await
+}
+
+async fn list_youtube_channels(
+    state: &AppState,
+    params: YouTubeChannelListParams,
+) -> anyhow::Result<YouTubeChannelListResult> {
+    let credential = youtube_account_credentials(state, params.account_id.as_deref())?;
+    let access_ref = credential
+        .token_secret_ref
+        .as_deref()
+        .context("No YouTube access token is stored.")?;
+    let access_token = secrets::get_secret(access_ref)?;
+
+    youtube::list_youtube_channels(
+        YouTubeChannelListRequest {
+            access_token,
+            account_id: credential.account.account_id,
             api_base_url: None,
         },
         &reqwest::Client::new(),
@@ -1274,6 +1297,21 @@ async fn handle_text_message(state: &AppState, text: &str) -> ServerResponse {
                     Err(error) => ServerResponse::error(
                         command.id,
                         "youtube-stream-status-failed",
+                        error.to_string(),
+                    ),
+                },
+                Err(error) => {
+                    ServerResponse::error(command.id, "invalid-params", error.to_string())
+                }
+            }
+        }
+        "platformAccounts.youtube.channels" => {
+            match serde_json::from_value::<YouTubeChannelListParams>(command.params) {
+                Ok(params) => match list_youtube_channels(state, params).await {
+                    Ok(result) => ServerResponse::ok(command.id, result),
+                    Err(error) => ServerResponse::error(
+                        command.id,
+                        "youtube-channels-failed",
                         error.to_string(),
                     ),
                 },

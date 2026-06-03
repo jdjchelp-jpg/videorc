@@ -506,6 +506,23 @@ export interface YouTubeStreamStatusResult {
   message: string
 }
 
+export interface YouTubeChannelListParams {
+  accountId?: string
+}
+
+export interface YouTubeChannelListResult {
+  platform: 'youtube'
+  accountId: string
+  channels: YouTubeChannel[]
+}
+
+export interface YouTubeChannel {
+  channelId: string
+  title: string
+  handle?: string
+  avatarUrl?: string
+}
+
 export interface TwitchPrepareParams {
   accountId?: string
 }

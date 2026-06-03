@@ -115,6 +115,39 @@ pub struct YouTubeStreamStatusResult {
     pub message: String,
 }
 
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct YouTubeChannelListParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct YouTubeChannelListRequest {
+    pub access_token: String,
+    pub account_id: String,
+    pub api_base_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct YouTubeChannelListResult {
+    pub platform: StreamPlatform,
+    pub account_id: String,
+    pub channels: Vec<YouTubeChannel>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct YouTubeChannel {
+    pub channel_id: String,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handle: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_url: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct EffectiveYouTubeMetadata {
     title: String,
@@ -186,6 +219,39 @@ struct YouTubeLiveStreamStatus {
 #[serde(rename_all = "camelCase")]
 struct YouTubeLiveStreamHealthStatus {
     status: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct YouTubeChannelListResponse {
+    items: Vec<YouTubeChannelItem>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct YouTubeChannelItem {
+    id: String,
+    snippet: YouTubeChannelSnippet,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct YouTubeChannelSnippet {
+    title: String,
+    custom_url: Option<String>,
+    thumbnails: Option<YouTubeChannelThumbnails>,
+}
+
+#[derive(Debug, Deserialize)]
+struct YouTubeChannelThumbnails {
+    high: Option<YouTubeThumbnail>,
+    medium: Option<YouTubeThumbnail>,
+    default: Option<YouTubeThumbnail>,
+}
+
+#[derive(Debug, Deserialize)]
+struct YouTubeThumbnail {
+    url: String,
 }
 
 pub async fn prepare_youtube_broadcast(
@@ -307,6 +373,45 @@ pub async fn prepare_youtube_broadcast(
     })
 }
 
+pub async fn list_youtube_channels(
+    request: YouTubeChannelListRequest,
+    client: &reqwest::Client,
+) -> Result<YouTubeChannelListResult> {
+    let base_url = request
+        .api_base_url
+        .unwrap_or_else(|| YOUTUBE_API_BASE_URL.to_string());
+    let response: YouTubeChannelListResponse = client
+        .get(youtube_api_url(
+            &base_url,
+            "/youtube/v3/channels",
+            &[("part", "snippet"), ("mine", "true"), ("maxResults", "50")],
+        )?)
+        .bearer_auth(&request.access_token)
+        .send()
+        .await
+        .context("Could not fetch YouTube channels.")?
+        .error_for_status()
+        .context("YouTube channel list request failed.")?
+        .json()
+        .await
+        .context("Could not parse YouTube channel list response.")?;
+
+    Ok(YouTubeChannelListResult {
+        platform: StreamPlatform::Youtube,
+        account_id: request.account_id,
+        channels: response
+            .items
+            .into_iter()
+            .map(|item| YouTubeChannel {
+                channel_id: item.id,
+                title: item.snippet.title,
+                handle: item.snippet.custom_url,
+                avatar_url: item.snippet.thumbnails.and_then(youtube_thumbnail_url),
+            })
+            .collect(),
+    })
+}
+
 pub async fn get_youtube_stream_status(
     request: YouTubeStreamStatusRequest,
     client: &reqwest::Client,
@@ -366,6 +471,14 @@ pub async fn get_youtube_stream_status(
         active,
         message,
     })
+}
+
+fn youtube_thumbnail_url(thumbnails: YouTubeChannelThumbnails) -> Option<String> {
+    thumbnails
+        .high
+        .or(thumbnails.medium)
+        .or(thumbnails.default)
+        .map(|thumbnail| thumbnail.url)
 }
 
 pub async fn transition_youtube_broadcast(
@@ -938,6 +1051,103 @@ mod tests {
         assert_eq!(logs.len(), 1);
         assert_eq!(logs[0].path, "/youtube/v3/liveStreams");
         assert_eq!(logs[0].query, "part=status&id=stream-456");
+        assert_eq!(
+            logs[0].authorization.as_deref(),
+            Some("Bearer access-token")
+        );
+    }
+
+    #[tokio::test]
+    async fn lists_authenticated_youtube_channels() {
+        async fn channels(
+            State(logs): State<RequestLogs>,
+            OriginalUri(uri): OriginalUri,
+            headers: HeaderMap,
+        ) -> impl axum::response::IntoResponse {
+            logs.lock().unwrap().push(RequestLog {
+                path: "/youtube/v3/channels".to_string(),
+                query: uri.query().unwrap_or_default().to_string(),
+                authorization: headers
+                    .get("authorization")
+                    .and_then(|header| header.to_str().ok())
+                    .map(ToOwned::to_owned),
+                body: Value::Null,
+            });
+            Json(json!({
+                "items": [
+                    {
+                        "id": "UC123",
+                        "snippet": {
+                            "title": "Main Channel",
+                            "customUrl": "@main",
+                            "thumbnails": {
+                                "medium": { "url": "https://yt.example/main-medium.jpg" },
+                                "high": { "url": "https://yt.example/main-high.jpg" }
+                            }
+                        }
+                    },
+                    {
+                        "id": "UC456",
+                        "snippet": {
+                            "title": "Brand Channel",
+                            "thumbnails": {
+                                "default": { "url": "https://yt.example/brand.jpg" }
+                            }
+                        }
+                    }
+                ]
+            }))
+            .into_response()
+        }
+
+        let logs = Arc::new(Mutex::new(Vec::new()));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn({
+            let logs = logs.clone();
+            async move {
+                axum::serve(
+                    listener,
+                    Router::new()
+                        .route("/youtube/v3/channels", get(channels))
+                        .with_state(logs),
+                )
+                .await
+                .unwrap();
+            }
+        });
+
+        let result = list_youtube_channels(
+            YouTubeChannelListRequest {
+                access_token: "access-token".to_string(),
+                account_id: "UC123".to_string(),
+                api_base_url: Some(format!("http://{address}")),
+            },
+            &reqwest::Client::new(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.platform, StreamPlatform::Youtube);
+        assert_eq!(result.account_id, "UC123");
+        assert_eq!(result.channels.len(), 2);
+        assert_eq!(result.channels[0].channel_id, "UC123");
+        assert_eq!(result.channels[0].title, "Main Channel");
+        assert_eq!(result.channels[0].handle.as_deref(), Some("@main"));
+        assert_eq!(
+            result.channels[0].avatar_url.as_deref(),
+            Some("https://yt.example/main-high.jpg")
+        );
+        assert_eq!(result.channels[1].channel_id, "UC456");
+        assert_eq!(
+            result.channels[1].avatar_url.as_deref(),
+            Some("https://yt.example/brand.jpg")
+        );
+
+        let logs = logs.lock().unwrap();
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0].path, "/youtube/v3/channels");
+        assert_eq!(logs[0].query, "part=snippet&mine=true&maxResults=50");
         assert_eq!(
             logs[0].authorization.as_deref(),
             Some("Bearer access-token")
