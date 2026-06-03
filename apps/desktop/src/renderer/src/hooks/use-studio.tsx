@@ -1178,7 +1178,14 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
         setCaptureConfig((current) => {
           const targets = current.streaming.targets.map((target) =>
             target.platform === platform
-              ? { ...target, accountId: undefined, accountLabel: undefined, streamKeySecretRef: undefined }
+              ? {
+                  ...target,
+                  accountId: undefined,
+                  accountLabel: undefined,
+                  streamKeySecretRef: undefined,
+                  platformBroadcastId: undefined,
+                  platformStreamId: undefined
+                }
               : target
           )
           return bridgeStreamingToLegacy({ ...current, streaming: { ...current.streaming, targets } })
@@ -1391,7 +1398,9 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
           accountLabel: prepared.accountLabel,
           serverUrl: prepared.serverUrl,
           streamKeySecretRef: prepared.streamKeySecretRef,
-          streamKeyPresent: true
+          streamKeyPresent: true,
+          platformBroadcastId: prepared.broadcastId,
+          platformStreamId: prepared.streamId
         })
       } else if (target.platform === 'twitch') {
         const prepared = await client.request<PreparedTwitchBroadcast>('streamTargets.twitch.prepare', {
@@ -1402,7 +1411,9 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
           accountLabel: prepared.accountLabel,
           serverUrl: prepared.serverUrl,
           streamKeySecretRef: prepared.streamKeySecretRef,
-          streamKeyPresent: true
+          streamKeyPresent: true,
+          platformBroadcastId: undefined,
+          platformStreamId: undefined
         })
       } else if (target.platform === 'x') {
         await client.request('streamTargets.x.prepare', { accountId: target.accountId })

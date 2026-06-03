@@ -371,6 +371,8 @@ export interface StreamTargetSettings {
   authMode: StreamAuthMode
   accountId?: string
   accountLabel?: string
+  platformBroadcastId?: string
+  platformStreamId?: string
   status?: StreamTargetStatus
   createdAt: string
   updatedAt: string

@@ -88,6 +88,10 @@ pub struct StreamTargetSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account_label: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform_broadcast_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform_stream_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<StreamTargetStatus>,
     pub created_at: String,
     pub updated_at: String,
@@ -381,6 +385,8 @@ fn default_stream_target(
         auth_mode: StreamAuthMode::ManualRtmp,
         account_id: None,
         account_label: None,
+        platform_broadcast_id: None,
+        platform_stream_id: None,
         status: Some(StreamTargetStatus {
             state: StreamTargetState::NotConfigured,
             message: None,

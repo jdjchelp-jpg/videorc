@@ -333,6 +333,9 @@ function normalizeStreamTarget(
     authMode: saved.authMode === 'oauth' ? 'oauth' : 'manual-rtmp',
     accountId: typeof saved.accountId === 'string' ? saved.accountId : undefined,
     accountLabel: typeof saved.accountLabel === 'string' ? saved.accountLabel : undefined,
+    platformBroadcastId:
+      typeof saved.platformBroadcastId === 'string' ? saved.platformBroadcastId : undefined,
+    platformStreamId: typeof saved.platformStreamId === 'string' ? saved.platformStreamId : undefined,
     createdAt: typeof saved.createdAt === 'string' ? saved.createdAt : base.createdAt,
     updatedAt: typeof saved.updatedAt === 'string' ? saved.updatedAt : base.updatedAt
   }
