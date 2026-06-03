@@ -85,6 +85,36 @@ pub struct YouTubeBroadcastTransitionResult {
     pub message: String,
 }
 
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct YouTubeStreamStatusParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+    pub stream_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct YouTubeStreamStatusRequest {
+    pub access_token: String,
+    pub account_id: String,
+    pub stream_id: String,
+    pub api_base_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct YouTubeStreamStatusResult {
+    pub platform: StreamPlatform,
+    pub account_id: String,
+    pub stream_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health_status: Option<String>,
+    pub active: bool,
+    pub message: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct EffectiveYouTubeMetadata {
     title: String,
@@ -130,6 +160,32 @@ struct YouTubeBroadcastTransitionResponse {
 #[serde(rename_all = "camelCase")]
 struct YouTubeBroadcastStatus {
     life_cycle_status: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct YouTubeLiveStreamListResponse {
+    items: Vec<YouTubeLiveStreamStatusItem>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct YouTubeLiveStreamStatusItem {
+    id: String,
+    status: Option<YouTubeLiveStreamStatus>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct YouTubeLiveStreamStatus {
+    stream_status: Option<String>,
+    health_status: Option<YouTubeLiveStreamHealthStatus>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct YouTubeLiveStreamHealthStatus {
+    status: Option<String>,
 }
 
 pub async fn prepare_youtube_broadcast(
@@ -248,6 +304,67 @@ pub async fn prepare_youtube_broadcast(
         privacy: metadata.privacy,
         made_for_kids: metadata.made_for_kids,
         scheduled_start_time,
+    })
+}
+
+pub async fn get_youtube_stream_status(
+    request: YouTubeStreamStatusRequest,
+    client: &reqwest::Client,
+) -> Result<YouTubeStreamStatusResult> {
+    if request.stream_id.trim().is_empty() {
+        anyhow::bail!("A YouTube stream ID is required.");
+    }
+
+    let base_url = request
+        .api_base_url
+        .unwrap_or_else(|| YOUTUBE_API_BASE_URL.to_string());
+    let response: YouTubeLiveStreamListResponse = client
+        .get(youtube_api_url(
+            &base_url,
+            "/youtube/v3/liveStreams",
+            &[("part", "status"), ("id", request.stream_id.as_str())],
+        )?)
+        .bearer_auth(&request.access_token)
+        .send()
+        .await
+        .context("Could not fetch YouTube stream status.")?
+        .error_for_status()
+        .context("YouTube stream status request failed.")?
+        .json()
+        .await
+        .context("Could not parse YouTube stream status response.")?;
+
+    let item = response
+        .items
+        .into_iter()
+        .next()
+        .context("YouTube stream was not found.")?;
+    let stream_status = item
+        .status
+        .as_ref()
+        .and_then(|status| status.stream_status.clone());
+    let health_status = item
+        .status
+        .and_then(|status| status.health_status)
+        .and_then(|health| health.status);
+    let active = stream_status.as_deref() == Some("active");
+    let message = match (&stream_status, &health_status) {
+        (Some(stream_status), Some(health_status)) => {
+            format!("YouTube stream status is {stream_status}; health is {health_status}.")
+        }
+        (Some(stream_status), None) => format!("YouTube stream status is {stream_status}."),
+        (None, Some(health_status)) => format!("YouTube stream health is {health_status}."),
+        (None, None) => "YouTube stream status is unavailable.".to_string(),
+    };
+
+    Ok(YouTubeStreamStatusResult {
+        platform: StreamPlatform::Youtube,
+        account_id: request.account_id,
+        stream_id: item.id,
+        stream_status,
+        health_status,
+        active,
+        message,
     })
 }
 
@@ -390,7 +507,7 @@ mod tests {
     use axum::extract::{OriginalUri, State};
     use axum::http::{HeaderMap, StatusCode};
     use axum::response::IntoResponse;
-    use axum::routing::post;
+    use axum::routing::{get, post};
     use axum::{Json, Router};
     use serde_json::Value;
     use tokio::net::TcpListener;
@@ -749,6 +866,114 @@ mod tests {
             logs[0].query,
             "broadcastStatus=complete&id=broadcast-123&part=id%2Cstatus"
         );
+    }
+
+    #[tokio::test]
+    async fn fetches_youtube_stream_status_for_active_ingest() {
+        async fn stream_status(
+            State(logs): State<RequestLogs>,
+            OriginalUri(uri): OriginalUri,
+            headers: HeaderMap,
+        ) -> impl axum::response::IntoResponse {
+            logs.lock().unwrap().push(RequestLog {
+                path: "/youtube/v3/liveStreams".to_string(),
+                query: uri.query().unwrap_or_default().to_string(),
+                authorization: headers
+                    .get("authorization")
+                    .and_then(|header| header.to_str().ok())
+                    .map(ToOwned::to_owned),
+                body: Value::Null,
+            });
+            Json(json!({
+                "items": [{
+                    "id": "stream-456",
+                    "status": {
+                        "streamStatus": "active",
+                        "healthStatus": {
+                            "status": "good"
+                        }
+                    }
+                }]
+            }))
+            .into_response()
+        }
+
+        let logs = Arc::new(Mutex::new(Vec::new()));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn({
+            let logs = logs.clone();
+            async move {
+                axum::serve(
+                    listener,
+                    Router::new()
+                        .route("/youtube/v3/liveStreams", get(stream_status))
+                        .with_state(logs),
+                )
+                .await
+                .unwrap();
+            }
+        });
+
+        let result = get_youtube_stream_status(
+            YouTubeStreamStatusRequest {
+                access_token: "access-token".to_string(),
+                account_id: "UC123".to_string(),
+                stream_id: "stream-456".to_string(),
+                api_base_url: Some(format!("http://{address}")),
+            },
+            &reqwest::Client::new(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.platform, StreamPlatform::Youtube);
+        assert_eq!(result.account_id, "UC123");
+        assert_eq!(result.stream_id, "stream-456");
+        assert_eq!(result.stream_status.as_deref(), Some("active"));
+        assert_eq!(result.health_status.as_deref(), Some("good"));
+        assert!(result.active);
+
+        let logs = logs.lock().unwrap();
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0].path, "/youtube/v3/liveStreams");
+        assert_eq!(logs[0].query, "part=status&id=stream-456");
+        assert_eq!(
+            logs[0].authorization.as_deref(),
+            Some("Bearer access-token")
+        );
+    }
+
+    #[tokio::test]
+    async fn youtube_stream_status_errors_when_stream_is_missing() {
+        async fn stream_status() -> impl axum::response::IntoResponse {
+            Json(json!({ "items": [] })).into_response()
+        }
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new().route("/youtube/v3/liveStreams", get(stream_status)),
+            )
+            .await
+            .unwrap();
+        });
+
+        let error = get_youtube_stream_status(
+            YouTubeStreamStatusRequest {
+                access_token: "access-token".to_string(),
+                account_id: "UC123".to_string(),
+                stream_id: "stream-456".to_string(),
+                api_base_url: Some(format!("http://{address}")),
+            },
+            &reqwest::Client::new(),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("not found"));
     }
 
     #[test]

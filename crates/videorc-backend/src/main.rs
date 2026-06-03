@@ -78,6 +78,9 @@ use crate::youtube::{
     YouTubeBroadcastTransitionParams, YouTubeBroadcastTransitionRequest,
     YouTubeBroadcastTransitionResult,
 };
+use crate::youtube::{
+    YouTubeStreamStatusParams, YouTubeStreamStatusRequest, YouTubeStreamStatusResult,
+};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -574,6 +577,29 @@ async fn transition_youtube_stream_target(
             account_id: credential.account.account_id,
             broadcast_id: params.broadcast_id,
             status: params.status,
+            api_base_url: None,
+        },
+        &reqwest::Client::new(),
+    )
+    .await
+}
+
+async fn youtube_stream_status(
+    state: &AppState,
+    params: YouTubeStreamStatusParams,
+) -> anyhow::Result<YouTubeStreamStatusResult> {
+    let credential = youtube_account_credentials(state, params.account_id.as_deref())?;
+    let access_ref = credential
+        .token_secret_ref
+        .as_deref()
+        .context("No YouTube access token is stored.")?;
+    let access_token = secrets::get_secret(access_ref)?;
+
+    youtube::get_youtube_stream_status(
+        YouTubeStreamStatusRequest {
+            access_token,
+            account_id: credential.account.account_id,
+            stream_id: params.stream_id,
             api_base_url: None,
         },
         &reqwest::Client::new(),
@@ -1230,6 +1256,21 @@ async fn handle_text_message(state: &AppState, text: &str) -> ServerResponse {
                     Err(error) => ServerResponse::error(
                         command.id,
                         "youtube-transition-failed",
+                        error.to_string(),
+                    ),
+                },
+                Err(error) => {
+                    ServerResponse::error(command.id, "invalid-params", error.to_string())
+                }
+            }
+        }
+        "streamTargets.youtube.streamStatus" => {
+            match serde_json::from_value::<YouTubeStreamStatusParams>(command.params) {
+                Ok(params) => match youtube_stream_status(state, params).await {
+                    Ok(result) => ServerResponse::ok(command.id, result),
+                    Err(error) => ServerResponse::error(
+                        command.id,
+                        "youtube-stream-status-failed",
                         error.to_string(),
                     ),
                 },

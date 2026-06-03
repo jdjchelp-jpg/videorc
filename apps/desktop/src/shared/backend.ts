@@ -491,6 +491,21 @@ export interface YouTubeBroadcastTransitionResult {
   message: string
 }
 
+export interface YouTubeStreamStatusParams {
+  accountId?: string
+  streamId: string
+}
+
+export interface YouTubeStreamStatusResult {
+  platform: 'youtube'
+  accountId: string
+  streamId: string
+  streamStatus?: string
+  healthStatus?: string
+  active: boolean
+  message: string
+}
+
 export interface TwitchPrepareParams {
   accountId?: string
 }
