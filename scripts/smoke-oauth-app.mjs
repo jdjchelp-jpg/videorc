@@ -52,7 +52,37 @@ try {
       throw new Error(`OAuth state should be single-use after loopback callback: ${JSON.stringify(reused)}`)
     }
 
-    console.log(`OAuth smoke OK - loopback callback completed for ${callback.platform}.`)
+    const appProtocol = await request(ws, timeoutMs, 'platformAccounts.oauth.startProvider', {
+      platform: 'youtube',
+      redirectUri: 'videorc://oauth/callback'
+    })
+    if (appProtocol.redirectUri !== 'videorc://oauth/callback') {
+      throw new Error(`Provider OAuth did not preserve app-protocol redirect URI: ${JSON.stringify(appProtocol)}`)
+    }
+    if (
+      !appProtocol.authUrl.includes('redirect_uri=videorc%3A%2F%2Foauth%2Fcallback') ||
+      !appProtocol.authUrl.includes(`state=${appProtocol.state}`)
+    ) {
+      throw new Error(`Provider OAuth app-protocol auth URL was not usable: ${appProtocol.authUrl}`)
+    }
+
+    const failedCallbackPromise = waitForOAuthCallback(ws)
+    const failedCallback = await request(ws, timeoutMs, 'platformAccounts.oauth.complete', {
+      state: appProtocol.state,
+      error: 'access_denied',
+      errorDescription: 'Smoke provider cancellation.'
+    })
+    const failedEvent = await failedCallbackPromise
+    if (failedCallback.status !== 'failed' || failedEvent.status !== 'failed' || failedEvent.platform !== 'youtube') {
+      throw new Error(
+        `Provider OAuth app-protocol cancellation was not reported as failed: ${JSON.stringify({
+          failedCallback,
+          failedEvent
+        })}`
+      )
+    }
+
+    console.log(`OAuth smoke OK - loopback and app-protocol callbacks completed for ${callback.platform}.`)
   } finally {
     ws.close()
   }
@@ -98,6 +128,7 @@ function launchAndReadConnection() {
       detached: true,
       env: {
         ...process.env,
+        VIDEORC_YOUTUBE_CLIENT_ID: 'smoke-youtube-client-id',
         VIDEORC_SMOKE_PRINT_BACKEND_READY: '1'
       },
       stdio: ['ignore', 'pipe', 'pipe']
