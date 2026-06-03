@@ -28,6 +28,11 @@ try {
     })
     assertPreflight(preflight)
 
+    const secretPreflight = await request(ws, timeoutMs, 'streamTargets.confirmation.validate', {
+      streaming: preflightSecretRefFixture()
+    })
+    assertSecretRefPreflight(secretPreflight)
+
     const capability = await request(ws, timeoutMs, 'streamTargets.x.capability', {})
     assertXCapability(capability)
 
@@ -36,7 +41,9 @@ try {
       throw new Error(`X native prepare should stay unavailable, got ${JSON.stringify(prepare)}`)
     }
 
-    console.log('OAuth guard smoke OK - credential readiness, preflight blockers, and X native guard verified.')
+    console.log(
+      'OAuth guard smoke OK - credential readiness, preflight blockers, secret-ref preflight, and X native guard verified.'
+    )
   } finally {
     ws.close()
   }
@@ -145,6 +152,67 @@ function assertPreflight(preflight) {
   const hasOauthIssue = preflight.issues.some((issue) => issue.platform === 'x' && issue.severity === 'error')
   if (!hasManualIssue || !hasOauthIssue) {
     throw new Error(`Go Live preflight should include per-destination errors: ${JSON.stringify(preflight)}`)
+  }
+}
+
+function preflightSecretRefFixture() {
+  const now = new Date().toISOString()
+  return {
+    enabled: true,
+    mode: 'multi',
+    defaultOutputPreset: 'stream-1080p60',
+    defaultBitrateKbps: 6000,
+    selectedTargetId: 'youtube',
+    enabledTargetIds: ['youtube', 'custom'],
+    targets: [
+      {
+        id: 'youtube',
+        platform: 'youtube',
+        label: 'YouTube',
+        enabled: true,
+        serverUrl: 'rtmp://a.rtmp.youtube.com/live2',
+        urlMode: 'server-and-key',
+        streamKey: '',
+        streamKeySecretRef: 'stream-target:youtube:manual-stream-key',
+        streamKeyPresent: true,
+        authMode: 'manual-rtmp',
+        createdAt: now,
+        updatedAt: now
+      },
+      {
+        id: 'custom',
+        platform: 'custom',
+        label: 'Custom RTMP',
+        enabled: true,
+        serverUrl: '',
+        urlMode: 'full-url',
+        streamKey: '',
+        streamKeySecretRef: 'stream-target:custom:manual-stream-key',
+        streamKeyPresent: true,
+        authMode: 'manual-rtmp',
+        createdAt: now,
+        updatedAt: now
+      }
+    ]
+  }
+}
+
+function assertSecretRefPreflight(preflight) {
+  if (preflight?.valid !== true || !Array.isArray(preflight.destinations) || !Array.isArray(preflight.issues)) {
+    throw new Error(`Secret-ref Go Live preflight should be valid: ${JSON.stringify(preflight)}`)
+  }
+  if (preflight.issues.length !== 0) {
+    throw new Error(`Secret-ref Go Live preflight should not report issues: ${JSON.stringify(preflight)}`)
+  }
+
+  const youtube = preflight.destinations.find((destination) => destination.platform === 'youtube')
+  if (!youtube || !youtube.ready || youtube.authMode !== 'manual-rtmp') {
+    throw new Error(`Manual YouTube secret-ref preflight should be ready: ${JSON.stringify(preflight)}`)
+  }
+
+  const custom = preflight.destinations.find((destination) => destination.platform === 'custom')
+  if (!custom || !custom.ready || custom.authMode !== 'manual-rtmp') {
+    throw new Error(`Custom full-url secret-ref preflight should be ready: ${JSON.stringify(preflight)}`)
   }
 }
 
