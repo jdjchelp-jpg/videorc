@@ -494,6 +494,23 @@ export function reconcileSourceSelection(sources: SourceSelection, devices: Devi
   return nextSources
 }
 
+export function startButtonLabel(recordEnabled: boolean, streamEnabled: boolean): string {
+  if (recordEnabled && streamEnabled) {
+    return 'Start Livestream + Record'
+  }
+  if (streamEnabled) {
+    return 'Start Livestream'
+  }
+  if (recordEnabled) {
+    return 'Start Recording'
+  }
+  return 'Start Session'
+}
+
+export function startButtonPendingLabel(streamEnabled: boolean): string {
+  return streamEnabled ? 'Starting Livestream...' : 'Starting Recording...'
+}
+
 export function clampNumber(value: unknown, fallback: number, min: number, max: number): number {
   const parsed = Number(value)
   if (!Number.isFinite(parsed)) {

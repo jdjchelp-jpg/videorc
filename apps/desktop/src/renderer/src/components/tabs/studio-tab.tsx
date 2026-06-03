@@ -34,6 +34,7 @@ import { Switch } from '@/components/ui/switch'
 import { useWorkspaceNav } from '@/components/workspace-nav'
 import { useStudio } from '@/hooks/use-studio'
 import type { GoLiveDestinationPreflight, StreamPlatform, StreamScreen } from '@/lib/backend'
+import { startButtonLabel, startButtonPendingLabel } from '@/lib/capture'
 import { cn } from '@/lib/utils'
 
 const STATE_TONE: Record<string, StatusTone> = {
@@ -595,23 +596,6 @@ function pipelineStatusLabel(status: string): string {
     default:
       return 'Running'
   }
-}
-
-function startButtonLabel(recordEnabled: boolean, streamEnabled: boolean): string {
-  if (recordEnabled && streamEnabled) {
-    return 'Start Livestream + Record'
-  }
-  if (streamEnabled) {
-    return 'Start Livestream'
-  }
-  if (recordEnabled) {
-    return 'Start Recording'
-  }
-  return 'Start Session'
-}
-
-function startButtonPendingLabel(streamEnabled: boolean): string {
-  return streamEnabled ? 'Starting Livestream...' : 'Starting Recording...'
 }
 
 function studioBlocker(studio: ReturnType<typeof useStudio>): {
