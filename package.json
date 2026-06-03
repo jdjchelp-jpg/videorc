@@ -26,6 +26,7 @@
     "smoke:multistream": "node scripts/smoke-multistream-app.mjs",
     "smoke:packaged": "node scripts/smoke-packaged-app.mjs",
     "smoke:packaged:bundled": "VIDEORC_SMOKE_REQUIRE_BUNDLED_FFMPEG=1 node scripts/smoke-packaged-app.mjs",
+    "smoke:local-gates": "pnpm typecheck && pnpm build && cargo test -p videorc-backend && cargo clippy -p videorc-backend -- -D warnings && pnpm smoke:oauth && pnpm smoke:oauth-guards && pnpm smoke:sources && pnpm smoke:start-labels && pnpm smoke:streaming-secrets && pnpm smoke:platform-lifecycle && pnpm smoke:screens && pnpm smoke:multistream && pnpm smoke:dev && pnpm smoke:provider-readiness",
     "backend:dev": "cargo run -p videorc-backend",
     "backend:test": "cargo test",
     "backend:fmt": "cargo fmt --check",

@@ -168,6 +168,7 @@ The release process must make source for the exact FFmpeg archive available besi
 - `cargo fmt --check --all`
 - `cargo test`
 - `cargo clippy -- -D warnings`
+- `pnpm smoke:local-gates`
 - `pnpm smoke:dev`
 - `pnpm smoke:oauth`
 - `pnpm smoke:provider-readiness`

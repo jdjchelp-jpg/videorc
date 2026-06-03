@@ -9,6 +9,12 @@ This runbook is the release acceptance path for first-class OAuth/native livestr
 Run these before spending time on real provider accounts:
 
 ```sh
+pnpm smoke:local-gates
+```
+
+The aggregate command runs the non-packaged local gate set:
+
+```sh
 pnpm typecheck
 pnpm build
 cargo test -p videorc-backend
@@ -22,8 +28,13 @@ pnpm smoke:platform-lifecycle
 pnpm smoke:screens
 pnpm smoke:multistream
 pnpm smoke:dev
-pnpm smoke:packaged:bundled
 pnpm smoke:provider-readiness
+```
+
+After building a packaged release candidate, also run:
+
+```sh
+pnpm smoke:packaged:bundled
 ```
 
 `pnpm smoke:provider-readiness` does not print credential values. By default it reports missing prerequisites without failing, so a local developer can run it without production credentials.
