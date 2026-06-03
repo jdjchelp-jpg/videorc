@@ -770,6 +770,283 @@ pub fn restore_from_backup(original: &Path) -> Result<bool, SafeReplaceError> {
     Ok(true)
 }
 
+// --- Combined analysis + scan-first batch repair (slice 7) ---
+
+const VIDEO_EXTENSIONS: &[&str] = &["mp4", "mkv", "mov", "m4v"];
+
+/// Recomputes a verdict from a full issue list (missing streams need review; any other
+/// issue is repairable; none is clean).
+fn verdict_for(issues: &[QualityIssue]) -> QualityVerdict {
+    if issues.is_empty() {
+        return QualityVerdict::Clean;
+    }
+    let needs_review = issues.iter().any(|issue| {
+        matches!(
+            issue,
+            QualityIssue::MissingVideo | QualityIssue::MissingAudio
+        )
+    });
+    if needs_review {
+        QualityVerdict::NeedsReview
+    } else {
+        QualityVerdict::Repairable
+    }
+}
+
+/// Folds the audio-balance and freeze passes into a base (ffprobe-derived) report and
+/// recomputes the verdict.
+pub fn combine_report(
+    mut base: QualityReport,
+    one_sided_silent_channel: Option<usize>,
+    long_freeze_segments: &[FreezeSegment],
+) -> QualityReport {
+    if let Some(silent_channel) = one_sided_silent_channel {
+        base.issues
+            .push(QualityIssue::OneSidedAudio { silent_channel });
+    }
+    if !long_freeze_segments.is_empty() {
+        let longest = long_freeze_segments
+            .iter()
+            .map(|segment| segment.duration)
+            .fold(0.0_f64, f64::max);
+        base.issues.push(QualityIssue::FrozenSegments {
+            count: long_freeze_segments.len(),
+            longest_seconds: longest,
+        });
+    }
+    base.verdict = verdict_for(&base.issues);
+    base
+}
+
+/// Lists the video recordings directly in a folder, skipping hidden files and the
+/// backup directory, sorted by path.
+pub fn list_recording_files(dir: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut files = Vec::new();
+    let entries =
+        fs::read_dir(dir).map_err(|error| format!("could not read {}: {error}", dir.display()))?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("");
+        if name.starts_with('.') {
+            continue;
+        }
+        if let Some(ext) = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(str::to_ascii_lowercase)
+            && VIDEO_EXTENSIONS.contains(&ext.as_str())
+        {
+            files.push(path);
+        }
+    }
+    files.sort();
+    Ok(files)
+}
+
+/// Runs every analysis pass (ffprobe metadata, astats channel balance, freezedetect)
+/// and returns the probe plus the combined quality report.
+pub fn analyze_recording(
+    ffmpeg_path: &str,
+    ffprobe_path: &str,
+    file_path: &str,
+    thresholds: &QualityThresholds,
+    expectations: &QualityExpectations,
+) -> Result<(MediaProbe, QualityReport), String> {
+    let probe = probe_media(ffprobe_path, file_path)?;
+    let base = classify_quality(&probe, thresholds, expectations);
+
+    let one_sided = if probe.audio.is_empty() {
+        None
+    } else {
+        let levels = analyze_audio_balance(ffmpeg_path, file_path).unwrap_or_default();
+        detect_one_sided_audio(&levels, thresholds.silence_db)
+    };
+    let freezes = if probe.video.is_some() {
+        let segments = detect_freezes(ffmpeg_path, file_path, -60.0, thresholds.min_freeze_seconds)
+            .unwrap_or_default();
+        long_freezes(&segments, thresholds.min_freeze_seconds)
+    } else {
+        Vec::new()
+    };
+
+    let report = combine_report(base, one_sided, &freezes);
+    Ok((probe, report))
+}
+
+/// One recording's assessment from a batch scan (no files are modified by scanning).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordingAssessment {
+    pub path: String,
+    pub report: QualityReport,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan: Option<RepairPlan>,
+}
+
+/// The result of repairing one recording.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(tag = "status", rename_all = "kebab-case")]
+pub enum RepairOutcome {
+    AlreadyClean {
+        path: String,
+    },
+    Repaired {
+        path: String,
+        interpolated: bool,
+    },
+    /// The repaired output failed the quality gate; the original is kept (not 100%).
+    NotImproved {
+        path: String,
+        reason: String,
+    },
+    Failed {
+        path: String,
+        reason: String,
+    },
+}
+
+/// Scans a folder: lists recordings and analyzes each, without modifying anything.
+/// Files that cannot be probed are skipped.
+pub fn scan_recordings(
+    ffmpeg_path: &str,
+    ffprobe_path: &str,
+    dir: &Path,
+    thresholds: &QualityThresholds,
+    expectations: &QualityExpectations,
+) -> Result<Vec<RecordingAssessment>, String> {
+    let mut assessments = Vec::new();
+    for file in list_recording_files(dir)? {
+        let path = file.to_string_lossy().to_string();
+        if let Ok((probe, report)) =
+            analyze_recording(ffmpeg_path, ffprobe_path, &path, thresholds, expectations)
+        {
+            let plan = select_repair_plan(&report, &probe, expectations);
+            assessments.push(RecordingAssessment { path, report, plan });
+        }
+    }
+    Ok(assessments)
+}
+
+/// The hidden temp path the repaired output is written to, beside the original (so the
+/// final atomic rename stays on one filesystem).
+fn repair_temp_path(original: &Path) -> PathBuf {
+    let stem = original
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("recording");
+    let ext = original
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("mp4");
+    let mut temp = original.to_path_buf();
+    temp.set_file_name(format!(".{stem}.videorc-repair.{ext}"));
+    temp
+}
+
+/// Repairs one assessed recording, quality-gated: writes the repaired temp, re-analyzes
+/// it, and only atomically replaces the original (after backup) when the repair reaches
+/// a clean verdict. A failing repair leaves the original visible and reports why.
+pub fn repair_recording(
+    ffmpeg_path: &str,
+    ffprobe_path: &str,
+    assessment: &RecordingAssessment,
+    thresholds: &QualityThresholds,
+    expectations: &QualityExpectations,
+) -> RepairOutcome {
+    let path = assessment.path.clone();
+    let Some(plan) = &assessment.plan else {
+        return RepairOutcome::AlreadyClean { path };
+    };
+
+    let original = Path::new(&path);
+    let temp = repair_temp_path(original);
+    let temp_str = temp.to_string_lossy().to_string();
+
+    let run = Command::new(ffmpeg_path)
+        .args(build_repair_args(&path, &temp_str, plan))
+        .output();
+    match run {
+        Ok(output) if output.status.success() => {}
+        Ok(output) => {
+            let _ = fs::remove_file(&temp);
+            return RepairOutcome::Failed {
+                path,
+                reason: format!(
+                    "ffmpeg repair failed: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ),
+            };
+        }
+        Err(error) => {
+            let _ = fs::remove_file(&temp);
+            return RepairOutcome::Failed {
+                path,
+                reason: format!("could not run ffmpeg: {error}"),
+            };
+        }
+    }
+
+    let interpolated = plan.interpolated;
+    let result = safe_replace(original, &temp, |candidate| {
+        let candidate_path = candidate.to_string_lossy();
+        let (_, report) = analyze_recording(
+            ffmpeg_path,
+            ffprobe_path,
+            &candidate_path,
+            thresholds,
+            expectations,
+        )?;
+        if report.verdict == QualityVerdict::Clean {
+            Ok(())
+        } else {
+            Err(format!(
+                "repaired output is still not 100%: {:?}",
+                report.issues
+            ))
+        }
+    });
+
+    match result {
+        Ok(_) => RepairOutcome::Repaired { path, interpolated },
+        Err(SafeReplaceError::ValidationFailed(reason)) => {
+            RepairOutcome::NotImproved { path, reason }
+        }
+        Err(error) => RepairOutcome::Failed {
+            path,
+            reason: error.to_string(),
+        },
+    }
+}
+
+/// Repairs an assessed batch sequentially (quality-first, one at a time to avoid
+/// overloading the machine).
+pub fn repair_batch(
+    ffmpeg_path: &str,
+    ffprobe_path: &str,
+    assessments: &[RecordingAssessment],
+    thresholds: &QualityThresholds,
+    expectations: &QualityExpectations,
+) -> Vec<RepairOutcome> {
+    assessments
+        .iter()
+        .map(|assessment| {
+            repair_recording(
+                ffmpeg_path,
+                ffprobe_path,
+                assessment,
+                thresholds,
+                expectations,
+            )
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1257,6 +1534,62 @@ mod tests {
         let other = dir.join("never-repaired.mp4");
         fs::write(&other, b"X").unwrap();
         assert!(!restore_from_backup(&other).unwrap());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn combine_report_folds_one_sided_and_freezes() {
+        let base = QualityReport {
+            verdict: QualityVerdict::Clean,
+            issues: vec![],
+        };
+        let freezes = [FreezeSegment {
+            start: 5.0,
+            duration: 3.5,
+        }];
+        let report = combine_report(base, Some(2), &freezes);
+        assert_eq!(report.verdict, QualityVerdict::Repairable);
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| matches!(issue, QualityIssue::OneSidedAudio { silent_channel: 2 }))
+        );
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| matches!(issue, QualityIssue::FrozenSegments { count: 1, .. }))
+        );
+    }
+
+    #[test]
+    fn combine_report_stays_clean_without_extras() {
+        let base = QualityReport {
+            verdict: QualityVerdict::Clean,
+            issues: vec![],
+        };
+        let report = combine_report(base, None, &[]);
+        assert_eq!(report.verdict, QualityVerdict::Clean);
+        assert!(report.issues.is_empty());
+    }
+
+    #[test]
+    fn lists_only_video_files_skipping_hidden_and_backups() {
+        let dir = scratch_dir("list");
+        fs::write(dir.join("a.mp4"), b"x").unwrap();
+        fs::write(dir.join("b.mkv"), b"x").unwrap();
+        fs::write(dir.join("notes.txt"), b"x").unwrap();
+        fs::write(dir.join(".hidden.mp4"), b"x").unwrap();
+        fs::create_dir_all(dir.join(".videorc-backups")).unwrap();
+        fs::write(dir.join(".videorc-backups").join("a.mp4"), b"x").unwrap();
+
+        let files = list_recording_files(&dir).unwrap();
+        let names: Vec<_> = files
+            .iter()
+            .filter_map(|path| path.file_name()?.to_str())
+            .collect();
+        assert_eq!(names, vec!["a.mp4", "b.mkv"]);
         let _ = fs::remove_dir_all(&dir);
     }
 }
