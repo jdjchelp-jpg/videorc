@@ -23,7 +23,16 @@ try {
   })
   await writeFile(tempModule, transpiled.outputText)
 
-  const { reconcileSourceSelection } = require(tempModule)
+  const storage = new Map()
+  globalThis.localStorage = {
+    getItem: (key) => storage.get(key) ?? null,
+    setItem: (key, value) => storage.set(key, String(value)),
+    removeItem: (key) => storage.delete(key),
+    clear: () => storage.clear()
+  }
+
+  const { defaultCaptureConfig, loadCaptureConfig, persistableCaptureConfig, reconcileSourceSelection, STORAGE_KEYS } =
+    require(tempModule)
   assert.equal(typeof reconcileSourceSelection, 'function')
 
   const devices = [
@@ -35,6 +44,42 @@ try {
     device('mic-new', 'Podcast Mic', 'microphone'),
     device('mic-other', 'Laptop Mic', 'microphone')
   ]
+
+  localStorage.setItem(
+    STORAGE_KEYS.captureConfig,
+    JSON.stringify(
+      persistableCaptureConfig({
+        ...defaultCaptureConfig,
+        sources: {
+          screenId: 'screen-old',
+          screenName: 'Built-in Display',
+          cameraId: 'camera-old',
+          cameraName: 'FaceTime HD Camera',
+          microphoneId: 'mic-old',
+          microphoneName: 'Podcast Mic'
+        }
+      })
+    )
+  )
+  const loaded = loadCaptureConfig()
+  assert.deepEqual(loaded.sources, {
+    screenId: 'screen-old',
+    screenName: 'Built-in Display',
+    cameraId: 'camera-old',
+    cameraName: 'FaceTime HD Camera',
+    microphoneId: 'mic-old',
+    microphoneName: 'Podcast Mic'
+  })
+  assert.deepEqual(reconcileSourceSelection(loaded.sources, devices), {
+    screenId: 'screen-new',
+    screenName: 'Built-in Display',
+    windowId: undefined,
+    windowName: undefined,
+    cameraId: 'camera-new',
+    cameraName: 'FaceTime HD Camera',
+    microphoneId: 'mic-new',
+    microphoneName: 'Podcast Mic'
+  })
 
   assert.deepEqual(
     reconcileSourceSelection(
