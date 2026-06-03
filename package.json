@@ -17,6 +17,7 @@
     "smoke:dev": "node scripts/smoke-dev-app.mjs",
     "smoke:sources": "node scripts/smoke-source-reconciliation.mjs",
     "smoke:start-labels": "node scripts/smoke-start-labels.mjs",
+    "smoke:streaming-secrets": "node scripts/smoke-streaming-secrets.mjs",
     "smoke:provider-readiness": "node scripts/smoke-provider-readiness.mjs",
     "smoke:oauth-guards": "node scripts/smoke-oauth-guards-app.mjs",
     "smoke:oauth": "node scripts/smoke-oauth-app.mjs",

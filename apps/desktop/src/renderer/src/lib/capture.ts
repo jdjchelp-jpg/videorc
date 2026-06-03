@@ -319,6 +319,8 @@ function normalizeStreamTarget(
   saved: Partial<StreamTargetSettings>
 ): StreamTargetSettings {
   const streamKey = typeof saved.streamKey === 'string' ? saved.streamKey : ''
+  const streamKeySecretRef =
+    typeof saved.streamKeySecretRef === 'string' ? saved.streamKeySecretRef : undefined
   const serverUrl =
     typeof saved.serverUrl === 'string' && saved.serverUrl.trim() ? saved.serverUrl : base.serverUrl
   return {
@@ -329,8 +331,8 @@ function normalizeStreamTarget(
     serverUrl,
     urlMode: saved.urlMode === 'full-url' ? 'full-url' : 'server-and-key',
     streamKey,
-    streamKeySecretRef: typeof saved.streamKeySecretRef === 'string' ? saved.streamKeySecretRef : undefined,
-    streamKeyPresent: streamKey.length > 0,
+    streamKeySecretRef,
+    streamKeyPresent: streamKey.length > 0 || Boolean(streamKeySecretRef),
     authMode: saved.authMode === 'oauth' ? 'oauth' : 'manual-rtmp',
     accountId: typeof saved.accountId === 'string' ? saved.accountId : undefined,
     accountLabel: typeof saved.accountLabel === 'string' ? saved.accountLabel : undefined,
