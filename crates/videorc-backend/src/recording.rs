@@ -27,11 +27,11 @@ use crate::audio::{
 use crate::camera_capture::{native_camera_name_for_id, parse_native_camera_id};
 use crate::devices::{find_avfoundation_camera_index, find_avfoundation_screen_index};
 use crate::diagnostics::{
-    apply_audio_stats, apply_preview_frame_age, apply_preview_stats, apply_stream_health,
-    starting_diagnostics,
+    apply_audio_stats, apply_ffmpeg_work_snapshot, apply_preview_frame_age, apply_preview_stats,
+    apply_stream_health, starting_diagnostics,
 };
 use crate::ffmpeg::{ffprobe_path_for, resolve_ffmpeg_path};
-use crate::ffmpeg_work::CapturePermit;
+use crate::ffmpeg_work::{CapturePermit, MaintenanceCancelToken};
 use crate::pipeline::{RecordingPipeline, container_for_outputs, container_key};
 use crate::protocol::{
     AudioSettings, AudioTrack, AudioTrackSource, CameraCorner, CameraFit, CameraShape, CameraSize,
@@ -42,7 +42,8 @@ use crate::protocol::{
     StartSessionParams, StreamHealth, VideoPreset, VideoSettings,
 };
 use crate::repair::{
-    GateStatus, QualityExpectations, QualityThresholds, RepairJob, gate_recording,
+    GateStatus, MAINTENANCE_CANCELLED, QualityExpectations, QualityThresholds, RepairJob,
+    gate_recording_cancellable,
 };
 use crate::screen_capture::{parse_screencapturekit_display_id, parse_screencapturekit_window_id};
 use crate::secrets;
@@ -422,7 +423,10 @@ pub async fn start_session(
         let mut diagnostics = state.diagnostics.lock().await;
         *diagnostics = initial_diagnostics.clone();
     }
-    state.emit_event("diagnostics.stats", initial_diagnostics);
+    state.emit_event(
+        "diagnostics.stats",
+        apply_ffmpeg_work_snapshot(initial_diagnostics, state.ffmpeg_work.snapshot()),
+    );
     let screen_overlay = screen_overlay_fifo
         .as_ref()
         .map(|fifo_path| ScreenOverlayInput {
@@ -545,7 +549,13 @@ pub async fn start_session(
                         *diagnostics = next.clone();
                         next
                     };
-                    log_state.emit_event("diagnostics.stats", diagnostic_stats);
+                    log_state.emit_event(
+                        "diagnostics.stats",
+                        apply_ffmpeg_work_snapshot(
+                            diagnostic_stats,
+                            log_state.ffmpeg_work.snapshot(),
+                        ),
+                    );
                     if stream_health.dropped_frames.unwrap_or_default() > 0 {
                         let _ = emit_health_event(
                             &log_state,
@@ -1324,7 +1334,10 @@ async fn update_preview_diagnostics(
         *diagnostics = next.clone();
         next
     };
-    state.emit_event("diagnostics.stats", diagnostic_stats);
+    state.emit_event(
+        "diagnostics.stats",
+        apply_ffmpeg_work_snapshot(diagnostic_stats, state.ffmpeg_work.snapshot()),
+    );
 }
 
 pub async fn update_preview_frame_age(
@@ -1364,7 +1377,10 @@ pub async fn update_preview_frame_age(
         *diagnostics = next.clone();
         next
     };
-    state.emit_event("diagnostics.stats", diagnostic_stats);
+    state.emit_event(
+        "diagnostics.stats",
+        apply_ffmpeg_work_snapshot(diagnostic_stats, state.ffmpeg_work.snapshot()),
+    );
 }
 
 fn preview_target_fps_for_source(idle_pid: Option<u32>) -> Option<f64> {
@@ -1731,7 +1747,10 @@ async fn monitor_session(
             *diagnostics = next.clone();
             next
         };
-        state.emit_event("diagnostics.stats", diagnostic_stats);
+        state.emit_event(
+            "diagnostics.stats",
+            apply_ffmpeg_work_snapshot(diagnostic_stats, state.ffmpeg_work.snapshot()),
+        );
         state.emit_log(
             if native_audio_stats.dropped_frames > 0 {
                 "warn"
@@ -1961,6 +1980,7 @@ fn enqueue_post_recording_gate(
 
         sleep(POST_RECORDING_GATE_IDLE_DELAY).await;
         let _maintenance = state.ffmpeg_work.begin_maintenance_when_idle().await;
+        let cancel_token = _maintenance.cancel_token();
         job.mark_running(Utc::now().to_rfc3339());
         let _ = state.database.upsert_repair_job(&job);
 
@@ -1969,10 +1989,16 @@ fn enqueue_post_recording_gate(
             format!("Running idle post-recording quality check on {path_str}."),
         );
 
-        match run_quality_gate(ffmpeg_path, path_str, expectations).await {
+        match run_quality_gate(ffmpeg_path, path_str, expectations, cancel_token).await {
             Ok(status) => {
                 emit_gate_health(&state, Some(&session_id), &status);
                 job.complete_with_gate(&status, Utc::now().to_rfc3339());
+            }
+            Err(error) if error.contains(MAINTENANCE_CANCELLED) => {
+                job.defer(
+                    "quality check deferred because capture started".to_string(),
+                    Utc::now().to_rfc3339(),
+                );
             }
             Err(error) => {
                 state.emit_log(
@@ -1995,18 +2021,29 @@ async fn run_quality_gate(
     ffmpeg_path: String,
     file_path: String,
     expectations: QualityExpectations,
-) -> std::result::Result<GateStatus, tokio::task::JoinError> {
+    cancel_token: MaintenanceCancelToken,
+) -> std::result::Result<GateStatus, String> {
     tokio::task::spawn_blocking(move || {
         let ffprobe_path = ffprobe_path_for(&ffmpeg_path);
-        gate_recording(
+        let is_cancelled = || cancel_token.is_cancelled();
+        let status = gate_recording_cancellable(
             &ffmpeg_path,
             &ffprobe_path,
             &file_path,
             &QualityThresholds::default(),
             &expectations,
-        )
+            &is_cancelled,
+        );
+        if is_cancelled()
+            || matches!(&status, GateStatus::Failed { reason, .. } if reason.contains(MAINTENANCE_CANCELLED))
+        {
+            Err(MAINTENANCE_CANCELLED.to_string())
+        } else {
+            Ok(status)
+        }
     })
     .await
+    .map_err(|error| format!("quality check task failed: {error}"))?
 }
 
 /// Emits the health event that matches a gate verdict (passed / repaired / not 100% /
@@ -2079,26 +2116,61 @@ pub async fn resume_pending_repair_jobs(state: AppState) {
         return;
     }
 
+    let mut resumable_jobs = Vec::new();
+    let mut stale_count = 0usize;
+    for mut job in jobs {
+        if let Some(reason) = stale_repair_job_reason(&job) {
+            job.cancel_with_reason(reason, Utc::now().to_rfc3339());
+            let _ = state.database.upsert_repair_job(&job);
+            stale_count += 1;
+        } else {
+            resumable_jobs.push(job);
+        }
+    }
+
+    if stale_count > 0 {
+        state.emit_log(
+            "info",
+            format!("Skipped {stale_count} stale interrupted repair job(s)."),
+        );
+    }
+
+    if resumable_jobs.is_empty() {
+        return;
+    }
+
     state.emit_log(
         "info",
-        format!("Queued {} interrupted repair job(s).", jobs.len()),
+        format!("Queued {} interrupted repair job(s).", resumable_jobs.len()),
     );
     let ffmpeg_path = resolve_ffmpeg_path(None);
 
-    for mut job in jobs {
+    for mut job in resumable_jobs {
         let state = state.clone();
         let ffmpeg_path = ffmpeg_path.clone();
         tokio::spawn(async move {
             sleep(POST_RECORDING_GATE_IDLE_DELAY).await;
             let _maintenance = state.ffmpeg_work.begin_maintenance_when_idle().await;
+            let cancel_token = _maintenance.cancel_token();
             job.mark_running(Utc::now().to_rfc3339());
             let _ = state.database.upsert_repair_job(&job);
 
-            let gate = run_quality_gate(ffmpeg_path, job.file_path.clone(), job.expectations());
+            let gate = run_quality_gate(
+                ffmpeg_path,
+                job.file_path.clone(),
+                job.expectations(),
+                cancel_token,
+            );
             match gate.await {
                 Ok(status) => {
                     emit_gate_health(&state, None, &status);
                     job.complete_with_gate(&status, Utc::now().to_rfc3339());
+                }
+                Err(error) if error.contains(MAINTENANCE_CANCELLED) => {
+                    job.defer(
+                        "repair job deferred because capture started".to_string(),
+                        Utc::now().to_rfc3339(),
+                    );
                 }
                 Err(error) => {
                     state.emit_log(
@@ -2114,6 +2186,29 @@ pub async fn resume_pending_repair_jobs(state: AppState) {
             let _ = state.database.upsert_repair_job(&job);
         });
     }
+}
+
+fn stale_repair_job_reason(job: &RepairJob) -> Option<String> {
+    let path = Path::new(&job.file_path);
+    if !path.exists() {
+        return Some(format!(
+            "stale repair job skipped because {} is missing",
+            job.file_path
+        ));
+    }
+    if is_temp_smoke_repair_path(path, &job.file_path) {
+        return Some(format!(
+            "stale repair job skipped because {} is temporary smoke output",
+            job.file_path
+        ));
+    }
+    None
+}
+
+fn is_temp_smoke_repair_path(path: &Path, rendered: &str) -> bool {
+    path.starts_with(std::env::temp_dir())
+        && rendered.contains("videorc-")
+        && rendered.contains("smoke")
 }
 
 async fn export_completed_recording_to_mp4(
@@ -4007,6 +4102,53 @@ mod tests {
             audio: Default::default(),
             streaming: None,
         }
+    }
+
+    fn repair_job_for_path(path: String) -> RepairJob {
+        RepairJob::pending(
+            "job".to_string(),
+            path,
+            &QualityExpectations {
+                intended_fps: Some(30.0),
+                expect_audio: true,
+            },
+            "t0".to_string(),
+        )
+    }
+
+    #[test]
+    fn stale_repair_job_reason_detects_missing_file() {
+        let job = repair_job_for_path("/definitely/missing/videorc-recording.mp4".to_string());
+
+        let reason = stale_repair_job_reason(&job).expect("missing file is stale");
+
+        assert!(reason.contains("missing"));
+    }
+
+    #[test]
+    fn stale_repair_job_reason_detects_existing_temp_smoke_output() {
+        let dir = std::env::temp_dir().join(format!("videorc-dev-smoke-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("videorc-session-test.mp4");
+        std::fs::write(&file, b"not a real video").unwrap();
+        let job = repair_job_for_path(file.display().to_string());
+
+        let reason = stale_repair_job_reason(&job).expect("temp smoke file is stale");
+
+        assert!(reason.contains("temporary smoke output"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stale_repair_job_reason_keeps_existing_non_temp_file() {
+        let dir = std::env::temp_dir().join(format!("videorc-user-output-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("recording.mp4");
+        std::fs::write(&file, b"not a real video").unwrap();
+        let job = repair_job_for_path(file.display().to_string());
+
+        assert!(stale_repair_job_reason(&job).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn scene_transform(x: f64, y: f64, width: f64, height: f64) -> SceneTransform {

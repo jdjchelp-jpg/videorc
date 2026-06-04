@@ -98,7 +98,7 @@ async function runScenario(ws, connection, samples, scenario) {
   }
 
   console.log(
-    `Recording performance [${scenario.label}] OK: ${outputPath} (${size} bytes), min speed ${format(stats.minSpeed)}x, min FPS ${format(stats.minFps)}, A/V skew ${skew.toFixed(1)}ms`
+    `Recording performance [${scenario.label}] OK: ${outputPath} (${size} bytes), min speed ${format(stats.minSpeed)}x, min FPS ${format(stats.minFps)}, A/V skew ${skew.toFixed(1)}ms, maintenance samples ${stats.maintenanceSamples}`
   )
 }
 
@@ -185,6 +185,8 @@ function summarizeDiagnostics(samples, targetFps, scenarioStartedAt) {
     droppedFrames: Math.max(0, ...measuredSamples.map((sample) => sample.droppedFrames ?? 0)),
     micDroppedFrames: Math.max(0, ...measuredSamples.map((sample) => sample.micDroppedFrames ?? 0)),
     previewDroppedFrames: Math.max(0, ...measuredSamples.map((sample) => sample.previewDroppedFrames ?? 0)),
+    maintenanceSamples: measuredSamples.filter((sample) => sample.ffmpegMaintenanceRunning).length,
+    maintenanceCancelSamples: measuredSamples.filter((sample) => sample.ffmpegMaintenanceCancelRequested).length,
     steadySamples: steadySamples.length,
     targetFps
   }
@@ -209,6 +211,9 @@ function assertStatsHealthy(scenario, stats) {
   }
   if (stats.micDroppedFrames > 0) {
     throw new Error(`[${scenario.label}] Native microphone reported ${stats.micDroppedFrames} dropped frame(s).`)
+  }
+  if (stats.maintenanceSamples > 0) {
+    throw new Error(`[${scenario.label}] Recording overlapped ${stats.maintenanceSamples} maintenance FFmpeg sample(s).`)
   }
 }
 

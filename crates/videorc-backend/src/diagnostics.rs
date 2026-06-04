@@ -1,5 +1,6 @@
 use chrono::Utc;
 
+use crate::ffmpeg_work::FfmpegWorkSnapshot;
 use crate::protocol::{
     DiagnosticBottleneck, DiagnosticStats, PermissionPane, PreviewTransport, StreamHealth,
 };
@@ -29,9 +30,29 @@ pub fn idle_diagnostics() -> DiagnosticStats {
         mic_captured_frames: None,
         mic_dropped_frames: 0,
         device_disconnected: false,
+        ffmpeg_capture_active: false,
+        ffmpeg_finalizing_active: false,
+        ffmpeg_maintenance_running: false,
+        ffmpeg_maintenance_cancel_requested: false,
+        ffmpeg_maintenance_deferred_reason: None,
         bottleneck: DiagnosticBottleneck::None,
         updated_at: Utc::now().to_rfc3339(),
     }
+}
+
+pub fn apply_ffmpeg_work_snapshot(
+    mut stats: DiagnosticStats,
+    snapshot: FfmpegWorkSnapshot,
+) -> DiagnosticStats {
+    stats.ffmpeg_capture_active = snapshot.capture_active;
+    stats.ffmpeg_finalizing_active = snapshot.finalizing_active;
+    stats.ffmpeg_maintenance_running = snapshot.maintenance_running;
+    stats.ffmpeg_maintenance_cancel_requested = snapshot.maintenance_cancel_requested;
+    stats.ffmpeg_maintenance_deferred_reason = snapshot
+        .current_deferral()
+        .map(|deferral| deferral.message().to_string());
+    stats.updated_at = Utc::now().to_rfc3339();
+    stats
 }
 
 pub fn starting_diagnostics(session_id: &str, target_fps: u32) -> DiagnosticStats {

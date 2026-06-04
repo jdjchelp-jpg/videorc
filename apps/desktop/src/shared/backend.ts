@@ -940,6 +940,11 @@ export interface DiagnosticStats {
   micCapturedFrames?: number
   micDroppedFrames: number
   deviceDisconnected: boolean
+  ffmpegCaptureActive: boolean
+  ffmpegFinalizingActive: boolean
+  ffmpegMaintenanceRunning: boolean
+  ffmpegMaintenanceCancelRequested: boolean
+  ffmpegMaintenanceDeferredReason?: string
   bottleneck: DiagnosticBottleneck
   updatedAt: string
 }

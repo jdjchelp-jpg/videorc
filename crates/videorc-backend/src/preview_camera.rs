@@ -121,7 +121,9 @@ pub async fn start_preview_camera(
 
     let join_handle = thread::Builder::new()
         .name("videorc-preview-camera".to_string())
-        .spawn(move || run_native_camera_preview(thread_config, thread_shared, stop_rx, startup_tx));
+        .spawn(move || {
+            run_native_camera_preview(thread_config, thread_shared, stop_rx, startup_tx)
+        });
 
     let join_handle = match join_handle {
         Ok(join_handle) => join_handle,
@@ -138,9 +140,13 @@ pub async fn start_preview_camera(
     };
 
     let startup = tokio::task::spawn_blocking(move || {
-        startup_rx.recv_timeout(Duration::from_secs(4)).unwrap_or_else(|_| {
-            NativeCameraStartup::Failed("Timed out while starting native camera preview.".to_string())
-        })
+        startup_rx
+            .recv_timeout(Duration::from_secs(4))
+            .unwrap_or_else(|_| {
+                NativeCameraStartup::Failed(
+                    "Timed out while starting native camera preview.".to_string(),
+                )
+            })
     })
     .await
     .unwrap_or_else(|error| {
@@ -268,18 +274,17 @@ pub async fn latest_preview_camera_png(state: &AppState) -> Option<Vec<u8>> {
     if layout.camera_mirror {
         mirror_rgba_in_place(&mut rgba, frame.width as usize, frame.height as usize);
     }
-    let (rgba, width, height) =
-        downscale_rgba_for_preview(rgba, frame.width, frame.height, PREVIEW_CAMERA_MAX_PNG_WIDTH);
+    let (rgba, width, height) = downscale_rgba_for_preview(
+        rgba,
+        frame.width,
+        frame.height,
+        PREVIEW_CAMERA_MAX_PNG_WIDTH,
+    );
 
     let mut png = Vec::new();
     let encoder = PngEncoder::new(&mut png);
     encoder
-        .write_image(
-            &rgba,
-            width,
-            height,
-            image::ExtendedColorType::Rgba8,
-        )
+        .write_image(&rgba, width, height, image::ExtendedColorType::Rgba8)
         .ok()?;
     Some(png)
 }
@@ -324,7 +329,9 @@ async fn poll_camera_metrics(
     loop {
         ticker.tick().await;
         let snapshot = {
-            let guard = shared.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let guard = shared
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             CameraSharedSnapshot {
                 frames_captured: guard.frames_captured,
                 dropped_frames: guard.dropped_frames,
@@ -526,9 +533,7 @@ mod macos {
         AVCaptureDeviceInput, AVCaptureOutput, AVCaptureSession, AVCaptureVideoDataOutput,
         AVCaptureVideoDataOutputSampleBufferDelegate, AVMediaTypeVideo,
     };
-    use objc2_core_media::{
-        CMSampleBuffer, CMTime, CMVideoFormatDescriptionGetDimensions,
-    };
+    use objc2_core_media::{CMSampleBuffer, CMTime, CMVideoFormatDescriptionGetDimensions};
     use objc2_core_video::{
         CVPixelBufferGetBaseAddress, CVPixelBufferGetBytesPerRow, CVPixelBufferGetHeight,
         CVPixelBufferGetPixelFormatType, CVPixelBufferGetWidth, CVPixelBufferLockBaseAddress,
@@ -538,7 +543,9 @@ mod macos {
     use objc2_foundation::{NSDictionary, NSNumber, NSObject, NSObjectProtocol, NSString};
 
     use super::*;
-    use crate::camera_capture::{CameraFormatSummary, NativeCameraPermission, choose_camera_format};
+    use crate::camera_capture::{
+        CameraFormatSummary, NativeCameraPermission, choose_camera_format,
+    };
 
     struct CameraDelegateIvars {
         shared: Arc<StdMutex<PreviewCameraShared>>,
@@ -593,26 +600,22 @@ mod macos {
         stop_rx: std_mpsc::Receiver<()>,
         startup_tx: std_mpsc::Sender<NativeCameraStartup>,
     ) {
-        autoreleasepool(|_| {
-            match start_session(config, Arc::clone(&shared)) {
-                Ok(session) => {
-                    let _ = startup_tx.send(NativeCameraStartup::Live {
-                        width: session.width,
-                        height: session.height,
-                        selected_fps: session.selected_fps,
-                        message: session.message,
-                    });
-                    let _ = stop_rx.recv();
-                    unsafe {
-                        session.session.stopRunning();
-                        session
-                            .output
-                            .setSampleBufferDelegate_queue(None, None);
-                    }
+        autoreleasepool(|_| match start_session(config, Arc::clone(&shared)) {
+            Ok(session) => {
+                let _ = startup_tx.send(NativeCameraStartup::Live {
+                    width: session.width,
+                    height: session.height,
+                    selected_fps: session.selected_fps,
+                    message: session.message,
+                });
+                let _ = stop_rx.recv();
+                unsafe {
+                    session.session.stopRunning();
+                    session.output.setSampleBufferDelegate_queue(None, None);
                 }
-                Err(error) => {
-                    let _ = startup_tx.send(error);
-                }
+            }
+            Err(error) => {
+                let _ = startup_tx.send(error);
             }
         });
     }
@@ -648,12 +651,14 @@ mod macos {
             )));
         };
 
-        let selected = select_camera_format(&device, &config.video)
-            .ok_or_else(|| NativeCameraStartup::Failed("Camera did not report usable formats.".to_string()))?;
+        let selected = select_camera_format(&device, &config.video).ok_or_else(|| {
+            NativeCameraStartup::Failed("Camera did not report usable formats.".to_string())
+        })?;
         configure_device(&device, &selected, config.video.fps)?;
 
-        let input = unsafe { AVCaptureDeviceInput::deviceInputWithDevice_error(&device) }
-            .map_err(|error| NativeCameraStartup::Failed(format!("Could not open camera: {error}")))?;
+        let input = unsafe { AVCaptureDeviceInput::deviceInputWithDevice_error(&device) }.map_err(
+            |error| NativeCameraStartup::Failed(format!("Could not open camera: {error}")),
+        )?;
         let session = unsafe { AVCaptureSession::new() };
         let output = unsafe { AVCaptureVideoDataOutput::new() };
         let delegate = CameraPreviewDelegate::new(shared);
@@ -768,8 +773,9 @@ mod macos {
         format: &NativeCameraFormatSelection,
         requested_fps: u32,
     ) -> Result<(), NativeCameraStartup> {
-        unsafe { device.lockForConfiguration() }
-            .map_err(|error| NativeCameraStartup::Failed(format!("Could not configure camera: {error}")))?;
+        unsafe { device.lockForConfiguration() }.map_err(|error| {
+            NativeCameraStartup::Failed(format!("Could not configure camera: {error}"))
+        })?;
 
         unsafe {
             device.setActiveFormat(&format.native_format);
@@ -803,14 +809,18 @@ mod macos {
         shared: &Arc<StdMutex<PreviewCameraShared>>,
     ) {
         let Some(pixel_buffer) = (unsafe { sample_buffer.image_buffer() }) else {
-            let mut guard = shared.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut guard = shared
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             guard.dropped_frames = guard.dropped_frames.saturating_add(1);
             return;
         };
 
         let pixel_format = CVPixelBufferGetPixelFormatType(&pixel_buffer);
         if pixel_format != kCVPixelFormatType_32BGRA {
-            let mut guard = shared.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut guard = shared
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             guard.dropped_frames = guard.dropped_frames.saturating_add(1);
             return;
         }
@@ -819,7 +829,9 @@ mod macos {
             CVPixelBufferLockBaseAddress(&pixel_buffer, CVPixelBufferLockFlags::ReadOnly)
         };
         if lock_result != 0 {
-            let mut guard = shared.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut guard = shared
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             guard.dropped_frames = guard.dropped_frames.saturating_add(1);
             return;
         }
@@ -833,7 +845,9 @@ mod macos {
             unsafe {
                 CVPixelBufferUnlockBaseAddress(&pixel_buffer, CVPixelBufferLockFlags::ReadOnly)
             };
-            let mut guard = shared.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut guard = shared
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             guard.dropped_frames = guard.dropped_frames.saturating_add(1);
             return;
         }
@@ -852,14 +866,17 @@ mod macos {
             CVPixelBufferUnlockBaseAddress(&pixel_buffer, CVPixelBufferLockFlags::ReadOnly);
         }
 
-        let mut guard = shared.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut guard = shared
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let now = Instant::now();
         guard.frames_captured = guard.frames_captured.saturating_add(1);
         guard.frames_in_window = guard.frames_in_window.saturating_add(1);
         let window_started = *guard.window_started_at.get_or_insert(now);
         let elapsed = window_started.elapsed();
         if elapsed >= Duration::from_millis(500) {
-            guard.source_fps = Some(guard.frames_in_window as f64 / elapsed.as_secs_f64().max(0.001));
+            guard.source_fps =
+                Some(guard.frames_in_window as f64 / elapsed.as_secs_f64().max(0.001));
             guard.frames_in_window = 0;
             guard.window_started_at = Some(now);
         }
@@ -895,9 +912,7 @@ mod macos {
     fn permission_message(permission: NativeCameraPermission) -> &'static str {
         match permission {
             NativeCameraPermission::Authorized => "Camera permission is authorized.",
-            NativeCameraPermission::NotDetermined => {
-                "Camera permission has not been granted yet."
-            }
+            NativeCameraPermission::NotDetermined => "Camera permission has not been granted yet.",
             NativeCameraPermission::Denied => "Camera permission is denied.",
             NativeCameraPermission::Restricted => "Camera permission is restricted by macOS.",
             NativeCameraPermission::Unknown => "Camera permission state is unknown.",
@@ -942,9 +957,7 @@ mod tests {
 
     #[test]
     fn mirrors_rgba_rows_in_place() {
-        let mut pixels = vec![
-            1, 0, 0, 255, 2, 0, 0, 255, 3, 0, 0, 255, 4, 0, 0, 255,
-        ];
+        let mut pixels = vec![1, 0, 0, 255, 2, 0, 0, 255, 3, 0, 0, 255, 4, 0, 0, 255];
 
         mirror_rgba_in_place(&mut pixels, 4, 1);
 

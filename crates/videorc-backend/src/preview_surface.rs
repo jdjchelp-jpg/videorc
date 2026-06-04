@@ -6,7 +6,9 @@ use tokio::task::JoinHandle;
 use tokio::time::{Duration, MissedTickBehavior};
 use uuid::Uuid;
 
-use crate::diagnostics::{apply_native_preview_surface_stats, apply_preview_surface_resize};
+use crate::diagnostics::{
+    apply_ffmpeg_work_snapshot, apply_native_preview_surface_stats, apply_preview_surface_resize,
+};
 use crate::protocol::{
     PreviewSurfaceBoundsParams, PreviewSurfaceCreateParams, PreviewSurfaceSource,
     PreviewSurfaceState, PreviewSurfaceStatus, PreviewTransport,
@@ -140,7 +142,10 @@ pub async fn register_preview_surface_resize(state: &AppState) {
         *diagnostics = next.clone();
         next
     };
-    state.emit_event("diagnostics.stats", diagnostic_stats);
+    state.emit_event(
+        "diagnostics.stats",
+        apply_ffmpeg_work_snapshot(diagnostic_stats, state.ffmpeg_work.snapshot()),
+    );
 }
 
 async fn stop_current_surface(state: &AppState) {
@@ -215,7 +220,13 @@ async fn run_synthetic_surface_loop(
                         next
                     };
                     state.emit_event("preview.surface.status", status);
-                    state.emit_event("diagnostics.stats", diagnostic_stats);
+                    state.emit_event(
+                        "diagnostics.stats",
+                        apply_ffmpeg_work_snapshot(
+                            diagnostic_stats,
+                            state.ffmpeg_work.snapshot(),
+                        ),
+                    );
                     window_started_at = Instant::now();
                     frames_in_window = 0;
                     frame_times_ms.clear();

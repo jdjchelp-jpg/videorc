@@ -14,9 +14,9 @@ use crate::ffmpeg::{ffprobe_path_for, resolve_ffmpeg_path};
 use crate::ffmpeg_work::MaintenanceDeferral;
 use crate::protocol::{RepairFileParams, RepairRestoreParams};
 use crate::repair::{
-    GateStatus, QualityExpectations, QualityIssue, QualityThresholds, QualityVerdict,
-    analyze_recording, backup_path_for, gate_recording, issue_reasons, restore_from_backup,
-    select_repair_plan,
+    GateStatus, MAINTENANCE_CANCELLED, QualityExpectations, QualityIssue, QualityThresholds,
+    QualityVerdict, analyze_recording_cancellable, backup_path_for, gate_recording_cancellable,
+    issue_reasons, restore_from_backup, select_repair_plan,
 };
 use crate::state::AppState;
 
@@ -97,22 +97,33 @@ pub async fn assess_file(
             return Err(deferral.message().to_string());
         }
     };
+    let cancel_token = _maintenance.cancel_token();
 
     let probe_path = path.clone();
-    let (report, repairable) = tokio::task::spawn_blocking(move || {
+    let assessment = tokio::task::spawn_blocking(move || {
         let ffprobe_path = ffprobe_path_for(&ffmpeg_path);
-        let (probe, report) = analyze_recording(
+        let is_cancelled = || cancel_token.is_cancelled();
+        let (probe, report) = analyze_recording_cancellable(
             &ffmpeg_path,
             &ffprobe_path,
             &probe_path,
             &QualityThresholds::default(),
             &expectations,
+            &is_cancelled,
         )?;
         let repairable = select_repair_plan(&report, &probe, &expectations).is_some();
         Ok::<_, String>((report, repairable))
     })
     .await
-    .map_err(|error| format!("assess task failed: {error}"))??;
+    .map_err(|error| format!("assess task failed: {error}"))?;
+    let (report, repairable) = match assessment {
+        Ok(result) => result,
+        Err(error) if error.contains(MAINTENANCE_CANCELLED) => {
+            emit_deferred_status(&state, &path, MaintenanceDeferral::CaptureActive);
+            return Err(MaintenanceDeferral::CaptureActive.message().to_string());
+        }
+        Err(error) => return Err(error),
+    };
 
     let has_backup = backup_path_for(Path::new(&path))
         .map(|backup| backup.exists())
@@ -142,6 +153,7 @@ pub async fn repair_file(state: AppState, params: RepairFileParams) -> Result<Ga
             return Err(deferral.message().to_string());
         }
     };
+    let cancel_token = _maintenance.cancel_token();
 
     emit_status(&state, &path, "checking");
     emit_status(&state, &path, "repairing");
@@ -149,16 +161,24 @@ pub async fn repair_file(state: AppState, params: RepairFileParams) -> Result<Ga
     let gate_path = path.clone();
     let status = tokio::task::spawn_blocking(move || {
         let ffprobe_path = ffprobe_path_for(&ffmpeg_path);
-        gate_recording(
+        let is_cancelled = || cancel_token.is_cancelled();
+        gate_recording_cancellable(
             &ffmpeg_path,
             &ffprobe_path,
             &gate_path,
             &QualityThresholds::default(),
             &expectations,
+            &is_cancelled,
         )
     })
     .await
     .map_err(|error| format!("repair task failed: {error}"))?;
+
+    if matches!(&status, GateStatus::Failed { reason, .. } if reason.contains(MAINTENANCE_CANCELLED))
+    {
+        emit_deferred_status(&state, &path, MaintenanceDeferral::CaptureActive);
+        return Err(MaintenanceDeferral::CaptureActive.message().to_string());
+    }
 
     emit_status(
         &state,

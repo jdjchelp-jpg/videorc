@@ -44,15 +44,15 @@ use axum::routing::get;
 use axum::{Json, Router};
 use futures_util::stream;
 use futures_util::{SinkExt, StreamExt};
-use preview_surface::{
-    create_preview_surface, destroy_preview_surface, preview_surface_status,
-    register_preview_surface_resize, update_preview_surface_bounds,
-};
 use preview_camera::{
     latest_preview_camera_png, preview_camera_status, start_preview_camera, stop_preview_camera,
 };
 use preview_screen::{
     latest_preview_screen_png, preview_screen_status, start_preview_screen, stop_preview_screen,
+};
+use preview_surface::{
+    create_preview_surface, destroy_preview_surface, preview_surface_status,
+    register_preview_surface_resize, update_preview_surface_bounds,
 };
 use protocol::{
     BackendConnection, BackendHealth, ClientCommand, RecordingState, ServerEvent, ServerResponse,
@@ -1077,7 +1077,10 @@ async fn handle_text_message(state: &AppState, text: &str) -> ServerResponse {
             ServerResponse::ok(command.id, devices)
         }
         "diagnostics.stats" => {
-            let stats = state.diagnostics.lock().await.clone();
+            let stats = diagnostics::apply_ffmpeg_work_snapshot(
+                state.diagnostics.lock().await.clone(),
+                state.ffmpeg_work.snapshot(),
+            );
             ServerResponse::ok(command.id, stats)
         }
         "diagnostics.preview_baseline.record" => {

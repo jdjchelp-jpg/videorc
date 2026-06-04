@@ -255,6 +255,10 @@ const idleDiagnosticStats = (): DiagnosticStats => ({
   previewDroppedFrames: 0,
   micDroppedFrames: 0,
   deviceDisconnected: false,
+  ffmpegCaptureActive: false,
+  ffmpegFinalizingActive: false,
+  ffmpegMaintenanceRunning: false,
+  ffmpegMaintenanceCancelRequested: false,
   bottleneck: 'none',
   updatedAt: new Date().toISOString()
 })

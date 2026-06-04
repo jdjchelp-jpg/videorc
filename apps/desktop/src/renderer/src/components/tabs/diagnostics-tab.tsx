@@ -110,6 +110,7 @@ export function DiagnosticsTab(): ReactElement {
             <DiagnosticMetric label="Surface state" value={`${previewSurfaceStatus.state} (${previewSurfaceStatus.framesRendered} frames)`} />
             <DiagnosticMetric label="Mic drops" value={diagnosticStats.micDroppedFrames.toString()} />
             <DiagnosticMetric label="Device state" value={diagnosticStats.deviceDisconnected ? 'Disconnected' : 'Connected'} />
+            <DiagnosticMetric label="FFmpeg work" value={formatFfmpegWork(diagnosticStats)} />
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <StatusBadge label="Likely bottleneck" tone={bottleneck.tone} value={bottleneck.label} />
@@ -118,6 +119,7 @@ export function DiagnosticsTab(): ReactElement {
             <StatusBadge label="Preview path" tone={diagnosticStats.previewTransport === 'native-surface' ? 'good' : 'warn'} value={formatPreviewTransport(diagnosticStats.previewTransport)} />
             <StatusBadge label="Camera" tone={previewSourceTone(previewCameraStatus.state)} value={previewCameraStatus.state} />
             <StatusBadge label="Screen" tone={previewSourceTone(previewScreenStatus.state)} value={previewScreenStatus.state} />
+            <StatusBadge label="Maintenance" tone={diagnosticStats.ffmpegMaintenanceRunning ? 'warn' : 'good'} value={diagnosticStats.ffmpegMaintenanceRunning ? 'Running' : 'Idle'} />
             {diagnosticStats.targetFps ? (
               <Badge variant="outline">Target {diagnosticStats.targetFps} FPS</Badge>
             ) : null}
@@ -477,6 +479,22 @@ function formatPreviewSourceStatus(
 ): string {
   const fps = typeof sourceFps === 'number' ? `${sourceFps.toFixed(1)} fps` : '-- fps'
   return `${state}, ${fps}, ${droppedFrames ?? 0} drop`
+}
+
+function formatFfmpegWork(stats: DiagnosticStats): string {
+  if (stats.ffmpegMaintenanceCancelRequested) {
+    return 'Cancelling maintenance'
+  }
+  if (stats.ffmpegCaptureActive) {
+    return 'Capture active'
+  }
+  if (stats.ffmpegFinalizingActive) {
+    return 'Finalizing'
+  }
+  if (stats.ffmpegMaintenanceRunning) {
+    return 'Maintenance running'
+  }
+  return stats.ffmpegMaintenanceDeferredReason ?? 'Idle'
 }
 
 function formatMs(value?: number): string {

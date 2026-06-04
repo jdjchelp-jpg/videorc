@@ -10,10 +10,15 @@
 #![allow(dead_code)]
 
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
+use std::thread;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+
+pub const MAINTENANCE_CANCELLED: &str = "maintenance cancelled";
 
 // --- Raw FFprobe JSON ---
 
@@ -43,6 +48,80 @@ struct FfprobeStream {
 #[derive(Debug, Deserialize)]
 struct FfprobeFormat {
     duration: Option<String>,
+}
+
+fn never_cancelled() -> bool {
+    false
+}
+
+fn check_cancelled(is_cancelled: &dyn Fn() -> bool) -> Result<(), String> {
+    if is_cancelled() {
+        Err(MAINTENANCE_CANCELLED.to_string())
+    } else {
+        Ok(())
+    }
+}
+
+fn run_output_cancellable(
+    command: &mut Command,
+    is_cancelled: &dyn Fn() -> bool,
+) -> Result<Output, String> {
+    check_cancelled(is_cancelled)?;
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("could not spawn process: {error}"))?;
+
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let stdout_reader = stdout.map(|mut stream| {
+        thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let _ = stream.read_to_end(&mut bytes);
+            bytes
+        })
+    });
+    let stderr_reader = stderr.map(|mut stream| {
+        thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let _ = stream.read_to_end(&mut bytes);
+            bytes
+        })
+    });
+
+    loop {
+        if is_cancelled() {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = stdout_reader.map(|reader| reader.join());
+            let _ = stderr_reader.map(|reader| reader.join());
+            return Err(MAINTENANCE_CANCELLED.to_string());
+        }
+
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let stdout = stdout_reader
+                    .map(|reader| reader.join().unwrap_or_default())
+                    .unwrap_or_default();
+                let stderr = stderr_reader
+                    .map(|reader| reader.join().unwrap_or_default())
+                    .unwrap_or_default();
+                return Ok(Output {
+                    status,
+                    stdout,
+                    stderr,
+                });
+            }
+            Ok(None) => thread::sleep(Duration::from_millis(50)),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = stdout_reader.map(|reader| reader.join());
+                let _ = stderr_reader.map(|reader| reader.join());
+                return Err(format!("could not wait for process: {error}"));
+            }
+        }
+    }
 }
 
 // --- Normalized probe ---
@@ -135,17 +214,27 @@ pub fn parse_ffprobe_json(json: &str) -> Result<MediaProbe, String> {
 
 /// Runs FFprobe on a file and parses the result.
 pub fn probe_media(ffprobe_path: &str, file_path: &str) -> Result<MediaProbe, String> {
-    let output = Command::new(ffprobe_path)
-        .args([
-            "-v",
-            "error",
-            "-show_format",
-            "-show_streams",
-            "-of",
-            "json",
-            file_path,
-        ])
-        .output()
+    probe_media_cancellable(ffprobe_path, file_path, &never_cancelled)
+}
+
+/// Runs FFprobe on a file and parses the result, killing the process if cancellation
+/// is requested by the capture-first maintenance coordinator.
+pub fn probe_media_cancellable(
+    ffprobe_path: &str,
+    file_path: &str,
+    is_cancelled: &dyn Fn() -> bool,
+) -> Result<MediaProbe, String> {
+    let mut command = Command::new(ffprobe_path);
+    command.args([
+        "-v",
+        "error",
+        "-show_format",
+        "-show_streams",
+        "-of",
+        "json",
+        file_path,
+    ]);
+    let output = run_output_cancellable(&mut command, is_cancelled)
         .map_err(|error| format!("could not run ffprobe: {error}"))?;
     if !output.status.success() {
         return Err(format!(
@@ -421,25 +510,33 @@ pub fn analyze_audio_balance(
     ffmpeg_path: &str,
     file_path: &str,
 ) -> Result<Vec<ChannelLevel>, String> {
-    let output = Command::new(ffmpeg_path)
-        .args([
-            "-hide_banner",
-            "-nostats",
-            "-threads",
-            "1",
-            "-filter_threads",
-            "1",
-            "-i",
-            file_path,
-            "-map",
-            "0:a:0",
-            "-af",
-            "astats=metadata=1:reset=0",
-            "-f",
-            "null",
-            "-",
-        ])
-        .output()
+    analyze_audio_balance_cancellable(ffmpeg_path, file_path, &never_cancelled)
+}
+
+pub fn analyze_audio_balance_cancellable(
+    ffmpeg_path: &str,
+    file_path: &str,
+    is_cancelled: &dyn Fn() -> bool,
+) -> Result<Vec<ChannelLevel>, String> {
+    let mut command = Command::new(ffmpeg_path);
+    command.args([
+        "-hide_banner",
+        "-nostats",
+        "-threads",
+        "1",
+        "-filter_threads",
+        "1",
+        "-i",
+        file_path,
+        "-map",
+        "0:a:0",
+        "-af",
+        "astats=metadata=1:reset=0",
+        "-f",
+        "null",
+        "-",
+    ]);
+    let output = run_output_cancellable(&mut command, is_cancelled)
         .map_err(|error| format!("could not run ffmpeg astats: {error}"))?;
     Ok(parse_astats_levels(&String::from_utf8_lossy(
         &output.stderr,
@@ -491,25 +588,41 @@ pub fn detect_freezes(
     noise_db: f64,
     min_freeze_seconds: f64,
 ) -> Result<Vec<FreezeSegment>, String> {
+    detect_freezes_cancellable(
+        ffmpeg_path,
+        file_path,
+        noise_db,
+        min_freeze_seconds,
+        &never_cancelled,
+    )
+}
+
+pub fn detect_freezes_cancellable(
+    ffmpeg_path: &str,
+    file_path: &str,
+    noise_db: f64,
+    min_freeze_seconds: f64,
+    is_cancelled: &dyn Fn() -> bool,
+) -> Result<Vec<FreezeSegment>, String> {
     let filter = format!("freezedetect=n={noise_db}dB:d={min_freeze_seconds}");
-    let output = Command::new(ffmpeg_path)
-        .args([
-            "-hide_banner",
-            "-threads",
-            "1",
-            "-filter_threads",
-            "1",
-            "-i",
-            file_path,
-            "-map",
-            "0:v:0",
-            "-vf",
-            &filter,
-            "-f",
-            "null",
-            "-",
-        ])
-        .output()
+    let mut command = Command::new(ffmpeg_path);
+    command.args([
+        "-hide_banner",
+        "-threads",
+        "1",
+        "-filter_threads",
+        "1",
+        "-i",
+        file_path,
+        "-map",
+        "0:v:0",
+        "-vf",
+        &filter,
+        "-f",
+        "null",
+        "-",
+    ]);
+    let output = run_output_cancellable(&mut command, is_cancelled)
         .map_err(|error| format!("could not run freezedetect: {error}"))?;
     Ok(parse_freezedetect(&String::from_utf8_lossy(&output.stderr)))
 }
@@ -872,18 +985,49 @@ pub fn analyze_recording(
     thresholds: &QualityThresholds,
     expectations: &QualityExpectations,
 ) -> Result<(MediaProbe, QualityReport), String> {
-    let probe = probe_media(ffprobe_path, file_path)?;
+    analyze_recording_cancellable(
+        ffmpeg_path,
+        ffprobe_path,
+        file_path,
+        thresholds,
+        expectations,
+        &never_cancelled,
+    )
+}
+
+pub fn analyze_recording_cancellable(
+    ffmpeg_path: &str,
+    ffprobe_path: &str,
+    file_path: &str,
+    thresholds: &QualityThresholds,
+    expectations: &QualityExpectations,
+    is_cancelled: &dyn Fn() -> bool,
+) -> Result<(MediaProbe, QualityReport), String> {
+    let probe = probe_media_cancellable(ffprobe_path, file_path, is_cancelled)?;
     let base = classify_quality(&probe, thresholds, expectations);
 
     let one_sided = if probe.audio.is_empty() {
         None
     } else {
-        let levels = analyze_audio_balance(ffmpeg_path, file_path).unwrap_or_default();
+        let levels = match analyze_audio_balance_cancellable(ffmpeg_path, file_path, is_cancelled) {
+            Ok(levels) => levels,
+            Err(error) if error.contains(MAINTENANCE_CANCELLED) => return Err(error),
+            Err(_) => Vec::new(),
+        };
         detect_one_sided_audio(&levels, thresholds.silence_db)
     };
     let freezes = if probe.video.is_some() {
-        let segments = detect_freezes(ffmpeg_path, file_path, -60.0, thresholds.min_freeze_seconds)
-            .unwrap_or_default();
+        let segments = match detect_freezes_cancellable(
+            ffmpeg_path,
+            file_path,
+            -60.0,
+            thresholds.min_freeze_seconds,
+            is_cancelled,
+        ) {
+            Ok(segments) => segments,
+            Err(error) if error.contains(MAINTENANCE_CANCELLED) => return Err(error),
+            Err(_) => Vec::new(),
+        };
         long_freezes(&segments, thresholds.min_freeze_seconds)
     } else {
         Vec::new()
@@ -973,6 +1117,24 @@ pub fn repair_recording(
     thresholds: &QualityThresholds,
     expectations: &QualityExpectations,
 ) -> RepairOutcome {
+    repair_recording_cancellable(
+        ffmpeg_path,
+        ffprobe_path,
+        assessment,
+        thresholds,
+        expectations,
+        &never_cancelled,
+    )
+}
+
+pub fn repair_recording_cancellable(
+    ffmpeg_path: &str,
+    ffprobe_path: &str,
+    assessment: &RecordingAssessment,
+    thresholds: &QualityThresholds,
+    expectations: &QualityExpectations,
+    is_cancelled: &dyn Fn() -> bool,
+) -> RepairOutcome {
     let path = assessment.path.clone();
     let Some(plan) = &assessment.plan else {
         return RepairOutcome::AlreadyClean { path };
@@ -982,9 +1144,9 @@ pub fn repair_recording(
     let temp = repair_temp_path(original);
     let temp_str = temp.to_string_lossy().to_string();
 
-    let run = Command::new(ffmpeg_path)
-        .args(build_repair_args(&path, &temp_str, plan))
-        .output();
+    let mut command = Command::new(ffmpeg_path);
+    command.args(build_repair_args(&path, &temp_str, plan));
+    let run = run_output_cancellable(&mut command, is_cancelled);
     match run {
         Ok(output) if output.status.success() => {}
         Ok(output) => {
@@ -1009,12 +1171,13 @@ pub fn repair_recording(
     let interpolated = plan.interpolated;
     let result = safe_replace(original, &temp, |candidate| {
         let candidate_path = candidate.to_string_lossy();
-        let (_, report) = analyze_recording(
+        let (_, report) = analyze_recording_cancellable(
             ffmpeg_path,
             ffprobe_path,
             &candidate_path,
             thresholds,
             expectations,
+            is_cancelled,
         )?;
         if report.verdict == QualityVerdict::Clean {
             Ok(())
@@ -1289,13 +1452,32 @@ pub fn gate_recording(
     thresholds: &QualityThresholds,
     expectations: &QualityExpectations,
 ) -> GateStatus {
-    let path = file_path.to_string();
-    let (probe, report) = match analyze_recording(
+    gate_recording_cancellable(
         ffmpeg_path,
         ffprobe_path,
         file_path,
         thresholds,
         expectations,
+        &never_cancelled,
+    )
+}
+
+pub fn gate_recording_cancellable(
+    ffmpeg_path: &str,
+    ffprobe_path: &str,
+    file_path: &str,
+    thresholds: &QualityThresholds,
+    expectations: &QualityExpectations,
+    is_cancelled: &dyn Fn() -> bool,
+) -> GateStatus {
+    let path = file_path.to_string();
+    let (probe, report) = match analyze_recording_cancellable(
+        ffmpeg_path,
+        ffprobe_path,
+        file_path,
+        thresholds,
+        expectations,
+        is_cancelled,
     ) {
         Ok(result) => result,
         Err(reason) => return GateStatus::Failed { path, reason },
@@ -1317,12 +1499,13 @@ pub fn gate_recording(
         report: report.clone(),
         plan: Some(plan),
     };
-    match repair_recording(
+    match repair_recording_cancellable(
         ffmpeg_path,
         ffprobe_path,
         &assessment,
         thresholds,
         expectations,
+        is_cancelled,
     ) {
         RepairOutcome::AlreadyClean { path } => GateStatus::Ready { path },
         RepairOutcome::Repaired { path, interpolated } => {
@@ -1461,11 +1644,25 @@ impl RepairJob {
         self.updated_at = now;
     }
 
+    pub fn defer(&mut self, reason: String, now: String) {
+        self.status = RepairJobStatus::Pending;
+        self.outcome = None;
+        self.reason = Some(reason);
+        self.updated_at = now;
+    }
+
     /// Cancels the job. Cancellation NEVER marks the file as good — it only records the
     /// cancelled state and clears any provisional outcome so nothing reads as success.
     pub fn cancel(&mut self, now: String) {
         self.status = RepairJobStatus::Cancelled;
         self.outcome = None;
+        self.updated_at = now;
+    }
+
+    pub fn cancel_with_reason(&mut self, reason: String, now: String) {
+        self.status = RepairJobStatus::Cancelled;
+        self.outcome = None;
+        self.reason = Some(reason);
         self.updated_at = now;
     }
 }
@@ -2535,6 +2732,41 @@ mod tests {
             job.outcome.is_none(),
             "cancel clears any provisional outcome"
         );
+        assert!(!job.status.is_resumable());
+    }
+
+    #[test]
+    fn deferring_a_job_keeps_it_resumable_without_success_outcome() {
+        let mut job = RepairJob::pending(
+            "job-deferred".to_string(),
+            "/m/deferred.mp4".to_string(),
+            &sample_expectations(),
+            "t0".to_string(),
+        );
+        job.mark_running("t1".to_string());
+        job.outcome = Some(serde_json::json!({ "status": "ready" }));
+
+        job.defer("capture started".to_string(), "t2".to_string());
+
+        assert_eq!(job.status, RepairJobStatus::Pending);
+        assert!(job.outcome.is_none());
+        assert_eq!(job.reason.as_deref(), Some("capture started"));
+        assert!(job.status.is_resumable());
+    }
+
+    #[test]
+    fn cancelling_with_reason_records_terminal_reason() {
+        let mut job = RepairJob::pending(
+            "job-cancelled".to_string(),
+            "/m/missing.mp4".to_string(),
+            &sample_expectations(),
+            "t0".to_string(),
+        );
+
+        job.cancel_with_reason("missing temp file".to_string(), "t1".to_string());
+
+        assert_eq!(job.status, RepairJobStatus::Cancelled);
+        assert_eq!(job.reason.as_deref(), Some("missing temp file"));
         assert!(!job.status.is_resumable());
     }
 

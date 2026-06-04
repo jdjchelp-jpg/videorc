@@ -79,7 +79,8 @@ pub async fn start_preview_screen(
     stop_current_screen(&state).await;
 
     let Some(source) = selected_screen_source(&params) else {
-        let status = status_for_missing_source(None, None, "No screen or window source is selected.");
+        let status =
+            status_for_missing_source(None, None, "No screen or window source is selected.");
         set_screen_status(&state, status.clone()).await;
         return status;
     };
@@ -122,7 +123,9 @@ pub async fn start_preview_screen(
 
     let join_handle = thread::Builder::new()
         .name("videorc-preview-screen".to_string())
-        .spawn(move || run_native_screen_preview(thread_config, thread_shared, stop_rx, startup_tx));
+        .spawn(move || {
+            run_native_screen_preview(thread_config, thread_shared, stop_rx, startup_tx)
+        });
 
     let join_handle = match join_handle {
         Ok(join_handle) => join_handle,
@@ -141,9 +144,13 @@ pub async fn start_preview_screen(
     };
 
     let startup = tokio::task::spawn_blocking(move || {
-        startup_rx.recv_timeout(Duration::from_secs(5)).unwrap_or_else(|_| {
-            NativeScreenStartup::Failed("Timed out while starting native screen preview.".to_string())
-        })
+        startup_rx
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap_or_else(|_| {
+                NativeScreenStartup::Failed(
+                    "Timed out while starting native screen preview.".to_string(),
+                )
+            })
     })
     .await
     .unwrap_or_else(|error| {
@@ -269,18 +276,17 @@ pub async fn latest_preview_screen_png(state: &AppState) -> Option<Vec<u8>> {
     for pixel in frame.bytes.chunks_exact(4) {
         rgba.extend_from_slice(&[pixel[2], pixel[1], pixel[0], pixel[3]]);
     }
-    let (rgba, width, height) =
-        downscale_rgba_for_preview(rgba, frame.width, frame.height, PREVIEW_SCREEN_MAX_PNG_WIDTH);
+    let (rgba, width, height) = downscale_rgba_for_preview(
+        rgba,
+        frame.width,
+        frame.height,
+        PREVIEW_SCREEN_MAX_PNG_WIDTH,
+    );
 
     let mut png = Vec::new();
     let encoder = PngEncoder::new(&mut png);
     encoder
-        .write_image(
-            &rgba,
-            width,
-            height,
-            image::ExtendedColorType::Rgba8,
-        )
+        .write_image(&rgba, width, height, image::ExtendedColorType::Rgba8)
         .ok()?;
     Some(png)
 }
@@ -359,7 +365,9 @@ async fn poll_screen_metrics(
     loop {
         ticker.tick().await;
         let snapshot = {
-            let guard = shared.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let guard = shared
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             ScreenSharedSnapshot {
                 frames_captured: guard.frames_captured,
                 dropped_frames: guard.dropped_frames,
@@ -631,27 +639,25 @@ mod macos {
         stop_rx: std_mpsc::Receiver<()>,
         startup_tx: std_mpsc::Sender<NativeScreenStartup>,
     ) {
-        autoreleasepool(|_| {
-            match start_stream(config, Arc::clone(&shared)) {
-                Ok(session) => {
-                    let _ = startup_tx.send(NativeScreenStartup::Live {
-                        width: session.width,
-                        height: session.height,
-                        selected_fps: session.selected_fps,
-                        message: session.message,
-                    });
-                    let _ = stop_rx.recv();
-                    stop_stream(&session.stream);
-                    unsafe {
-                        let _ = session.stream.removeStreamOutput_type_error(
-                            ProtocolObject::from_ref(&*session.delegate),
-                            SCStreamOutputType::Screen,
-                        );
-                    }
+        autoreleasepool(|_| match start_stream(config, Arc::clone(&shared)) {
+            Ok(session) => {
+                let _ = startup_tx.send(NativeScreenStartup::Live {
+                    width: session.width,
+                    height: session.height,
+                    selected_fps: session.selected_fps,
+                    message: session.message,
+                });
+                let _ = stop_rx.recv();
+                stop_stream(&session.stream);
+                unsafe {
+                    let _ = session.stream.removeStreamOutput_type_error(
+                        ProtocolObject::from_ref(&*session.delegate),
+                        SCStreamOutputType::Screen,
+                    );
                 }
-                Err(error) => {
-                    let _ = startup_tx.send(error);
-                }
+            }
+            Err(error) => {
+                let _ = startup_tx.send(error);
             }
         });
     }
@@ -674,11 +680,8 @@ mod macos {
     ) -> Result<ScreenSession, NativeScreenStartup> {
         let content = load_shareable_content()?;
         let selected = select_content(&content, &config)?;
-        let output_size = choose_preview_dimensions(
-            selected.source_width,
-            selected.source_height,
-            &config.video,
-        );
+        let output_size =
+            choose_preview_dimensions(selected.source_width, selected.source_height, &config.video);
         let stream_config = unsafe { SCStreamConfiguration::new() };
         configure_stream(&stream_config, output_size, &config);
         let delegate = ScreenPreviewDelegate::new(shared);
@@ -719,8 +722,16 @@ mod macos {
             output_size.0,
             output_size.1,
             selected_fps,
-            if config.include_cursor { "visible" } else { "hidden" },
-            if config.exclude_current_process_windows { "yes" } else { "no" }
+            if config.include_cursor {
+                "visible"
+            } else {
+                "hidden"
+            },
+            if config.exclude_current_process_windows {
+                "yes"
+            } else {
+                "no"
+            }
         ));
 
         Ok(ScreenSession {
@@ -871,7 +882,8 @@ mod macos {
             stream_config.setWidth(output_size.0 as usize);
             stream_config.setHeight(output_size.1 as usize);
             stream_config.setPixelFormat(kCVPixelFormatType_32BGRA);
-            stream_config.setMinimumFrameInterval(CMTime::new(1, config.video.fps.clamp(1, 120) as i32));
+            stream_config
+                .setMinimumFrameInterval(CMTime::new(1, config.video.fps.clamp(1, 120) as i32));
             stream_config.setQueueDepth(3);
             stream_config.setShowsCursor(config.include_cursor);
             stream_config.setScalesToFit(config.source_kind == PreviewScreenSourceKind::Window);
@@ -925,20 +937,26 @@ mod macos {
         shared: &Arc<StdMutex<PreviewScreenShared>>,
     ) {
         if !sample_buffer_is_complete(sample_buffer) {
-            let mut guard = shared.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut guard = shared
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             guard.dropped_frames = guard.dropped_frames.saturating_add(1);
             return;
         }
 
         let Some(pixel_buffer) = (unsafe { sample_buffer.image_buffer() }) else {
-            let mut guard = shared.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut guard = shared
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             guard.dropped_frames = guard.dropped_frames.saturating_add(1);
             return;
         };
 
         let pixel_format = CVPixelBufferGetPixelFormatType(&pixel_buffer);
         if pixel_format != kCVPixelFormatType_32BGRA {
-            let mut guard = shared.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut guard = shared
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             guard.dropped_frames = guard.dropped_frames.saturating_add(1);
             return;
         }
@@ -947,7 +965,9 @@ mod macos {
             CVPixelBufferLockBaseAddress(&pixel_buffer, CVPixelBufferLockFlags::ReadOnly)
         };
         if lock_result != 0 {
-            let mut guard = shared.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut guard = shared
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             guard.dropped_frames = guard.dropped_frames.saturating_add(1);
             return;
         }
@@ -961,7 +981,9 @@ mod macos {
             unsafe {
                 CVPixelBufferUnlockBaseAddress(&pixel_buffer, CVPixelBufferLockFlags::ReadOnly)
             };
-            let mut guard = shared.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut guard = shared
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             guard.dropped_frames = guard.dropped_frames.saturating_add(1);
             return;
         }
@@ -980,14 +1002,17 @@ mod macos {
             CVPixelBufferUnlockBaseAddress(&pixel_buffer, CVPixelBufferLockFlags::ReadOnly);
         }
 
-        let mut guard = shared.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut guard = shared
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let now = Instant::now();
         guard.frames_captured = guard.frames_captured.saturating_add(1);
         guard.frames_in_window = guard.frames_in_window.saturating_add(1);
         let window_started = *guard.window_started_at.get_or_insert(now);
         let elapsed = window_started.elapsed();
         if elapsed >= Duration::from_millis(500) {
-            guard.source_fps = Some(guard.frames_in_window as f64 / elapsed.as_secs_f64().max(0.001));
+            guard.source_fps =
+                Some(guard.frames_in_window as f64 / elapsed.as_secs_f64().max(0.001));
             guard.frames_in_window = 0;
             guard.window_started_at = Some(now);
         }

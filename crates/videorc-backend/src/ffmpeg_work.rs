@@ -31,6 +31,8 @@ struct FfmpegWorkState {
     capture_active: bool,
     finalizing_active: bool,
     maintenance_running: bool,
+    maintenance_cancel_generation: u64,
+    maintenance_cancel_requested: bool,
 }
 
 #[derive(Debug, Default)]
@@ -61,6 +63,12 @@ impl FfmpegWorkCoordinator {
                 if !waiting_registered {
                     state.capture_waiting += 1;
                     waiting_registered = true;
+                }
+                if state.maintenance_running && !state.maintenance_cancel_requested {
+                    state.maintenance_cancel_generation =
+                        state.maintenance_cancel_generation.saturating_add(1);
+                    state.maintenance_cancel_requested = true;
+                    self.notify.notify_waiters();
                 }
                 self.notify.notified()
             };
@@ -96,8 +104,10 @@ impl FfmpegWorkCoordinator {
             return Err(MaintenanceDeferral::MaintenanceRunning);
         }
         state.maintenance_running = true;
+        state.maintenance_cancel_requested = false;
         Ok(MaintenancePermit {
             coordinator: self.clone(),
+            generation: state.maintenance_cancel_generation,
         })
     }
 
@@ -112,16 +122,23 @@ impl FfmpegWorkCoordinator {
 
     #[cfg(test)]
     pub fn current_deferral(&self) -> Option<MaintenanceDeferral> {
+        self.snapshot().current_deferral()
+    }
+
+    pub fn snapshot(&self) -> FfmpegWorkSnapshot {
         let state = self.state.lock().expect("ffmpeg work state poisoned");
-        if state.capture_active || state.capture_waiting > 0 {
-            Some(MaintenanceDeferral::CaptureActive)
-        } else if state.finalizing_active {
-            Some(MaintenanceDeferral::FinalizingActive)
-        } else if state.maintenance_running {
-            Some(MaintenanceDeferral::MaintenanceRunning)
-        } else {
-            None
+        FfmpegWorkSnapshot {
+            capture_waiting: state.capture_waiting,
+            capture_active: state.capture_active,
+            finalizing_active: state.finalizing_active,
+            maintenance_running: state.maintenance_running,
+            maintenance_cancel_requested: state.maintenance_cancel_requested,
         }
+    }
+
+    fn maintenance_cancelled_since(&self, generation: u64) -> bool {
+        let state = self.state.lock().expect("ffmpeg work state poisoned");
+        state.maintenance_cancel_generation > generation
     }
 
     fn end_capture(&self) {
@@ -144,8 +161,32 @@ impl FfmpegWorkCoordinator {
         {
             let mut state = self.state.lock().expect("ffmpeg work state poisoned");
             state.maintenance_running = false;
+            state.maintenance_cancel_requested = false;
         }
         self.notify.notify_waiters();
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FfmpegWorkSnapshot {
+    pub capture_waiting: usize,
+    pub capture_active: bool,
+    pub finalizing_active: bool,
+    pub maintenance_running: bool,
+    pub maintenance_cancel_requested: bool,
+}
+
+impl FfmpegWorkSnapshot {
+    pub fn current_deferral(&self) -> Option<MaintenanceDeferral> {
+        if self.capture_active || self.capture_waiting > 0 {
+            Some(MaintenanceDeferral::CaptureActive)
+        } else if self.finalizing_active {
+            Some(MaintenanceDeferral::FinalizingActive)
+        } else if self.maintenance_running {
+            Some(MaintenanceDeferral::MaintenanceRunning)
+        } else {
+            None
+        }
     }
 }
 
@@ -174,6 +215,29 @@ impl Drop for FinalizingPermit {
 #[derive(Debug)]
 pub struct MaintenancePermit {
     coordinator: Arc<FfmpegWorkCoordinator>,
+    generation: u64,
+}
+
+impl MaintenancePermit {
+    pub fn cancel_token(&self) -> MaintenanceCancelToken {
+        MaintenanceCancelToken {
+            coordinator: self.coordinator.clone(),
+            generation: self.generation,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MaintenanceCancelToken {
+    coordinator: Arc<FfmpegWorkCoordinator>,
+    generation: u64,
+}
+
+impl MaintenanceCancelToken {
+    pub fn is_cancelled(&self) -> bool {
+        self.coordinator
+            .maintenance_cancelled_since(self.generation)
+    }
 }
 
 impl Drop for MaintenancePermit {
@@ -212,6 +276,32 @@ mod tests {
 
         drop(maintenance);
         let capture = coordinator.begin_capture_when_available().await;
+        assert_eq!(
+            coordinator.try_begin_maintenance().unwrap_err(),
+            MaintenanceDeferral::CaptureActive
+        );
+        drop(capture);
+    }
+
+    #[tokio::test]
+    async fn waiting_capture_requests_active_maintenance_cancellation() {
+        let coordinator = Arc::new(FfmpegWorkCoordinator::new());
+        let maintenance = coordinator.try_begin_maintenance().unwrap();
+        let cancel_token = maintenance.cancel_token();
+
+        let waiting_capture = tokio::spawn({
+            let coordinator = coordinator.clone();
+            async move { coordinator.begin_capture_when_available().await }
+        });
+        tokio::task::yield_now().await;
+
+        let snapshot = coordinator.snapshot();
+        assert!(snapshot.maintenance_running);
+        assert!(snapshot.maintenance_cancel_requested);
+        assert!(cancel_token.is_cancelled());
+
+        drop(maintenance);
+        let capture = waiting_capture.await.unwrap();
         assert_eq!(
             coordinator.try_begin_maintenance().unwrap_err(),
             MaintenanceDeferral::CaptureActive
