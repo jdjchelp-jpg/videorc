@@ -25,6 +25,10 @@ use crate::audio::{
     start_native_audio_source,
 };
 use crate::camera_capture::{native_camera_name_for_id, parse_native_camera_id};
+use crate::compositor::{
+    CompositorStartParams, compositor_frame_store, start_synthetic_compositor,
+    update_compositor_scene,
+};
 use crate::devices::{find_avfoundation_camera_index, find_avfoundation_screen_index};
 use crate::diagnostics::{
     apply_active_scene_revision, apply_audio_stats, apply_duplicate_capture_sources,
@@ -35,14 +39,17 @@ use crate::encoder_bridge::{EncoderBridgeRecordingSession, start_synthetic_recor
 use crate::ffmpeg::{ffprobe_path_for, resolve_ffmpeg_path};
 use crate::ffmpeg_work::{CapturePermit, MaintenanceCancelToken};
 use crate::pipeline::{RecordingPipeline, container_for_outputs, container_key};
+use crate::preview_camera::preview_camera_latest_frame_info;
+use crate::preview_screen::preview_screen_latest_frame_info;
 use crate::protocol::{
     AudioSettings, AudioTrack, AudioTrackSource, CameraCorner, CameraFit, CameraShape, CameraSize,
     CameraTransformMode, HealthLevel, LayoutPreset, PreviewCameraState, PreviewLiveParams,
     PreviewLiveSource, PreviewLiveState, PreviewLiveStatus, PreviewScreenSourceKind,
     PreviewScreenState, PreviewSnapshot, PreviewSnapshotParams, PreviewTransport,
-    RecordingPipelineStage, RecordingState, RecordingStatus, RemuxSessionParams, RtmpPreset,
-    RtmpSettings, Scene, SceneSourceKind, SideBySideCameraSide, SideBySideSplit,
-    StartSessionParams, StreamHealth, VideoPreset, VideoSettings,
+    CompositorSceneUpdateParams, RecordingPipelineStage, RecordingState, RecordingStatus,
+    RemuxSessionParams, RtmpPreset, RtmpSettings, Scene, SceneConfigParams, SceneSourceKind,
+    SideBySideCameraSide, SideBySideSplit, StartSessionParams, StreamHealth, VideoPreset,
+    VideoSettings,
 };
 use crate::repair::{
     GateStatus, MAINTENANCE_CANCELLED, QualityExpectations, QualityThresholds, RepairJob,
@@ -50,6 +57,7 @@ use crate::repair::{
 };
 use crate::screen_capture::{parse_screencapturekit_display_id, parse_screencapturekit_window_id};
 use crate::secrets;
+use crate::scene::scene_from_capture_config;
 use crate::state::{AppState, PreviewFrame};
 use crate::storage::{NewSession, PlatformAccountCredentials, default_preview_dir};
 use crate::streaming::{
@@ -410,7 +418,14 @@ pub async fn start_session(
     emit_audio_track_health_events(&state, &session_id, &params, &audio_tracks)?;
     let active_screen = state.database.active_stream_screen()?;
     let use_encoder_bridge =
-        should_use_recording_encoder_bridge(&params, &capture, active_screen.is_some());
+        should_use_recording_encoder_bridge(&state, &params, active_screen.as_ref()).await;
+    let encoder_bridge_fifo = if use_encoder_bridge {
+        let fifo_path = recording_encoder_bridge_fifo_path(&session_id);
+        create_recording_encoder_bridge_fifo(&fifo_path)?;
+        Some(fifo_path)
+    } else {
+        None
+    };
     let screen_overlay_fifo =
         if !use_encoder_bridge && (active_screen.is_some() || params.output.stream_enabled) {
             let fifo_path = screen_overlay_fifo_path(&session_id);
@@ -425,7 +440,11 @@ pub async fn start_session(
         params.output.stream_enabled,
         &audio_tracks,
     );
-    let duplicate_capture_sources = duplicate_capture_sources_for_capture(&state, &capture).await;
+    let duplicate_capture_sources = if use_encoder_bridge {
+        Vec::new()
+    } else {
+        duplicate_capture_sources_for_capture(&state, &capture).await
+    };
     let initial_diagnostics = apply_duplicate_capture_sources(
         starting_diagnostics(&session_id, params.output.video.fps, mode),
         duplicate_capture_sources,
@@ -446,8 +465,43 @@ pub async fn start_session(
             height: params.output.video.height,
             fps: SCREEN_OVERLAY_FPS,
         });
+    let encoder_bridge_frame_store = if use_encoder_bridge {
+        start_synthetic_compositor(
+            state.clone(),
+            CompositorStartParams {
+                target_fps: params.output.video.fps.max(60),
+                width: params.output.video.width,
+                height: params.output.video.height,
+            },
+        )
+        .await;
+        let scene = params.scene.clone().unwrap_or_else(|| {
+            scene_from_capture_config(SceneConfigParams {
+                sources: params.sources.clone(),
+                layout: params.layout.clone(),
+                video: Some(params.output.video.clone()),
+            })
+        });
+        let revision = u64::try_from(Utc::now().timestamp_millis()).unwrap_or(0);
+        update_compositor_scene(
+            &state,
+            CompositorSceneUpdateParams {
+                revision,
+                scene: Some(scene),
+                layout: params.layout.clone(),
+                active_screen: active_screen.clone(),
+            },
+        )
+        .await;
+        Some(compositor_frame_store(&state).await)
+    } else {
+        None
+    };
     let args = if use_encoder_bridge {
-        bridge_recording_ffmpeg_args(&capture, &params, output_path.as_deref())?
+        let fifo_path = encoder_bridge_fifo
+            .as_deref()
+            .context("Encoder bridge FIFO path was not prepared")?;
+        bridge_recording_ffmpeg_args(&capture, &params, output_path.as_deref(), fifo_path)?
     } else {
         ffmpeg_args(
             &capture,
@@ -475,7 +529,11 @@ pub async fn start_session(
 
     let mut child = ffmpeg_command(&ffmpeg_path)
         .args(&args)
-        .stdin(Stdio::piped())
+        .stdin(if use_encoder_bridge {
+            Stdio::null()
+        } else {
+            Stdio::piped()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -483,19 +541,24 @@ pub async fn start_session(
 
     let stderr = child.stderr.take();
     let stdout = child.stdout.take();
-    let mut stdin = child.stdin.take();
+    let stdin = if use_encoder_bridge {
+        None
+    } else {
+        child.stdin.take()
+    };
     let pid = child.id().unwrap_or_default();
     let encoder_bridge = if use_encoder_bridge {
-        let bridge_stdin = stdin
-            .take()
-            .context("FFmpeg rawvideo stdin was unavailable for encoder bridge")?;
+        let bridge_fifo_path = encoder_bridge_fifo
+            .clone()
+            .context("Encoder bridge FIFO path was unavailable")?;
         Some(start_synthetic_recording_bridge(
             state.clone(),
             session_id.clone(),
             params.output.video.fps,
             params.output.video.width,
             params.output.video.height,
-            bridge_stdin,
+            bridge_fifo_path,
+            encoder_bridge_frame_store.clone(),
         )?)
     } else {
         None
@@ -523,7 +586,7 @@ pub async fn start_session(
                 screen_overlay_fifo,
                 params.output.video.width,
                 params.output.video.height,
-                active_screen.map(|screen| screen.image_path),
+                active_screen.clone().map(|screen| screen.image_path),
             )?),
             None => None,
         },
@@ -1573,7 +1636,9 @@ async fn stop_recording_process_for_shutdown(recording: Option<ActiveRecording>)
         return;
     };
 
-    if let Some(mut stdin) = recording.stdin.take() {
+    if let Some(encoder_bridge) = &recording.encoder_bridge {
+        encoder_bridge.stop();
+    } else if let Some(mut stdin) = recording.stdin.take() {
         let _ = stdin.write_all(b"q\n").await;
         let _ = stdin.shutdown().await;
     }
@@ -2601,52 +2666,70 @@ fn tee_output_args(spec: String) -> Vec<String> {
     ]
 }
 
-fn should_use_recording_encoder_bridge(
+async fn should_use_recording_encoder_bridge(
+    state: &AppState,
     params: &StartSessionParams,
-    capture: &CaptureInputs,
-    active_screen: bool,
-) -> bool {
-    should_use_recording_encoder_bridge_with_setting(
-        params,
-        capture,
-        active_screen,
-        std::env::var("VIDEORC_RECORDING_ENCODER_BRIDGE")
-            .ok()
-            .as_deref(),
-    )
-}
-
-fn should_use_recording_encoder_bridge_with_setting(
-    params: &StartSessionParams,
-    capture: &CaptureInputs,
-    active_screen: bool,
-    setting: Option<&str>,
+    active_screen: Option<&crate::protocol::StreamScreen>,
 ) -> bool {
     if !params.output.record_enabled || params.output.stream_enabled {
         return false;
     }
-    if !encoder_bridge_recording_requested(setting) {
+    if encoder_bridge_recording_disabled(
+        std::env::var("VIDEORC_RECORDING_ENCODER_BRIDGE")
+            .ok()
+            .as_deref(),
+    ) {
         return false;
     }
-    params.scene.is_none()
-        && !active_screen
-        && matches!(capture.video, VideoInput::TestPattern)
-        && capture.camera_index.is_none()
+    if params.output.video.fps > 30 {
+        return false;
+    }
+    let scene = params.scene.clone().unwrap_or_else(|| {
+        scene_from_capture_config(SceneConfigParams {
+            sources: params.sources.clone(),
+            layout: params.layout.clone(),
+            video: Some(params.output.video.clone()),
+        })
+    });
+    let has_camera_frame = preview_camera_latest_frame_info(state).await.is_some();
+    let has_screen_frame = preview_screen_latest_frame_info(state).await.is_some();
+    recording_encoder_bridge_sources_ready(
+        &scene,
+        active_screen.is_some(),
+        has_camera_frame,
+        has_screen_frame,
+    )
 }
 
-fn encoder_bridge_recording_requested(setting: Option<&str>) -> bool {
-    setting
-        .map(|value| {
-            let normalized = value.trim().to_ascii_lowercase();
-            matches!(normalized.as_str(), "1" | "true" | "on" | "force")
-        })
-        .unwrap_or(false)
+fn encoder_bridge_recording_disabled(setting: Option<&str>) -> bool {
+    setting.is_some_and(|value| {
+        let normalized = value.trim().to_ascii_lowercase();
+        matches!(normalized.as_str(), "0" | "false" | "off" | "legacy")
+    })
+}
+
+fn recording_encoder_bridge_sources_ready(
+    scene: &Scene,
+    has_active_screen_image: bool,
+    has_camera_frame: bool,
+    has_screen_frame: bool,
+) -> bool {
+    scene.sources.iter().filter(|source| source.visible).all(|source| {
+        match source.kind {
+            SceneSourceKind::TestPattern => true,
+            SceneSourceKind::Camera => has_camera_frame,
+            SceneSourceKind::Screen | SceneSourceKind::Window => {
+                has_active_screen_image || has_screen_frame
+            }
+        }
+    })
 }
 
 fn bridge_recording_ffmpeg_args(
     capture: &CaptureInputs,
     params: &StartSessionParams,
     output_path: Option<&Path>,
+    fifo_path: &Path,
 ) -> Result<Vec<String>> {
     let output_path =
         output_path.context("Encoder bridge recording requires a local output path")?;
@@ -2661,7 +2744,7 @@ fn bridge_recording_ffmpeg_args(
         "-progress".to_string(),
         "pipe:2".to_string(),
     ];
-    let input_layout = append_bridge_recording_input_args(&mut args, capture, params);
+    let input_layout = append_bridge_recording_input_args(&mut args, capture, params, fifo_path);
     args.extend([
         "-filter_complex".to_string(),
         bridge_recording_video_filter(&params.output.video),
@@ -2675,13 +2758,11 @@ fn bridge_recording_ffmpeg_args(
         "-pix_fmt".to_string(),
         "yuv420p".to_string(),
         "-c:v".to_string(),
-        "h264_videotoolbox".to_string(),
-        "-allow_sw".to_string(),
-        "1".to_string(),
-        "-realtime".to_string(),
-        "1".to_string(),
-        "-prio_speed".to_string(),
-        "1".to_string(),
+        "libx264".to_string(),
+        "-preset".to_string(),
+        "ultrafast".to_string(),
+        "-tune".to_string(),
+        "zerolatency".to_string(),
         "-b:v".to_string(),
         format!("{}k", params.output.video.bitrate_kbps),
         "-maxrate".to_string(),
@@ -2705,6 +2786,7 @@ fn append_bridge_recording_input_args(
     args: &mut Vec<String>,
     capture: &CaptureInputs,
     params: &StartSessionParams,
+    fifo_path: &Path,
 ) -> InputLayout {
     let video = &params.output.video;
     args.extend([
@@ -2717,7 +2799,7 @@ fn append_bridge_recording_input_args(
         "-framerate".to_string(),
         video.fps.to_string(),
         "-i".to_string(),
-        "pipe:0".to_string(),
+        fifo_path.display().to_string(),
     ]);
 
     let mut next_input_index = 1;
@@ -3143,6 +3225,35 @@ fn append_screen_overlay_input(args: &mut Vec<String>, overlay: &ScreenOverlayIn
 
 fn screen_overlay_fifo_path(session_id: &str) -> PathBuf {
     std::env::temp_dir().join(format!("videorc-screen-overlay-{session_id}.rgba"))
+}
+
+fn recording_encoder_bridge_fifo_path(session_id: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("videorc-recording-encoder-bridge-{session_id}.yuv"))
+}
+
+fn create_recording_encoder_bridge_fifo(path: &Path) -> Result<()> {
+    if path.exists() {
+        std::fs::remove_file(path).with_context(|| {
+            format!(
+                "Could not remove stale recording encoder bridge FIFO {}",
+                path.display()
+            )
+        })?;
+    }
+
+    let c_path = CString::new(path.display().to_string())
+        .context("Recording encoder bridge FIFO path contained an interior NUL byte")?;
+    let status = unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) };
+    if status != 0 {
+        return Err(io::Error::last_os_error()).with_context(|| {
+            format!(
+                "Could not create recording encoder bridge FIFO {}",
+                path.display()
+            )
+        });
+    }
+
+    Ok(())
 }
 
 fn create_screen_overlay_fifo(path: &Path) -> Result<()> {
@@ -5138,6 +5249,7 @@ mod tests {
     #[test]
     fn bridge_recording_args_use_raw_yuv_video_and_existing_audio() {
         let params = base_params(true, false);
+        let fifo_path = Path::new("/tmp/videorc-bridge-input.yuv");
         let args = bridge_recording_ffmpeg_args(
             &CaptureInputs {
                 video: VideoInput::TestPattern,
@@ -5146,22 +5258,29 @@ mod tests {
             },
             &params,
             Some(Path::new("/tmp/videorc-bridge-test.mkv")),
+            fifo_path,
         )
         .unwrap();
 
         assert_eq!(
             ffmpeg_inputs(&args),
-            vec!["pipe:0", "sine=frequency=880:sample_rate=48000"]
+            vec![
+                fifo_path.display().to_string(),
+                "sine=frequency=880:sample_rate=48000".to_string()
+            ]
         );
         assert_eq!(
-            input_arg_value(&args, "pipe:0", "-pix_fmt"),
+            input_arg_value(&args, &fifo_path.display().to_string(), "-pix_fmt"),
             Some("yuv420p")
         );
         assert_eq!(
-            input_arg_value(&args, "pipe:0", "-video_size"),
+            input_arg_value(&args, &fifo_path.display().to_string(), "-video_size"),
             Some("2560x1440")
         );
-        assert_eq!(input_arg_value(&args, "pipe:0", "-framerate"), Some("30"));
+        assert_eq!(
+            input_arg_value(&args, &fifo_path.display().to_string(), "-framerate"),
+            Some("30")
+        );
         assert!(!input_has_arg(
             &args,
             "sine=frequency=880:sample_rate=48000",
@@ -5170,72 +5289,65 @@ mod tests {
         assert!(args.iter().any(|arg| arg == "[v_main]"));
         assert!(!args.iter().any(|arg| arg == "[preview]"));
         assert!(args.iter().any(|arg| arg == "1:a?"));
-        assert_eq!(arg_value(&args, "-c:v"), Some("h264_videotoolbox"));
+        assert_eq!(arg_value(&args, "-c:v"), Some("libx264"));
+        assert_eq!(arg_value(&args, "-preset"), Some("ultrafast"));
+        assert_eq!(arg_value(&args, "-tune"), Some("zerolatency"));
+        assert_eq!(arg_value(&args, "-allow_sw"), None);
         assert_eq!(arg_value(&args, "-c:a"), Some("pcm_s16le"));
         assert!(args.iter().any(|arg| arg == "-shortest"));
 
         let filter = arg_value(&args, "-filter_complex").unwrap();
         assert_eq!(filter, "[0:v]fps=30[v_main]");
         assert!(!args.iter().any(|arg| arg == "pipe:1"));
+        assert!(!args.iter().any(|arg| arg == "pipe:0"));
     }
 
     #[test]
-    fn bridge_recording_guard_keeps_legacy_fallback_for_non_safe_cases() {
-        let mut params = base_params(true, false);
-        let capture = CaptureInputs {
-            video: VideoInput::TestPattern,
-            camera_index: None,
-            microphone: None,
-        };
-
-        assert!(!should_use_recording_encoder_bridge_with_setting(
-            &params, &capture, false, None
-        ));
-        assert!(should_use_recording_encoder_bridge_with_setting(
-            &params,
-            &capture,
-            false,
-            Some("1")
-        ));
-        assert!(!should_use_recording_encoder_bridge_with_setting(
-            &params,
-            &capture,
+    fn bridge_recording_source_guard_requires_ready_native_sources() {
+        let test_pattern = scene_with_sources(vec![scene_source(
+            "source:test",
+            SceneSourceKind::TestPattern,
+            scene_transform(0.0, 0.0, 1.0, 1.0),
             true,
-            Some("1")
+        )]);
+        assert!(recording_encoder_bridge_sources_ready(
+            &test_pattern,
+            false,
+            false,
+            false
         ));
 
-        params.output.stream_enabled = true;
-        assert!(!should_use_recording_encoder_bridge_with_setting(
-            &params,
-            &capture,
-            false,
-            Some("1")
+        let camera = scene_with_sources(vec![scene_source(
+            "source:camera",
+            SceneSourceKind::Camera,
+            scene_transform(0.0, 0.0, 1.0, 1.0),
+            true,
+        )]);
+        assert!(!recording_encoder_bridge_sources_ready(
+            &camera, false, false, false
         ));
-        params.output.stream_enabled = false;
-
-        let real_screen = CaptureInputs {
-            video: VideoInput::MacScreen { index: 3 },
-            camera_index: None,
-            microphone: None,
-        };
-        assert!(!should_use_recording_encoder_bridge_with_setting(
-            &params,
-            &real_screen,
-            false,
-            Some("1")
+        assert!(recording_encoder_bridge_sources_ready(
+            &camera, false, true, false
         ));
 
-        let with_camera = CaptureInputs {
-            video: VideoInput::TestPattern,
-            camera_index: Some(0),
-            microphone: None,
-        };
-        assert!(!should_use_recording_encoder_bridge_with_setting(
-            &params,
-            &with_camera,
-            false,
-            Some("1")
+        let screen = scene_with_sources(vec![scene_source(
+            "source:screen",
+            SceneSourceKind::Screen,
+            scene_transform(0.0, 0.0, 1.0, 1.0),
+            true,
+        )]);
+        assert!(!recording_encoder_bridge_sources_ready(
+            &screen, false, false, false
         ));
+        assert!(recording_encoder_bridge_sources_ready(
+            &screen, false, false, true
+        ));
+        assert!(recording_encoder_bridge_sources_ready(
+            &screen, true, false, false
+        ));
+
+        assert!(encoder_bridge_recording_disabled(Some("legacy")));
+        assert!(!encoder_bridge_recording_disabled(None));
     }
 
     #[test]

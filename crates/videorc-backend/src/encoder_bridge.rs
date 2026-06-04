@@ -1,17 +1,23 @@
-use std::path::PathBuf;
+use std::ffi::CString;
+use std::fs::File;
+use std::io::{self, Write as StdWrite};
+use std::os::fd::FromRawFd;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{ChildStdin, Command};
-use tokio::sync::Mutex;
-use tokio::task::JoinHandle;
+use tokio::process::Command;
+use tokio::sync::{Mutex, mpsc};
+use tokio::task::JoinHandle as TokioJoinHandle;
 use tokio::time::{Duration, MissedTickBehavior};
 use uuid::Uuid;
 
+use crate::compositor::CompositorFrameStore;
 use crate::compositor_synthetic::{SyntheticCompositorFrame, SyntheticMovingSource};
 use crate::diagnostics::{
     EncoderBridgeDiagnosticSnapshot, apply_encoder_bridge_stats,
@@ -51,7 +57,9 @@ struct EncoderBridgeRuntimeStats {
 #[derive(Debug)]
 pub struct EncoderBridgeRecordingSession {
     stop: Arc<AtomicBool>,
-    writer: Option<JoinHandle<()>>,
+    fifo_path: PathBuf,
+    writer: Option<thread::JoinHandle<()>>,
+    diagnostics_task: Option<TokioJoinHandle<()>>,
 }
 
 impl EncoderBridgeRecordingSession {
@@ -63,9 +71,11 @@ impl EncoderBridgeRecordingSession {
 impl Drop for EncoderBridgeRecordingSession {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
-        if let Some(writer) = self.writer.take() {
-            writer.abort();
+        let _ = self.writer.take();
+        if let Some(task) = self.diagnostics_task.take() {
+            task.abort();
         }
+        let _ = std::fs::remove_file(&self.fifo_path);
     }
 }
 
@@ -244,28 +254,51 @@ pub fn start_synthetic_recording_bridge(
     target_fps: u32,
     width: u32,
     height: u32,
-    stdin: ChildStdin,
+    fifo_path: PathBuf,
+    frame_store: Option<CompositorFrameStore>,
 ) -> Result<EncoderBridgeRecordingSession> {
     let byte_len = raw_yuv420p_len(width, height)?;
     let stop = Arc::new(AtomicBool::new(false));
     let writer_stop = stop.clone();
-    let writer = tokio::spawn(async move {
-        let params = SyntheticRecordingWriterParams {
-            state,
-            session_id,
-            target_fps: target_fps.max(1),
-            width: width.max(1),
-            height: height.max(1),
-            byte_len,
-            stdin,
-            stop: writer_stop,
-        };
-        write_synthetic_recording_frames(params).await;
+    let writer_fifo_path = fifo_path.clone();
+    let (diagnostics_tx, mut diagnostics_rx) =
+        mpsc::unbounded_channel::<EncoderBridgeWriterEvent>();
+    let diagnostics_state = state.clone();
+    let diagnostics_task = tokio::spawn(async move {
+        while let Some(event) = diagnostics_rx.recv().await {
+            emit_encoder_bridge_diagnostics(
+                &diagnostics_state,
+                &event.session_id,
+                event.target_fps,
+                event.stats,
+                event.error,
+            )
+            .await;
+        }
     });
+    let writer = thread::Builder::new()
+        .name("videorc-recording-encoder-bridge".to_string())
+        .spawn(move || {
+            let params = SyntheticRecordingWriterParams {
+                session_id,
+                target_fps: target_fps.max(1),
+                width: width.max(1),
+                height: height.max(1),
+                byte_len,
+                fifo_path: writer_fifo_path,
+                frame_store,
+                stop: writer_stop,
+                diagnostics_tx,
+            };
+            write_synthetic_recording_frames(params);
+        })
+        .context("Could not start recording encoder bridge writer thread")?;
 
     Ok(EncoderBridgeRecordingSession {
         stop,
+        fifo_path,
         writer: Some(writer),
+        diagnostics_task: Some(diagnostics_task),
     })
 }
 
@@ -433,51 +466,84 @@ fn raw_yuv420p_len(width: u32, height: u32) -> Result<usize> {
 }
 
 struct SyntheticRecordingWriterParams {
-    state: AppState,
     session_id: String,
     target_fps: u32,
     width: u32,
     height: u32,
     byte_len: usize,
     stop: Arc<AtomicBool>,
-    stdin: ChildStdin,
+    fifo_path: PathBuf,
+    frame_store: Option<CompositorFrameStore>,
+    diagnostics_tx: mpsc::UnboundedSender<EncoderBridgeWriterEvent>,
 }
 
-async fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
+#[derive(Debug, Clone)]
+struct EncoderBridgeWriterEvent {
+    session_id: String,
+    target_fps: u32,
+    stats: EncoderBridgeRuntimeStats,
+    error: Option<String>,
+}
+
+fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
     let SyntheticRecordingWriterParams {
-        state,
         session_id,
         target_fps,
         width,
         height,
         byte_len,
         stop,
-        mut stdin,
+        fifo_path,
+        frame_store,
+        diagnostics_tx,
     } = params;
+    let mut fifo = match open_recording_fifo_writer(&fifo_path, &stop) {
+        Ok(fifo) => fifo,
+        Err(error) => {
+            emit_encoder_bridge_diagnostics_from_thread(
+                &diagnostics_tx,
+                session_id.clone(),
+                target_fps,
+                EncoderBridgeRuntimeStats {
+                    queue_depth: 0,
+                    input_fps: None,
+                    dropped_frames: 0,
+                    encoder_speed: None,
+                },
+                Some(format!(
+                    "Could not open recording encoder bridge FIFO {}: {error}",
+                    fifo_path.display()
+                )),
+            );
+            return;
+        }
+    };
     let frame_interval = Duration::from_secs_f64(1.0 / f64::from(target_fps.max(1)));
-    let mut ticker = tokio::time::interval(frame_interval);
-    ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let source = SyntheticMovingSource;
     let mut bytes = vec![0; byte_len];
     let mut sequence = 0_u64;
     let mut frames_in_window = 0_u64;
     let mut window_started_at = Instant::now();
+    let mut next_frame_at = Instant::now();
     let mut queue_depth = 0_u64;
 
     while !stop.load(Ordering::Relaxed) {
-        ticker.tick().await;
-        if stop.load(Ordering::Relaxed) {
-            break;
+        let now = Instant::now();
+        if now < next_frame_at {
+            thread::sleep(next_frame_at - now);
         }
+        next_frame_at += frame_interval;
         sequence = sequence.saturating_add(1);
-        let frame = source.render(sequence, width, height);
-        render_synthetic_yuv420p_frame(&frame, &mut bytes);
+        if !copy_latest_compositor_frame(frame_store.as_ref(), &mut bytes) {
+            let frame = source.render(sequence, width, height);
+            render_synthetic_yuv420p_frame(&frame, &mut bytes);
+        }
 
         queue_depth = 1;
-        if let Err(error) = stdin.write_all(&bytes).await {
-            emit_encoder_bridge_diagnostics(
-                &state,
-                &session_id,
+        if let Err(error) = fifo.write_all(&bytes) {
+            emit_encoder_bridge_diagnostics_from_thread(
+                &diagnostics_tx,
+                session_id.clone(),
                 target_fps,
                 EncoderBridgeRuntimeStats {
                     queue_depth,
@@ -488,17 +554,16 @@ async fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams
                 Some(format!(
                     "Could not write compositor frame into recording FFmpeg: {error}"
                 )),
-            )
-            .await;
+            );
             break;
         }
         queue_depth = 0;
         frames_in_window = frames_in_window.saturating_add(1);
 
         if window_started_at.elapsed() >= Duration::from_millis(500) {
-            emit_encoder_bridge_diagnostics(
-                &state,
-                &session_id,
+            emit_encoder_bridge_diagnostics_from_thread(
+                &diagnostics_tx,
+                session_id.clone(),
                 target_fps,
                 EncoderBridgeRuntimeStats {
                     queue_depth,
@@ -507,27 +572,87 @@ async fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams
                     encoder_speed: None,
                 },
                 None,
-            )
-            .await;
+            );
             window_started_at = Instant::now();
             frames_in_window = 0;
         }
     }
 
-    let _ = stdin.shutdown().await;
-    emit_encoder_bridge_diagnostics(
-        &state,
-        &session_id,
+    let _ = fifo.flush();
+    drop(fifo);
+    emit_encoder_bridge_diagnostics_from_thread(
+        &diagnostics_tx,
+        session_id,
         target_fps,
         EncoderBridgeRuntimeStats {
             queue_depth,
-            input_fps: measured_input_fps(frames_in_window, window_started_at),
+            input_fps: None,
             dropped_frames: 0,
             encoder_speed: None,
         },
         None,
-    )
-    .await;
+    );
+}
+
+fn copy_latest_compositor_frame(frame_store: Option<&CompositorFrameStore>, bytes: &mut [u8]) -> bool {
+    let Some(frame_store) = frame_store else {
+        return false;
+    };
+    let Some(frame) = frame_store
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .latest()
+    else {
+        return false;
+    };
+    if frame.bytes.len() != bytes.len() {
+        return false;
+    }
+    bytes.copy_from_slice(&frame.bytes);
+    true
+}
+
+fn open_recording_fifo_writer(path: &Path, stop: &AtomicBool) -> io::Result<File> {
+    let c_path = CString::new(path.display().to_string()).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid recording encoder bridge FIFO path",
+        )
+    })?;
+
+    while !stop.load(Ordering::Relaxed) {
+        let fd = unsafe { libc::open(c_path.as_ptr(), libc::O_WRONLY | libc::O_NONBLOCK) };
+        if fd >= 0 {
+            let _ = unsafe { libc::fcntl(fd, libc::F_SETFL, 0) };
+            return Ok(unsafe { File::from_raw_fd(fd) });
+        }
+
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() != Some(libc::ENXIO) {
+            return Err(error);
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+
+    Err(io::Error::new(
+        io::ErrorKind::Interrupted,
+        "recording encoder bridge writer stopped before FIFO opened",
+    ))
+}
+
+fn emit_encoder_bridge_diagnostics_from_thread(
+    diagnostics_tx: &mpsc::UnboundedSender<EncoderBridgeWriterEvent>,
+    session_id: String,
+    target_fps: u32,
+    stats: EncoderBridgeRuntimeStats,
+    error: Option<String>,
+) {
+    let _ = diagnostics_tx.send(EncoderBridgeWriterEvent {
+        session_id,
+        target_fps,
+        stats,
+        error,
+    });
 }
 
 async fn read_encoder_progress(

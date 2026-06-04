@@ -350,6 +350,20 @@ pub async fn preview_camera_latest_frame_info(state: &AppState) -> Option<Previe
     })
 }
 
+pub async fn preview_camera_latest_frame(
+    state: &AppState,
+) -> Option<(FrameHandle<PreviewCameraPixelFormat>, LayoutSettings)> {
+    let slot = state.preview_camera.lock().await;
+    let active = slot.active.as_ref()?;
+    let frame = active
+        .shared
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .frame_store
+        .latest()?;
+    Some((frame, active.layout.clone()))
+}
+
 pub async fn latest_preview_camera_png(state: &AppState) -> Option<Vec<u8>> {
     let (frame, layout) = {
         let slot = state.preview_camera.lock().await;

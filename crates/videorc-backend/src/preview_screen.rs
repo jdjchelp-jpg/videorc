@@ -383,6 +383,19 @@ pub async fn preview_screen_latest_frame_info(state: &AppState) -> Option<Previe
     })
 }
 
+pub async fn preview_screen_latest_frame(
+    state: &AppState,
+) -> Option<FrameHandle<PreviewScreenPixelFormat>> {
+    let slot = state.preview_screen.lock().await;
+    let active = slot.active.as_ref()?;
+    active
+        .shared
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .frame_store
+        .latest()
+}
+
 pub async fn latest_preview_screen_png(state: &AppState) -> Option<Vec<u8>> {
     let frame = {
         let slot = state.preview_screen.lock().await;

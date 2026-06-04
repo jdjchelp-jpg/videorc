@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Instant, SystemTime};
 
 use chrono::Utc;
@@ -12,23 +13,37 @@ use crate::compositor_synthetic::SyntheticMovingSource;
 use crate::diagnostics::{
     apply_active_scene_revision, apply_compositor_stats, apply_runtime_diagnostics_snapshot,
 };
-use crate::preview_camera::{preview_camera_latest_frame_info, preview_camera_status};
-use crate::preview_screen::{preview_screen_latest_frame_info, preview_screen_status};
+use crate::frame_store::{FrameHandle, FrameStore};
+use crate::preview_camera::{
+    PreviewCameraPixelFormat, preview_camera_latest_frame, preview_camera_latest_frame_info,
+    preview_camera_status,
+};
+use crate::preview_screen::{
+    PreviewScreenPixelFormat, preview_screen_latest_frame, preview_screen_latest_frame_info,
+    preview_screen_status,
+};
 use crate::protocol::{
-    CameraFit, CompositorSceneSourceFit, CompositorSceneSourceKind, CompositorSceneSourceStatus,
-    CompositorSceneUpdateParams, CompositorSourceKind, CompositorSourceStatus, CompositorState,
-    CompositorStatus, LayoutPreset, LayoutSettings, PreviewCameraState, PreviewScreenSourceKind,
-    PreviewScreenState, PreviewSurfaceState, Scene, SceneSourceKind, SceneTransform, StreamScreen,
+    CameraFit, CameraShape, CompositorSceneSourceFit, CompositorSceneSourceKind,
+    CompositorSceneSourceStatus, CompositorSceneUpdateParams, CompositorSourceKind,
+    CompositorSourceStatus, CompositorState, CompositorStatus, LayoutPreset, LayoutSettings,
+    PreviewCameraState, PreviewScreenSourceKind, PreviewScreenState, PreviewSurfaceState, Scene,
+    SceneSourceKind, SceneTransform, StreamScreen,
 };
 use crate::state::AppState;
 
 pub type CompositorSlot = std::sync::Arc<tokio::sync::Mutex<CompositorRuntime>>;
+pub type CompositorFrameStore = Arc<StdMutex<FrameStore<CompositorPixelFormat>>>;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompositorPixelFormat {
+    Yuv420p,
+}
 
 #[derive(Debug)]
 pub struct CompositorRuntime {
     pub status: CompositorStatus,
     scene: Option<CompositorSceneSnapshot>,
     image_sources: HashMap<String, CompositorImageSource>,
+    frame_store: CompositorFrameStore,
     run_id: Option<String>,
     stop_tx: Option<watch::Sender<bool>>,
     render_task: Option<JoinHandle<()>>,
@@ -66,6 +81,7 @@ struct CompositorImageSource {
     file_revision: Option<String>,
     width: Option<u32>,
     height: Option<u32>,
+    rgba: Option<Arc<Vec<u8>>>,
     state: String,
     message: Option<String>,
 }
@@ -75,6 +91,7 @@ pub fn initial_compositor_state() -> CompositorRuntime {
         status: stopped_status(Some("Compositor is not running.".to_string())),
         scene: None,
         image_sources: HashMap::new(),
+        frame_store: Arc::new(StdMutex::new(FrameStore::new(2))),
         run_id: None,
         stop_tx: None,
         render_task: None,
@@ -180,6 +197,10 @@ pub async fn compositor_status(state: &AppState) -> CompositorStatus {
     state.compositor.lock().await.status.clone()
 }
 
+pub async fn compositor_frame_store(state: &AppState) -> CompositorFrameStore {
+    state.compositor.lock().await.frame_store.clone()
+}
+
 pub async fn update_compositor_scene(
     state: &AppState,
     params: CompositorSceneUpdateParams,
@@ -233,20 +254,25 @@ impl CompositorRuntime {
         }
 
         let source = if file_revision.is_some() {
-            match image::image_dimensions(path) {
-                Ok((width, height)) => CompositorImageSource {
+            match image::open(path).map(|image| image.into_rgba8()) {
+                Ok(image) => {
+                    let (width, height) = image.dimensions();
+                    CompositorImageSource {
                     image_path: screen.image_path.clone(),
                     file_revision,
                     width: Some(width),
                     height: Some(height),
+                        rgba: Some(Arc::new(image.into_raw())),
                     state: "live".to_string(),
                     message: None,
-                },
+                    }
+                }
                 Err(error) => CompositorImageSource {
                     image_path: screen.image_path.clone(),
                     file_revision,
                     width: None,
                     height: None,
+                    rgba: None,
                     state: "source-missing".to_string(),
                     message: Some(format!("Could not read uploaded screen image: {error}")),
                 },
@@ -257,6 +283,7 @@ impl CompositorRuntime {
                 file_revision,
                 width: None,
                 height: None,
+                rgba: None,
                 state: "source-missing".to_string(),
                 message: Some("Uploaded screen image file is missing.".to_string()),
             }
@@ -287,7 +314,6 @@ async fn run_synthetic_compositor_loop(
     target_fps: u32,
     mut stop_rx: watch::Receiver<bool>,
 ) {
-    let source = SyntheticMovingSource;
     let frame_interval = Duration::from_secs_f64(1.0 / f64::from(target_fps.max(1)));
     let mut ticker = tokio::time::interval(frame_interval);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -323,11 +349,12 @@ async fn run_synthetic_compositor_loop(
                 frames_rendered = frames_rendered.saturating_add(1);
                 frames_in_window = frames_in_window.saturating_add(1);
                 let (width, height) = compositor_dimensions(&state).await;
-                let frame = source.render(frames_rendered, width, height);
+                let fallback_frame_age_ms =
+                    publish_compositor_frame(&state, frames_rendered, width, height).await;
                 let sources = compositor_source_statuses(&state).await;
                 let frame_age_ms = compositor_frame_age_ms(
                     &sources,
-                    frame.captured_at.elapsed().as_millis() as u64,
+                    fallback_frame_age_ms,
                 );
                 frame_times_ms.push(render_started_at.elapsed().as_secs_f64() * 1000.0);
 
@@ -397,6 +424,175 @@ async fn compositor_dimensions(state: &AppState) -> (u32, u32) {
         compositor.status.width.max(1),
         compositor.status.height.max(1),
     )
+}
+
+async fn publish_compositor_frame(
+    state: &AppState,
+    sequence: u64,
+    width: u32,
+    height: u32,
+) -> u64 {
+    let (frame_store, snapshot, active_image_source) = {
+        let compositor = state.compositor.lock().await;
+        let active_image_source = compositor
+            .scene
+            .as_ref()
+            .and_then(|snapshot| snapshot.active_screen.as_ref())
+            .and_then(|screen| compositor.image_sources.get(&screen.id))
+            .cloned();
+        (
+            compositor.frame_store.clone(),
+            compositor.scene.clone(),
+            active_image_source,
+        )
+    };
+    let camera_frame = preview_camera_latest_frame(state).await;
+    let screen_frame = preview_screen_latest_frame(state).await;
+    let captured_at = Instant::now();
+    let mut store = frame_store
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut bytes = store.checkout_buffer(raw_yuv420p_len(width, height));
+    render_compositor_yuv420p_frame(
+        CompositorRenderInputs {
+            sequence,
+            width,
+            height,
+            snapshot: snapshot.as_ref(),
+            active_image_source: active_image_source.as_ref(),
+            camera_frame: camera_frame.as_ref().map(|(frame, _layout)| frame),
+            screen_frame: screen_frame.as_ref(),
+        },
+        &mut bytes,
+    );
+    store.publish(
+        sequence,
+        width,
+        height,
+        CompositorPixelFormat::Yuv420p,
+        captured_at,
+        bytes,
+    );
+    captured_at.elapsed().as_millis() as u64
+}
+
+struct CompositorRenderInputs<'a> {
+    sequence: u64,
+    width: u32,
+    height: u32,
+    snapshot: Option<&'a CompositorSceneSnapshot>,
+    active_image_source: Option<&'a CompositorImageSource>,
+    camera_frame: Option<&'a FrameHandle<PreviewCameraPixelFormat>>,
+    screen_frame: Option<&'a FrameHandle<PreviewScreenPixelFormat>>,
+}
+
+fn render_compositor_yuv420p_frame(inputs: CompositorRenderInputs<'_>, bytes: &mut [u8]) {
+    let CompositorRenderInputs {
+        sequence,
+        width,
+        height,
+        snapshot,
+        active_image_source,
+        camera_frame,
+        screen_frame,
+    } = inputs;
+    fill_yuv420p(bytes, width, height, 16, 128, 128);
+
+    let Some(snapshot) = snapshot else {
+        render_synthetic_yuv420p_frame(sequence, width, height, bytes);
+        return;
+    };
+    let Some(scene) = snapshot.scene.as_ref() else {
+        render_synthetic_yuv420p_frame(sequence, width, height, bytes);
+        return;
+    };
+
+    let mut rendered_sources = 0_u32;
+    for source in scene.sources.iter().filter(|source| source.visible) {
+        let Some(rect) = scene_source_rect_pixels(&source.transform, width, height) else {
+            continue;
+        };
+        let rendered = match source.kind {
+            SceneSourceKind::TestPattern => {
+                render_synthetic_source_rect(sequence, width, height, rect, bytes);
+                true
+            }
+            SceneSourceKind::Screen | SceneSourceKind::Window => {
+                if let Some(image) = active_image_source.and_then(|source| {
+                    source
+                        .rgba
+                        .as_ref()
+                        .zip(source.width.zip(source.height))
+                }) {
+                    let (rgba, (image_width, image_height)) = image;
+                    blit_rgba_to_yuv420p(
+                        &RgbaSource {
+                            bytes: rgba,
+                            width: image_width,
+                            height: image_height,
+                            format: SourcePixelFormat::Rgba,
+                        },
+                        bytes,
+                        width,
+                        height,
+                        rect,
+                        SourceRenderOptions {
+                            contain: false,
+                            mirror_x: false,
+                            circle_mask: false,
+                        },
+                    )
+                } else if let Some(frame) = screen_frame {
+                    blit_rgba_to_yuv420p(
+                        &RgbaSource {
+                            bytes: &frame.bytes,
+                            width: frame.width,
+                            height: frame.height,
+                            format: SourcePixelFormat::Bgra,
+                        },
+                        bytes,
+                        width,
+                        height,
+                        rect,
+                        SourceRenderOptions {
+                            contain: false,
+                            mirror_x: false,
+                            circle_mask: false,
+                        },
+                    )
+                } else {
+                    false
+                }
+            }
+            SceneSourceKind::Camera => camera_frame.is_some_and(|frame| {
+                blit_rgba_to_yuv420p(
+                    &RgbaSource {
+                        bytes: &frame.bytes,
+                        width: frame.width,
+                        height: frame.height,
+                        format: SourcePixelFormat::Bgra,
+                    },
+                    bytes,
+                    width,
+                    height,
+                    rect,
+                    SourceRenderOptions {
+                        contain: matches!(snapshot.layout.camera_fit, CameraFit::Fit)
+                            && snapshot.layout.camera_zoom <= 100,
+                        mirror_x: snapshot.layout.camera_mirror,
+                        circle_mask: matches!(snapshot.layout.camera_shape, CameraShape::Circle),
+                    },
+                )
+            }),
+        };
+        if rendered {
+            rendered_sources = rendered_sources.saturating_add(1);
+        }
+    }
+
+    if rendered_sources == 0 {
+        render_synthetic_yuv420p_frame(sequence, width, height, bytes);
+    }
 }
 
 async fn update_preview_surface_frames(
@@ -483,6 +679,382 @@ fn compositor_frame_age_ms(sources: &[CompositorSourceStatus], fallback: u64) ->
         .filter_map(|source| source.frame_age_ms)
         .max()
         .unwrap_or(fallback)
+}
+
+fn raw_yuv420p_len(width: u32, height: u32) -> usize {
+    let width = width.max(1) as usize;
+    let height = height.max(1) as usize;
+    let y = width * height;
+    let uv = width.div_ceil(2) * height.div_ceil(2) * 2;
+    y + uv
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PixelRect {
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum SourcePixelFormat {
+    Bgra,
+    Rgba,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SourceRenderOptions {
+    contain: bool,
+    mirror_x: bool,
+    circle_mask: bool,
+}
+
+struct RgbaSource<'a> {
+    bytes: &'a [u8],
+    width: u32,
+    height: u32,
+    format: SourcePixelFormat,
+}
+
+fn scene_source_rect_pixels(
+    transform: &SceneTransform,
+    canvas_width: u32,
+    canvas_height: u32,
+) -> Option<PixelRect> {
+    if transform.width <= 0.0 || transform.height <= 0.0 {
+        return None;
+    }
+    let x = normalized_to_pixel(transform.x, canvas_width).min(canvas_width.saturating_sub(1));
+    let y = normalized_to_pixel(transform.y, canvas_height).min(canvas_height.saturating_sub(1));
+    let max_width = canvas_width.saturating_sub(x).max(1);
+    let max_height = canvas_height.saturating_sub(y).max(1);
+    let width = normalized_to_span(transform.width, canvas_width).min(max_width);
+    let height = normalized_to_span(transform.height, canvas_height).min(max_height);
+    Some(PixelRect {
+        x,
+        y,
+        width,
+        height,
+    })
+}
+
+fn normalized_to_pixel(value: f64, span: u32) -> u32 {
+    (value.clamp(0.0, 1.0) * f64::from(span)).round() as u32
+}
+
+fn normalized_to_span(value: f64, span: u32) -> u32 {
+    (value.clamp(0.0, 1.0) * f64::from(span)).round().max(1.0) as u32
+}
+
+fn fill_yuv420p(bytes: &mut [u8], width: u32, height: u32, y_value: u8, u_value: u8, v_value: u8) {
+    let width = width.max(1) as usize;
+    let height = height.max(1) as usize;
+    let y_len = width * height;
+    let uv_len = width.div_ceil(2) * height.div_ceil(2);
+    bytes[..y_len].fill(y_value);
+    bytes[y_len..y_len + uv_len].fill(u_value);
+    bytes[y_len + uv_len..].fill(v_value);
+}
+
+fn render_synthetic_yuv420p_frame(sequence: u64, width: u32, height: u32, bytes: &mut [u8]) {
+    let width = width.max(1) as usize;
+    let height = height.max(1) as usize;
+    let y_len = width * height;
+    let uv_width = width.div_ceil(2);
+    let uv_height = height.div_ceil(2);
+    let u_start = y_len;
+    let v_start = y_len + uv_width * uv_height;
+    let source = SyntheticMovingSource;
+    let frame = source.render(sequence, width as u32, height as u32);
+    let marker_size = (width.min(height) / 10).clamp(8, 48);
+    let marker_x = (frame.marker_x as usize).min(width.saturating_sub(1));
+    let marker_y = (frame.marker_y as usize).min(height.saturating_sub(1));
+    let marker_left = marker_x.saturating_sub(marker_size);
+    let marker_top = marker_y.saturating_sub(marker_size);
+    let marker_right = marker_x.saturating_add(marker_size).min(width);
+    let marker_bottom = marker_y.saturating_add(marker_size).min(height);
+
+    bytes[..y_len].fill(48_u8.saturating_add((sequence % 96) as u8));
+    bytes[u_start..v_start].fill(128);
+    bytes[v_start..].fill(128);
+
+    for y in marker_top..marker_bottom {
+        let row_start = y * width + marker_left;
+        let row_end = y * width + marker_right;
+        bytes[row_start..row_end].fill(235);
+    }
+
+    let uv_left = marker_left / 2;
+    let uv_top = marker_top / 2;
+    let uv_right = marker_right.div_ceil(2).min(uv_width);
+    let uv_bottom = marker_bottom.div_ceil(2).min(uv_height);
+    for y in uv_top..uv_bottom {
+        let row_start = y * uv_width + uv_left;
+        let row_end = y * uv_width + uv_right;
+        bytes[u_start + row_start..u_start + row_end].fill(60);
+        bytes[v_start + row_start..v_start + row_end].fill(190);
+    }
+}
+
+fn render_synthetic_source_rect(
+    sequence: u64,
+    canvas_width: u32,
+    canvas_height: u32,
+    rect: PixelRect,
+    bytes: &mut [u8],
+) {
+    let canvas_width = canvas_width.max(1) as usize;
+    let canvas_height = canvas_height.max(1) as usize;
+    let y_len = canvas_width * canvas_height;
+    let uv_width = canvas_width.div_ceil(2);
+    let uv_height = canvas_height.div_ceil(2);
+    let u_start = y_len;
+    let v_start = y_len + uv_width * uv_height;
+    let left = rect.x as usize;
+    let top = rect.y as usize;
+    let right = rect.x.saturating_add(rect.width).min(canvas_width as u32) as usize;
+    let bottom = rect.y.saturating_add(rect.height).min(canvas_height as u32) as usize;
+
+    for y in top..bottom {
+        let row_start = y * canvas_width + left;
+        let row_end = y * canvas_width + right;
+        bytes[row_start..row_end].fill(48_u8.saturating_add((sequence % 96) as u8));
+    }
+
+    let uv_left = left / 2;
+    let uv_top = top / 2;
+    let uv_right = right.div_ceil(2).min(uv_width);
+    let uv_bottom = bottom.div_ceil(2).min(uv_height);
+    for y in uv_top..uv_bottom {
+        let row_start = y * uv_width + uv_left;
+        let row_end = y * uv_width + uv_right;
+        bytes[u_start + row_start..u_start + row_end].fill(128);
+        bytes[v_start + row_start..v_start + row_end].fill(128);
+    }
+}
+
+fn blit_rgba_to_yuv420p(
+    source: &RgbaSource<'_>,
+    dest: &mut [u8],
+    canvas_width: u32,
+    canvas_height: u32,
+    rect: PixelRect,
+    options: SourceRenderOptions,
+) -> bool {
+    if source.width == 0 || source.height == 0 || source.bytes.len() < source_pixel_len(source) {
+        return false;
+    }
+    let Some(fit) = source_fit(source.width, source.height, rect, options.contain) else {
+        return false;
+    };
+    let canvas_width = canvas_width.max(1) as usize;
+    let canvas_height = canvas_height.max(1) as usize;
+    let y_len = canvas_width * canvas_height;
+    let uv_width = canvas_width.div_ceil(2);
+    let uv_height = canvas_height.div_ceil(2);
+    let u_start = y_len;
+    let v_start = y_len + uv_width * uv_height;
+    let draw_left = fit.x as usize;
+    let draw_top = fit.y as usize;
+    let draw_right = fit.x.saturating_add(fit.width).min(canvas_width as u32) as usize;
+    let draw_bottom = fit.y.saturating_add(fit.height).min(canvas_height as u32) as usize;
+
+    for dest_y in draw_top..draw_bottom {
+        for dest_x in draw_left..draw_right {
+            if options.circle_mask && !inside_ellipse(dest_x, dest_y, &fit) {
+                continue;
+            }
+            let Some((source_x, source_y)) =
+                map_source_pixel(dest_x as u32, dest_y as u32, source, &fit, options.mirror_x)
+            else {
+                continue;
+            };
+            let (r, g, b, a) = read_source_rgba(source, source_x, source_y);
+            if a < 16 {
+                continue;
+            }
+            let (y_value, _u_value, _v_value) = rgb_to_yuv(r, g, b);
+            dest[dest_y * canvas_width + dest_x] = y_value;
+        }
+    }
+
+    let uv_left = draw_left / 2;
+    let uv_top = draw_top / 2;
+    let uv_right = draw_right.div_ceil(2).min(uv_width);
+    let uv_bottom = draw_bottom.div_ceil(2).min(uv_height);
+    for uv_y in uv_top..uv_bottom {
+        for uv_x in uv_left..uv_right {
+            let dest_x = (uv_x * 2).min(draw_right.saturating_sub(1));
+            let dest_y = (uv_y * 2).min(draw_bottom.saturating_sub(1));
+            if options.circle_mask && !inside_ellipse(dest_x, dest_y, &fit) {
+                continue;
+            }
+            let Some((source_x, source_y)) =
+                map_source_pixel(dest_x as u32, dest_y as u32, source, &fit, options.mirror_x)
+            else {
+                continue;
+            };
+            let (r, g, b, a) = read_source_rgba(source, source_x, source_y);
+            if a < 16 {
+                continue;
+            }
+            let (_y_value, u_value, v_value) = rgb_to_yuv(r, g, b);
+            let uv_index = uv_y * uv_width + uv_x;
+            dest[u_start + uv_index] = u_value;
+            dest[v_start + uv_index] = v_value;
+        }
+    }
+    true
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SourceFit {
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+    source_x: f64,
+    source_y: f64,
+    source_width: f64,
+    source_height: f64,
+}
+
+fn source_fit(
+    source_width: u32,
+    source_height: u32,
+    rect: PixelRect,
+    contain: bool,
+) -> Option<SourceFit> {
+    if rect.width == 0 || rect.height == 0 || source_width == 0 || source_height == 0 {
+        return None;
+    }
+    let source_aspect = f64::from(source_width) / f64::from(source_height);
+    let rect_aspect = f64::from(rect.width) / f64::from(rect.height);
+    if contain {
+        let (width, height) = if source_aspect > rect_aspect {
+            let width = rect.width;
+            let height = (f64::from(width) / source_aspect).round().max(1.0) as u32;
+            (width, height.min(rect.height))
+        } else {
+            let height = rect.height;
+            let width = (f64::from(height) * source_aspect).round().max(1.0) as u32;
+            (width.min(rect.width), height)
+        };
+        Some(SourceFit {
+            x: rect.x + (rect.width - width) / 2,
+            y: rect.y + (rect.height - height) / 2,
+            width,
+            height,
+            source_x: 0.0,
+            source_y: 0.0,
+            source_width: f64::from(source_width),
+            source_height: f64::from(source_height),
+        })
+    } else {
+        let source_w = f64::from(source_width);
+        let source_h = f64::from(source_height);
+        let (source_x, source_y, fitted_source_width, fitted_source_height) =
+            if source_aspect > rect_aspect {
+                let fitted_source_width = source_h * rect_aspect;
+                (
+                    (source_w - fitted_source_width) / 2.0,
+                    0.0,
+                    fitted_source_width,
+                    source_h,
+                )
+        } else {
+                let fitted_source_height = source_w / rect_aspect;
+                (
+                    0.0,
+                    (source_h - fitted_source_height) / 2.0,
+                    source_w,
+                    fitted_source_height,
+                )
+        };
+        Some(SourceFit {
+            x: rect.x,
+            y: rect.y,
+            width: rect.width,
+            height: rect.height,
+            source_x,
+            source_y,
+            source_width: fitted_source_width,
+            source_height: fitted_source_height,
+        })
+    }
+}
+
+fn map_source_pixel(
+    dest_x: u32,
+    dest_y: u32,
+    source: &RgbaSource<'_>,
+    fit: &SourceFit,
+    mirror_x: bool,
+) -> Option<(u32, u32)> {
+    if dest_x < fit.x || dest_y < fit.y || fit.width == 0 || fit.height == 0 {
+        return None;
+    }
+    let local_x = f64::from(dest_x - fit.x) / f64::from(fit.width);
+    let local_y = f64::from(dest_y - fit.y) / f64::from(fit.height);
+    if !(0.0..=1.0).contains(&local_x) || !(0.0..=1.0).contains(&local_y) {
+        return None;
+    }
+    let source_x = fit.source_x + local_x * fit.source_width;
+    let source_y = fit.source_y + local_y * fit.source_height;
+    let source_x = source_x.floor().clamp(0.0, f64::from(source.width.saturating_sub(1))) as u32;
+    let source_y = source_y.floor().clamp(0.0, f64::from(source.height.saturating_sub(1))) as u32;
+    let source_x = if mirror_x {
+        source.width.saturating_sub(1).saturating_sub(source_x)
+    } else {
+        source_x
+    };
+    Some((source_x, source_y))
+}
+
+fn inside_ellipse(dest_x: usize, dest_y: usize, fit: &SourceFit) -> bool {
+    let center_x = f64::from(fit.x) + f64::from(fit.width) / 2.0;
+    let center_y = f64::from(fit.y) + f64::from(fit.height) / 2.0;
+    let radius_x = f64::from(fit.width) / 2.0;
+    let radius_y = f64::from(fit.height) / 2.0;
+    if radius_x <= 0.0 || radius_y <= 0.0 {
+        return false;
+    }
+    let dx = (dest_x as f64 + 0.5 - center_x) / radius_x;
+    let dy = (dest_y as f64 + 0.5 - center_y) / radius_y;
+    dx * dx + dy * dy <= 1.0
+}
+
+fn source_pixel_len(source: &RgbaSource<'_>) -> usize {
+    source.width as usize * source.height as usize * 4
+}
+
+fn read_source_rgba(source: &RgbaSource<'_>, x: u32, y: u32) -> (u8, u8, u8, u8) {
+    let index = (y as usize * source.width as usize + x as usize) * 4;
+    match source.format {
+        SourcePixelFormat::Bgra => (
+            source.bytes[index + 2],
+            source.bytes[index + 1],
+            source.bytes[index],
+            source.bytes[index + 3],
+        ),
+        SourcePixelFormat::Rgba => (
+            source.bytes[index],
+            source.bytes[index + 1],
+            source.bytes[index + 2],
+            source.bytes[index + 3],
+        ),
+    }
+}
+
+fn rgb_to_yuv(r: u8, g: u8, b: u8) -> (u8, u8, u8) {
+    let r = i32::from(r);
+    let g = i32::from(g);
+    let b = i32::from(b);
+    let y = ((77 * r + 150 * g + 29 * b) >> 8).clamp(0, 255) as u8;
+    let u = (128 + ((-43 * r - 85 * g + 128 * b) >> 8)).clamp(0, 255) as u8;
+    let v = (128 + ((128 * r - 107 * g - 21 * b) >> 8)).clamp(0, 255) as u8;
+    (y, u, v)
 }
 
 fn camera_state_name(state: &PreviewCameraState) -> &'static str {
