@@ -43,21 +43,20 @@ use crate::preview_camera::preview_camera_latest_frame_info;
 use crate::preview_screen::preview_screen_latest_frame_info;
 use crate::protocol::{
     AudioSettings, AudioTrack, AudioTrackSource, CameraCorner, CameraFit, CameraShape, CameraSize,
-    CameraTransformMode, HealthLevel, LayoutPreset, PreviewCameraState, PreviewLiveParams,
-    PreviewLiveSource, PreviewLiveState, PreviewLiveStatus, PreviewScreenSourceKind,
-    PreviewScreenState, PreviewSnapshot, PreviewSnapshotParams, PreviewTransport,
-    CompositorSceneUpdateParams, RecordingPipelineStage, RecordingState, RecordingStatus,
-    RemuxSessionParams, RtmpPreset, RtmpSettings, Scene, SceneConfigParams, SceneSourceKind,
-    SideBySideCameraSide, SideBySideSplit, StartSessionParams, StreamHealth, VideoPreset,
-    VideoSettings,
+    CameraTransformMode, CompositorSceneUpdateParams, HealthLevel, LayoutPreset,
+    PreviewCameraState, PreviewLiveParams, PreviewLiveSource, PreviewLiveState, PreviewLiveStatus,
+    PreviewScreenSourceKind, PreviewScreenState, PreviewSnapshot, PreviewSnapshotParams,
+    PreviewTransport, RecordingPipelineStage, RecordingState, RecordingStatus, RemuxSessionParams,
+    RtmpPreset, RtmpSettings, Scene, SceneConfigParams, SceneSourceKind, SideBySideCameraSide,
+    SideBySideSplit, StartSessionParams, StreamHealth, VideoPreset, VideoSettings,
 };
 use crate::repair::{
     GateStatus, MAINTENANCE_CANCELLED, QualityExpectations, QualityThresholds, RepairJob,
     gate_recording_cancellable,
 };
+use crate::scene::scene_from_capture_config;
 use crate::screen_capture::{parse_screencapturekit_display_id, parse_screencapturekit_window_id};
 use crate::secrets;
-use crate::scene::scene_from_capture_config;
 use crate::state::{AppState, PreviewFrame};
 use crate::storage::{NewSession, PlatformAccountCredentials, default_preview_dir};
 use crate::streaming::{
@@ -2681,12 +2680,13 @@ async fn should_use_compositor_encoder_bridge(
     params: &StartSessionParams,
     active_screen: Option<&crate::protocol::StreamScreen>,
 ) -> bool {
-    let record_only = params.output.record_enabled && !params.output.stream_enabled;
-    let stream_only = !params.output.record_enabled && params.output.stream_enabled;
-    if !record_only && !stream_only {
+    if !params.output.record_enabled && !params.output.stream_enabled {
         return false;
     }
-    if compositor_encoder_bridge_disabled(record_only, stream_only) {
+    if compositor_encoder_bridge_disabled(
+        params.output.record_enabled,
+        params.output.stream_enabled,
+    ) {
         return false;
     }
     if params.output.video.fps > 30 {
@@ -2709,11 +2709,11 @@ async fn should_use_compositor_encoder_bridge(
     )
 }
 
-fn compositor_encoder_bridge_disabled(record_only: bool, stream_only: bool) -> bool {
+fn compositor_encoder_bridge_disabled(record_enabled: bool, stream_enabled: bool) -> bool {
     if encoder_bridge_disabled_setting(std::env::var("VIDEORC_ENCODER_BRIDGE").ok().as_deref()) {
         return true;
     }
-    if record_only
+    if record_enabled
         && encoder_bridge_recording_disabled(
             std::env::var("VIDEORC_RECORDING_ENCODER_BRIDGE")
                 .ok()
@@ -2722,7 +2722,7 @@ fn compositor_encoder_bridge_disabled(record_only: bool, stream_only: bool) -> b
     {
         return true;
     }
-    stream_only
+    stream_enabled
         && encoder_bridge_streaming_disabled(
             std::env::var("VIDEORC_STREAMING_ENCODER_BRIDGE")
                 .ok()
@@ -2751,15 +2751,17 @@ fn recording_encoder_bridge_sources_ready(
     has_camera_frame: bool,
     has_screen_frame: bool,
 ) -> bool {
-    scene.sources.iter().filter(|source| source.visible).all(|source| {
-        match source.kind {
+    scene
+        .sources
+        .iter()
+        .filter(|source| source.visible)
+        .all(|source| match source.kind {
             SceneSourceKind::TestPattern => true,
             SceneSourceKind::Camera => has_camera_frame,
             SceneSourceKind::Screen | SceneSourceKind::Window => {
                 has_active_screen_image || has_screen_frame
             }
-        }
-    })
+        })
 }
 
 fn bridge_recording_ffmpeg_args(
@@ -5462,6 +5464,44 @@ mod tests {
         );
         assert_eq!(arg_value(&args, "-c:a"), Some("aac"));
         assert!(args.iter().any(|arg| arg == "-shortest"));
+    }
+
+    #[test]
+    fn bridge_record_and_stream_tees_mkv_and_flv_targets() {
+        let params = base_params(true, true);
+        let fifo_path = Path::new("/tmp/videorc-bridge-record-stream.yuv");
+        let streaming = streaming_for(&[
+            (
+                StreamPlatform::Youtube,
+                "rtmp://a.rtmp.youtube.com/live2",
+                "yt",
+            ),
+            (StreamPlatform::Twitch, "rtmp://live.twitch.tv/app", "tw"),
+        ]);
+        let targets = stream_targets_from_streaming(&streaming).unwrap();
+        let args = bridge_compositor_ffmpeg_args(
+            &CaptureInputs {
+                video: VideoInput::TestPattern,
+                camera_index: None,
+                microphone: None,
+            },
+            &params,
+            Some(Path::new("/tmp/videorc-bridge-record-stream.mkv")),
+            &targets,
+            fifo_path,
+        )
+        .unwrap();
+
+        assert!(args.contains(&"tee".to_string()));
+        let tee = args.iter().find(|arg| arg.contains("[f=matroska")).unwrap();
+        assert!(tee.contains("[f=matroska:onfail=abort]/tmp/videorc-bridge-record-stream.mkv"));
+        assert_eq!(tee.matches("[f=flv").count(), 2);
+        assert!(tee.contains("rtmp://a.rtmp.youtube.com/live2/yt"));
+        assert!(tee.contains("rtmp://live.twitch.tv/app/tw"));
+        assert_eq!(arg_value(&args, "-c:v"), Some("libx264"));
+        assert_eq!(arg_value(&args, "-c:a"), Some("aac"));
+        assert!(args.iter().any(|arg| arg == "-shortest"));
+        assert!(!args.iter().any(|arg| arg == "[preview]"));
     }
 
     #[test]

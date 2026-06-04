@@ -6,8 +6,9 @@ import { join, resolve } from 'node:path'
 import { connectBackend, request } from './smoke-recording-session.mjs'
 
 // End-to-end proof of the multi-platform `tee` fan-out. Stands up one local
-// FFmpeg RTMP listener per destination, drives a real stream-only simulcast
-// session, and asserts bytes arrive at *every* healthy target.
+// FFmpeg RTMP listener per destination, drives a real record + simulcast
+// session, and asserts bytes arrive at *every* healthy target while the local
+// recording still finalizes.
 // No Docker or external services: the listeners are plain `ffmpeg -listen 1`.
 
 const repoRoot = resolve(import.meta.dirname, '..')
@@ -90,7 +91,7 @@ try {
   )
   await sleep(listenerBindMs) // give the listeners time to bind their ports
 
-  // 3. Drive a real stream-only session to every local target at once.
+  // 3. Drive a real record+stream session to every local target at once.
   const ws = await connectBackend(connection, timeoutMs)
   // Collect the per-target runtime snapshots the backend pushes (M5) so we can assert
   // the offline destination is reported failed while the healthy ones stay live.
@@ -118,11 +119,11 @@ try {
     console.log(`Multistream smoke using FFmpeg: ${ffmpegPath}`)
 
     const started = await request(ws, timeoutMs, 'session.start', multistreamParams())
-    if (started.state !== 'streaming') {
-      throw new Error(`Expected streaming state after start, got ${started.state}.`)
+    if (started.state !== 'recording') {
+      throw new Error(`Expected recording state after start, got ${started.state}.`)
     }
     console.log(
-      `Stream-only session started; fanning one encode out to ${allTargets.length} target(s)` +
+      `Record+stream session started; fanning one encode out to ${allTargets.length} target(s)` +
         `${badTarget ? ` (1 deliberately offline)` : ''}.`
     )
     console.log(`  stream targets: ${started.streamUrl ?? 'n/a'}`)
@@ -155,11 +156,12 @@ function verifyResults(outputPath, targetSnapshots, diagnosticSamples) {
     }
   }
 
-  if (outputPath) {
-    console.log(`  ✗ stream-only session unexpectedly reported a local recording: ${outputPath}`)
-    failures.push('stream-only session reported a local recording output')
+  const recordingSize = outputPath && existsSync(outputPath) ? statSync(outputPath).size : 0
+  if (recordingSize > 0) {
+    console.log(`  ✓ Local recording finalized: ${outputPath} (${recordingSize} bytes)`)
   } else {
-    console.log('  ✓ Stream-only session produced no local recording output')
+    console.log(`  ✗ Local recording missing/empty: ${outputPath ?? 'no path'}`)
+    failures.push('Local recording did not finalize')
   }
 
   const duplicateSamples = diagnosticSamples.filter(
@@ -167,9 +169,9 @@ function verifyResults(outputPath, targetSnapshots, diagnosticSamples) {
   )
   if (duplicateSamples.length > 0) {
     console.log(`  ✗ duplicate capture appeared in ${duplicateSamples.length} diagnostic sample(s)`)
-    failures.push('stream-only bridge reported duplicate capture diagnostics')
+    failures.push('record+stream bridge reported duplicate capture diagnostics')
   } else {
-    console.log('  ✓ Stream-only bridge reported no duplicate capture diagnostics')
+    console.log('  ✓ Record+stream bridge reported no duplicate capture diagnostics')
   }
 
   // M5 failure-handling: the offline leg must be reported failed while the healthy
@@ -204,8 +206,8 @@ function verifyResults(outputPath, targetSnapshots, diagnosticSamples) {
   }
 
   console.log(
-    `Multistream smoke OK — one stream-only encode fanned out to all ${targets.length} healthy RTMP target(s)` +
-      `${badTarget ? ' and the offline leg was isolated.' : '.'}`
+    `Multistream smoke OK — one record+stream encode fanned out to all ${targets.length} healthy RTMP target(s),` +
+      `${badTarget ? ' the offline leg was isolated,' : ''} and the local recording finalized.`
   )
 }
 
@@ -230,7 +232,7 @@ function multistreamParams() {
       sideBySideCameraSide: 'right'
     },
     output: {
-      recordEnabled: false,
+      recordEnabled: true,
       streamEnabled: true,
       outputDirectory,
       ffmpegPath,

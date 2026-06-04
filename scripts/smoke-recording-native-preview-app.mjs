@@ -94,6 +94,7 @@ async function runNativePreviewRecordingSmoke(connection, smoke) {
     assertNativeMeasurement(measurement)
 
     const surfaceDuring = await waitForNativeSurface(ws, surfaceBefore.framesRendered)
+    const stopRequestedAt = Date.now()
     const stopped = await request(ws, timeoutMs, 'session.stop')
     const outputPath = stopped.outputPath ?? started.outputPath
     if (!outputPath || !existsSync(outputPath)) {
@@ -104,7 +105,7 @@ async function runNativePreviewRecordingSmoke(connection, smoke) {
       throw new Error(`Recording output is empty: ${outputPath}`)
     }
 
-    const stats = summarizeDiagnostics(samples, scenario.fps, scenarioStartedAt)
+    const stats = summarizeDiagnostics(samples, scenario.fps, scenarioStartedAt, stopRequestedAt)
     assertStatsHealthy(stats)
     if (stats.nativePreviewSamples === 0) {
       throw new Error('Recording diagnostics never reported native-surface preview transport.')
@@ -337,10 +338,18 @@ function assertNativeMeasurement(measurement) {
   }
 }
 
-function summarizeDiagnostics(samples, targetFps, scenarioStartedAt) {
+function summarizeDiagnostics(samples, targetFps, scenarioStartedAt, stopRequestedAt) {
   const numeric = (value) => (typeof value === 'number' && Number.isFinite(value) ? value : null)
-  const steadySamples = samples.filter((sample) => (sample.receivedAt ?? 0) - scenarioStartedAt >= warmupMs)
-  const measuredSamples = steadySamples.length ? steadySamples : samples
+  const activeSamples = samples.filter((sample) => {
+    const receivedAt = sample.receivedAt ?? 0
+    return (
+      sample.activeOutputMode === 'record' &&
+      receivedAt >= scenarioStartedAt &&
+      receivedAt <= stopRequestedAt
+    )
+  })
+  const steadySamples = activeSamples.filter((sample) => (sample.receivedAt ?? 0) - scenarioStartedAt >= warmupMs)
+  const measuredSamples = steadySamples.length ? steadySamples : activeSamples
   const fpsValues = measuredSamples
     .flatMap((sample) => [numeric(sample.captureFps), numeric(sample.renderFps)])
     .filter((value) => value !== null)
