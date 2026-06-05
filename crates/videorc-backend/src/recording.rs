@@ -21,8 +21,8 @@ use uuid::Uuid;
 use crate::audio::{
     AudioProcessingSettings, NATIVE_AUDIO_CHANNELS, NATIVE_AUDIO_FFMPEG_QUEUE_SIZE,
     NATIVE_AUDIO_SAMPLE_RATE, NativeAudioCaptureSession, NativeAudioSource, attach_fifo_writer,
-    create_native_audio_fifo, native_audio_fifo_path, parse_coreaudio_microphone_id,
-    start_native_audio_source,
+    audio_capture_coverage, create_native_audio_fifo, native_audio_fifo_path,
+    parse_coreaudio_microphone_id, start_native_audio_source,
 };
 use crate::camera_capture::{native_camera_name_for_id, parse_native_camera_id};
 use crate::compositor::{
@@ -46,7 +46,8 @@ use crate::preview_camera::preview_camera_latest_frame_info;
 use crate::preview_screen::preview_screen_latest_frame_info;
 use crate::protocol::{
     AudioSettings, AudioTrack, AudioTrackSource, CameraCorner, CameraFit, CameraShape, CameraSize,
-    CameraTransformMode, CompositorSceneUpdateParams, CompositorState, HealthLevel, LayoutPreset,
+    CameraTransformMode, CompositorSceneUpdateParams, CompositorState, EncodeBackend, HealthLevel,
+    LayoutPreset,
     LayoutSettings, PreviewCameraState, PreviewLiveParams, PreviewLiveSource, PreviewLiveState,
     PreviewLiveStatus, PreviewScreenSourceKind, PreviewScreenState, PreviewSnapshot,
     PreviewSnapshotParams, PreviewSurfaceState, PreviewTransport, RecordingPipelineStage,
@@ -70,6 +71,8 @@ use crate::streaming::{
 };
 
 const PREVIEW_SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(5);
+/// How often the live mic-stats sampler reads CoreAudio counters during a recording.
+const NATIVE_AUDIO_SAMPLE_INTERVAL: Duration = Duration::from_millis(1000);
 const RECORDING_PREVIEW_WIDTH: u32 = 640;
 const RECORDING_PREVIEW_HEIGHT: u32 = 360;
 const RECORDING_PREVIEW_FPS: u32 = 5;
@@ -448,10 +451,18 @@ pub async fn start_session(
     } else {
         duplicate_capture_sources_for_capture(&state, &capture).await
     };
-    let initial_diagnostics = apply_duplicate_capture_sources(
+    let mut initial_diagnostics = apply_duplicate_capture_sources(
         starting_diagnostics(&session_id, params.output.video.fps, mode),
         duplicate_capture_sources,
     );
+    // Record which encoder actually runs so hardware vs software encode is provable:
+    // the shared-compositor bridge re-encodes with libx264 (software), the legacy path
+    // uses h264_videotoolbox (hardware, sw fallback allowed).
+    initial_diagnostics.encode_backend = Some(if use_encoder_bridge {
+        EncodeBackend::SoftwareX264
+    } else {
+        EncodeBackend::HardwareVideotoolbox
+    });
     {
         let mut diagnostics = state.diagnostics.lock().await;
         *diagnostics = initial_diagnostics.clone();
@@ -578,6 +589,7 @@ pub async fn start_session(
         None
     };
     pipeline.mark_running();
+    let has_native_audio = native_audio_source.is_some();
     // Post-recording quality gate inputs (slice 8): what this session is expected to
     // contain, captured before `audio_tracks` is moved into the active recording.
     let gate_expect_audio = !audio_tracks.is_empty();
@@ -618,6 +630,12 @@ pub async fn start_session(
     *state.recording.lock().await = Some(active);
     state.emit_event("recording.status", running_status.clone());
     publish_recording_live_preview_status(&state, use_encoder_bridge, None).await;
+    if has_native_audio {
+        tokio::spawn(sample_native_audio_during_recording(
+            state.clone(),
+            session_id.clone(),
+        ));
+    }
     if let Some(stdout) = stdout {
         tokio::spawn(publish_preview_stdout(state.clone(), None, stdout));
     }
@@ -1859,6 +1877,48 @@ struct PostRecordingGate {
     expect_audio: bool,
 }
 
+/// Live mic-stats sampler: while this session is the active recording, periodically read
+/// the CoreAudio capture counters and emit updated diagnostics, so `micCapturedFrames` /
+/// `micDroppedFrames` and the derived capture-coverage gap signal update *during* the run
+/// instead of only at stop. Exits as soon as the session is replaced or ends.
+async fn sample_native_audio_during_recording(state: AppState, session_id: String) {
+    let started_at = std::time::Instant::now();
+    let mut ticker = tokio::time::interval(NATIVE_AUDIO_SAMPLE_INTERVAL);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        ticker.tick().await;
+        let counters = {
+            let recording = state.recording.lock().await;
+            match recording.as_ref() {
+                Some(active) if active.session_id == session_id => active
+                    .native_audio
+                    .as_ref()
+                    .map(|audio| (audio.captured_frames(), audio.dropped_frames())),
+                _ => return,
+            }
+        };
+        let Some((captured_frames, dropped_frames)) = counters else {
+            return;
+        };
+        let coverage = audio_capture_coverage(
+            captured_frames,
+            started_at.elapsed().as_secs_f64(),
+            NATIVE_AUDIO_SAMPLE_RATE,
+        );
+        let diagnostic_stats = {
+            let mut diagnostics = state.diagnostics.lock().await;
+            let next =
+                apply_audio_stats(diagnostics.clone(), captured_frames, dropped_frames, coverage);
+            *diagnostics = next.clone();
+            next
+        };
+        state.emit_event(
+            "diagnostics.stats",
+            apply_runtime_diagnostics_snapshot(diagnostic_stats, state.ffmpeg_work.snapshot()),
+        );
+    }
+}
+
 async fn monitor_session(
     state: AppState,
     mut child: tokio::process::Child,
@@ -1902,6 +1962,7 @@ async fn monitor_session(
                 diagnostics.clone(),
                 native_audio_stats.captured_frames,
                 native_audio_stats.dropped_frames,
+                None,
             );
             *diagnostics = next.clone();
             next

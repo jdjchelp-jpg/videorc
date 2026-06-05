@@ -757,6 +757,20 @@ export type PreviewLiveState = 'connecting' | 'live' | 'reconnecting' | 'unavail
 export type PreviewLiveSource = 'idle-preview' | 'recording-session' | 'unavailable'
 export type PreviewTransport = 'native-surface' | 'latest-jpeg-polling' | 'mjpeg-stream' | 'unavailable'
 
+/** Which encoder a recording session requested. `-allow_sw 1` means videotoolbox may still
+ * fall back to software, so this is the requested backend; the final-file codec/encoder tag
+ * is the corroborating output-side signal. */
+export type EncodeBackend = 'software-x264' | 'hardware-videotoolbox'
+
+/** Cumulative request counts for the HTTP image-polling preview transports. A native
+ * preview never fetches these, so a session in which they climb is not actually native. */
+export interface PreviewImagePollCounts {
+  cameraPng: number
+  screenPng: number
+  liveJpeg: number
+  liveMjpeg: number
+}
+
 export interface PreviewLiveStatus {
   state: PreviewLiveState
   source: PreviewLiveSource
@@ -1021,7 +1035,17 @@ export interface DiagnosticStats {
   encoderBridgeQueueDepth: number
   encoderBridgeInputFps?: number
   encoderBridgeDroppedFrames: number
+  /** Compositor frames re-fed to the encoder on under-run (duplicate frames in the final file). */
+  encoderBridgeRepeatedFrames: number
+  /** Ticks where synthetic filler was fed because no real compositor frame was ready. */
+  encoderBridgeSyntheticFrames: number
+  /** Max age (ms) of a compositor frame when it was fed to the encoder. */
+  encoderBridgeSourceAgeMs?: number
   encoderBridgeError?: string
+  /** Which encoder the active session requested — proves hardware vs software encode. */
+  encodeBackend?: EncodeBackend
+  /** Cumulative HTTP image-poll request counts; the transport-honesty gate fails when these climb during a "native" preview session. */
+  previewImagePollCounts: PreviewImagePollCounts
   previewTargetFps?: number
   previewFrameAgeMs?: number
   previewTransport: PreviewTransport
@@ -1046,6 +1070,8 @@ export interface DiagnosticStats {
   previewSourceFrameDroppedFrames: number
   micCapturedFrames?: number
   micDroppedFrames: number
+  /** Fraction of expected audio sample-frames actually captured during the run (live); below ~0.95 signals a mic capture gap. */
+  micCaptureCoverage?: number
   deviceDisconnected: boolean
   backendRssBytes?: number
   activeFfmpegProcesses: number

@@ -248,6 +248,7 @@ async fn live_preview_handler(
         return StatusCode::UNAUTHORIZED.into_response();
     }
 
+    diagnostics::PREVIEW_POLL_COUNTS.record_live_mjpeg();
     let receiver = subscribe_live_preview_frames(&state);
     let stream = stream::unfold(receiver, |mut receiver| async move {
         loop {
@@ -279,6 +280,7 @@ async fn live_camera_frame_handler(
         return StatusCode::UNAUTHORIZED.into_response();
     }
 
+    diagnostics::PREVIEW_POLL_COUNTS.record_camera_png();
     match latest_preview_camera_png(&state).await {
         Some(bytes) => (
             [
@@ -300,6 +302,7 @@ async fn live_screen_frame_handler(
         return StatusCode::UNAUTHORIZED.into_response();
     }
 
+    diagnostics::PREVIEW_POLL_COUNTS.record_screen_png();
     match latest_preview_screen_png(&state).await {
         Some(bytes) => (
             [
@@ -321,6 +324,7 @@ async fn live_preview_frame_handler(
         return StatusCode::UNAUTHORIZED.into_response();
     }
 
+    diagnostics::PREVIEW_POLL_COUNTS.record_live_jpeg();
     match state.preview_latest_frame.read().await.clone() {
         Some(frame) => {
             update_preview_frame_age(

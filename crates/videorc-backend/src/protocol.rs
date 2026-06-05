@@ -724,6 +724,30 @@ pub struct StreamHealth {
     pub created_at: String,
 }
 
+/// The encoder a recording session actually requested. `-allow_sw 1` means VideoToolbox
+/// may still fall back to software internally, so this is the *requested* backend; the
+/// final-file analyzer's codec/encoder tag is the corroborating output-side signal.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum EncodeBackend {
+    /// libx264 (software), used by the shared-compositor encoder-bridge path (fps ≤ 30).
+    SoftwareX264,
+    /// h264_videotoolbox (hardware, sw fallback allowed), used by the legacy path.
+    HardwareVideotoolbox,
+}
+
+/// Cumulative request counts (since backend start) for the HTTP image-polling preview
+/// transports. A native preview never fetches these, so a session in which they climb is
+/// not actually native — the honest signal behind the transport-honesty gate.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewImagePollCounts {
+    pub camera_png: u64,
+    pub screen_png: u64,
+    pub live_jpeg: u64,
+    pub live_mjpeg: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct DiagnosticStats {
@@ -739,7 +763,25 @@ pub struct DiagnosticStats {
     pub encoder_bridge_queue_depth: u64,
     pub encoder_bridge_input_fps: Option<f64>,
     pub encoder_bridge_dropped_frames: u64,
+    /// Compositor frames re-fed to the encoder on under-run (duplicate frames in the
+    /// final file). Honest signal for the recording repeated-frame gate.
+    #[serde(default)]
+    pub encoder_bridge_repeated_frames: u64,
+    /// Ticks where synthetic filler was fed because no real compositor frame was ready.
+    #[serde(default)]
+    pub encoder_bridge_synthetic_frames: u64,
+    /// Max age (ms) of a compositor frame when it was fed to the encoder.
+    #[serde(default)]
+    pub encoder_bridge_source_age_ms: Option<u64>,
     pub encoder_bridge_error: Option<String>,
+    /// Which encoder the active session actually requested — proves hardware vs software
+    /// encode (previously unrecorded).
+    #[serde(default)]
+    pub encode_backend: Option<EncodeBackend>,
+    /// Cumulative HTTP image-poll request counts. The transport-honesty gate fails when
+    /// these climb during a session the UI claims is rendering a native preview.
+    #[serde(default)]
+    pub preview_image_poll_counts: PreviewImagePollCounts,
     pub preview_target_fps: Option<f64>,
     pub preview_frame_age_ms: Option<u64>,
     pub preview_transport: PreviewTransport,
@@ -765,6 +807,10 @@ pub struct DiagnosticStats {
     pub preview_source_frame_dropped_frames: u64,
     pub mic_captured_frames: Option<u64>,
     pub mic_dropped_frames: u64,
+    /// Fraction of expected audio sample-frames actually captured during the run (live).
+    /// Below ~0.95 signals a mic capture gap. `None` until past the coverage warmup.
+    #[serde(default)]
+    pub mic_capture_coverage: Option<f64>,
     pub device_disconnected: bool,
     pub backend_rss_bytes: Option<u64>,
     pub active_ffmpeg_processes: u64,

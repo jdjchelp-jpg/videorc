@@ -1,5 +1,6 @@
 use std::path::Path;
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use chrono::Utc;
 
@@ -7,9 +8,63 @@ use crate::ffmpeg_work::FfmpegWorkSnapshot;
 use crate::frame_store::FrameStoreStats;
 use crate::protocol::{
     DiagnosticBottleneck, DiagnosticStats, PermissionPane, PreviewCameraStatus,
-    PreviewScreenStatus, PreviewTransport, StreamHealth,
+    PreviewImagePollCounts, PreviewScreenStatus, PreviewTransport, StreamHealth,
 };
 use crate::source_registry::SourceRegistrySnapshot;
+
+/// Process-global request counters for the HTTP image-polling preview transports.
+/// A truly OBS-native preview consumes the compositor surface directly and never hits
+/// these routes, so a recording session in which these counters climb is — by
+/// definition — NOT native (the transport-honesty gate). The "native-surface" label is
+/// the backend's assertion of intent; these counts are the only honest evidence of what
+/// the client actually fetched. Const-constructible, so it needs no runtime init.
+#[derive(Debug)]
+pub struct PreviewTransportCounters {
+    camera_png: AtomicU64,
+    screen_png: AtomicU64,
+    live_jpeg: AtomicU64,
+    live_mjpeg: AtomicU64,
+}
+
+impl PreviewTransportCounters {
+    const fn new() -> Self {
+        Self {
+            camera_png: AtomicU64::new(0),
+            screen_png: AtomicU64::new(0),
+            live_jpeg: AtomicU64::new(0),
+            live_mjpeg: AtomicU64::new(0),
+        }
+    }
+
+    pub fn record_camera_png(&self) {
+        self.camera_png.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_screen_png(&self) {
+        self.screen_png.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_live_jpeg(&self) {
+        self.live_jpeg.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_live_mjpeg(&self) {
+        self.live_mjpeg.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn snapshot(&self) -> PreviewImagePollCounts {
+        PreviewImagePollCounts {
+            camera_png: self.camera_png.load(Ordering::Relaxed),
+            screen_png: self.screen_png.load(Ordering::Relaxed),
+            live_jpeg: self.live_jpeg.load(Ordering::Relaxed),
+            live_mjpeg: self.live_mjpeg.load(Ordering::Relaxed),
+        }
+    }
+}
+
+/// The single process-wide instance, incremented by the preview HTTP handlers and read
+/// into every emitted [`DiagnosticStats`] by [`apply_runtime_resource_snapshot`].
+pub static PREVIEW_POLL_COUNTS: PreviewTransportCounters = PreviewTransportCounters::new();
 
 pub fn idle_diagnostics() -> DiagnosticStats {
     DiagnosticStats {
@@ -25,7 +80,12 @@ pub fn idle_diagnostics() -> DiagnosticStats {
         encoder_bridge_queue_depth: 0,
         encoder_bridge_input_fps: None,
         encoder_bridge_dropped_frames: 0,
+        encoder_bridge_repeated_frames: 0,
+        encoder_bridge_synthetic_frames: 0,
+        encoder_bridge_source_age_ms: None,
         encoder_bridge_error: None,
+        encode_backend: None,
+        preview_image_poll_counts: PreviewImagePollCounts::default(),
         preview_target_fps: None,
         preview_frame_age_ms: None,
         preview_transport: PreviewTransport::Unavailable,
@@ -50,6 +110,7 @@ pub fn idle_diagnostics() -> DiagnosticStats {
         preview_source_frame_dropped_frames: 0,
         mic_captured_frames: None,
         mic_dropped_frames: 0,
+        mic_capture_coverage: None,
         device_disconnected: false,
         backend_rss_bytes: None,
         active_ffmpeg_processes: 0,
@@ -93,6 +154,7 @@ pub fn apply_runtime_resource_snapshot(mut stats: DiagnosticStats) -> Diagnostic
     stats.backend_rss_bytes = snapshot.backend_rss_bytes;
     stats.active_ffmpeg_processes = snapshot.active_ffmpeg_processes;
     stats.active_ffprobe_processes = snapshot.active_ffprobe_processes;
+    stats.preview_image_poll_counts = PREVIEW_POLL_COUNTS.snapshot();
     stats.updated_at = Utc::now().to_rfc3339();
     stats
 }
@@ -182,6 +244,9 @@ pub struct EncoderBridgeDiagnosticSnapshot {
     pub input_fps: Option<f64>,
     pub dropped_frames: u64,
     pub encoder_speed: Option<f64>,
+    pub repeated_fed_frames: u64,
+    pub synthetic_fallback_frames: u64,
+    pub source_to_encode_age_ms: Option<u64>,
     pub error: Option<String>,
 }
 
@@ -193,6 +258,9 @@ pub fn apply_encoder_bridge_stats(
     stats.encoder_bridge_queue_depth = bridge.queue_depth;
     stats.encoder_bridge_input_fps = bridge.input_fps;
     stats.encoder_bridge_dropped_frames = bridge.dropped_frames;
+    stats.encoder_bridge_repeated_frames = bridge.repeated_fed_frames;
+    stats.encoder_bridge_synthetic_frames = bridge.synthetic_fallback_frames;
+    stats.encoder_bridge_source_age_ms = bridge.source_to_encode_age_ms;
     stats.encoder_bridge_error = bridge.error;
     stats.capture_fps = stats.encoder_bridge_input_fps;
     stats.dropped_frames = bridge.dropped_frames;
@@ -344,14 +412,24 @@ pub fn apply_compositor_stats(
     stats
 }
 
+/// Coverage at or below this fraction of real-time is treated as a mic capture gap.
+const AUDIO_COVERAGE_MIN: f64 = 0.9;
+
 pub fn apply_audio_stats(
     mut stats: DiagnosticStats,
     captured_frames: u64,
     dropped_frames: u64,
+    capture_coverage: Option<f64>,
 ) -> DiagnosticStats {
     stats.mic_captured_frames = Some(captured_frames);
     stats.mic_dropped_frames = dropped_frames;
-    if dropped_frames > 0 {
+    // Only overwrite coverage when the sampler has a meaningful value (post-warmup), so a
+    // final at-stop snapshot (None) preserves the last live reading.
+    if capture_coverage.is_some() {
+        stats.mic_capture_coverage = capture_coverage;
+    }
+    let coverage_gap = capture_coverage.is_some_and(|coverage| coverage < AUDIO_COVERAGE_MIN);
+    if dropped_frames > 0 || coverage_gap {
         stats.bottleneck = DiagnosticBottleneck::Audio;
     }
     stats.updated_at = Utc::now().to_rfc3339();
@@ -469,6 +547,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn preview_transport_counters_track_each_route_independently() {
+        let counters = PreviewTransportCounters::new();
+        counters.record_camera_png();
+        counters.record_camera_png();
+        counters.record_screen_png();
+        counters.record_live_jpeg();
+        counters.record_live_mjpeg();
+        counters.record_live_mjpeg();
+        counters.record_live_mjpeg();
+        let snapshot = counters.snapshot();
+        assert_eq!(snapshot.camera_png, 2);
+        assert_eq!(snapshot.screen_png, 1);
+        assert_eq!(snapshot.live_jpeg, 1);
+        assert_eq!(snapshot.live_mjpeg, 3);
+    }
+
+    #[test]
     fn stream_health_updates_stats_and_classifies_encoder_lag() {
         let stats = apply_stream_health(
             idle_diagnostics(),
@@ -491,11 +586,22 @@ mod tests {
 
     #[test]
     fn audio_drops_take_priority_over_video_stats() {
-        let stats = apply_audio_stats(idle_diagnostics(), 48_000, 128);
+        let stats = apply_audio_stats(idle_diagnostics(), 48_000, 128, None);
 
         assert_eq!(stats.mic_captured_frames, Some(48_000));
         assert_eq!(stats.mic_dropped_frames, 128);
         assert_eq!(stats.bottleneck, DiagnosticBottleneck::Audio);
+    }
+
+    #[test]
+    fn low_audio_capture_coverage_is_an_audio_bottleneck_even_without_drops() {
+        let healthy = apply_audio_stats(idle_diagnostics(), 48_000, 0, Some(1.0));
+        assert_eq!(healthy.mic_capture_coverage, Some(1.0));
+        assert_ne!(healthy.bottleneck, DiagnosticBottleneck::Audio);
+
+        let gap = apply_audio_stats(idle_diagnostics(), 24_000, 0, Some(0.5));
+        assert_eq!(gap.mic_capture_coverage, Some(0.5));
+        assert_eq!(gap.bottleneck, DiagnosticBottleneck::Audio);
     }
 
     #[test]
@@ -563,6 +669,9 @@ mod tests {
                 input_fps: Some(29.8),
                 dropped_frames: 0,
                 encoder_speed: Some(1.02),
+                repeated_fed_frames: 0,
+                synthetic_fallback_frames: 0,
+                source_to_encode_age_ms: None,
                 error: None,
             },
             30,
@@ -581,12 +690,18 @@ mod tests {
                 input_fps: Some(28.0),
                 dropped_frames: 3,
                 encoder_speed: Some(0.5),
+                repeated_fed_frames: 5,
+                synthetic_fallback_frames: 1,
+                source_to_encode_age_ms: Some(40),
                 error: None,
             },
             30,
         );
 
         assert_eq!(lagging.encoder_bridge_dropped_frames, 3);
+        assert_eq!(lagging.encoder_bridge_repeated_frames, 5);
+        assert_eq!(lagging.encoder_bridge_synthetic_frames, 1);
+        assert_eq!(lagging.encoder_bridge_source_age_ms, Some(40));
         assert_eq!(lagging.bottleneck, DiagnosticBottleneck::Encoder);
     }
 }

@@ -1,0 +1,728 @@
+// Honest final-file recording analyzer.
+//
+// Phase 1 of the OBS Quality Root Fix plan: a metric that cannot lie. Given a
+// finished recording, this decodes the actual artifact (not a proxy) and judges
+// it against the plan's strict OBS-quality gates:
+//
+//   - no freeze segment above 100ms                  (ffmpeg freezedetect)
+//   - no repeated-frame burst above 2 consecutive    (ffmpeg framemd5 exact dupes)
+//   - constant/stable frame pacing, frame count ≈ duration × fps  (ffprobe frames)
+//   - no audio gap above 20ms                        (audio packet PTS gaps + silencedetect)
+//   - A/V skew target 100ms, hard fail above 150ms   (stream start/duration)
+//
+// The pure parsers are exported separately from the ffmpeg/ffprobe runners so the
+// parsing logic is unit-testable without spawning anything, and the runners are
+// integration-tested against synthetic fixtures with known ground-truth defects.
+//
+// Mirrors the proven freezedetect/ffprobe parsing in crates/videorc-backend/src/repair.rs,
+// but applies strict OBS thresholds instead of repair.rs's loose post-hoc ones, and adds
+// repeated-frame-burst, per-frame pacing, and audio-gap detection that do not exist there.
+
+import { spawn } from 'node:child_process'
+import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+
+/**
+ * Strict OBS-quality gates. All thresholds come from the root-fix plan's
+ * "Final recording gate" / "Audio gate" sections.
+ */
+export const DEFAULT_GATES = Object.freeze({
+  maxFreezeMs: 100, // no freeze segment above 100ms
+  maxRepeatedFrameRun: 2, // no repeated-frame burst above 2 consecutive frames
+  maxAudioGapMs: 20, // no audio gap above 20ms
+  avSyncTargetMs: 100, // A/V skew target (warn above)
+  avSyncHardFailMs: 150, // A/V skew hard fail above
+  frameCountTolerance: 0.02, // observed vs expected (duration × fps) frame count
+  freezeNoiseDb: -60, // freezedetect near-identical noise floor (matches repair.rs)
+  silenceDb: -50, // silencedetect dropout noise floor
+  minSilenceGapMs: 20, // silence run that counts as a candidate dropout
+})
+
+// ---------------------------------------------------------------------------
+// Pure parsers (no I/O — unit-testable)
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse FFmpeg freezedetect stderr into freeze segments. Each freeze emits a
+ * `freeze_start: T` line followed by a `freeze_duration: D` line.
+ * @returns {{start:number, duration:number}[]}
+ */
+export function parseFreezedetect(stderr) {
+  const segments = []
+  let pendingStart = null
+  for (const rawLine of stderr.split(/\r?\n/)) {
+    const line = rawLine.trim()
+    const startIdx = line.indexOf('freeze_start:')
+    if (startIdx !== -1) {
+      const value = Number.parseFloat(line.slice(startIdx + 'freeze_start:'.length).trim())
+      pendingStart = Number.isFinite(value) ? value : null
+      continue
+    }
+    const durIdx = line.indexOf('freeze_duration:')
+    if (durIdx !== -1 && pendingStart !== null) {
+      const duration = Number.parseFloat(line.slice(durIdx + 'freeze_duration:'.length).trim())
+      if (Number.isFinite(duration)) {
+        segments.push({ start: pendingStart, duration })
+      }
+      pendingStart = null
+    }
+  }
+  return segments
+}
+
+/**
+ * Parse FFmpeg silencedetect stderr into silence segments. `silence_start: T`
+ * opens a segment; `silence_end: T | silence_duration: D` closes it.
+ * @returns {{start:number, end:number|null, duration:number}[]}
+ */
+export function parseSilencedetect(stderr) {
+  const segments = []
+  let pendingStart = null
+  for (const rawLine of stderr.split(/\r?\n/)) {
+    const line = rawLine.trim()
+    const startIdx = line.indexOf('silence_start:')
+    if (startIdx !== -1) {
+      const value = Number.parseFloat(line.slice(startIdx + 'silence_start:'.length).trim())
+      pendingStart = Number.isFinite(value) ? value : null
+      continue
+    }
+    const endIdx = line.indexOf('silence_end:')
+    if (endIdx !== -1 && pendingStart !== null) {
+      // The line is e.g. "silence_end: 1.234 | silence_duration: 0.2"
+      const tail = line.slice(endIdx + 'silence_end:'.length)
+      const end = Number.parseFloat(tail.trim())
+      let duration = Number.NaN
+      const durIdx = tail.indexOf('silence_duration:')
+      if (durIdx !== -1) {
+        duration = Number.parseFloat(tail.slice(durIdx + 'silence_duration:'.length).trim())
+      }
+      if (!Number.isFinite(duration) && Number.isFinite(end)) {
+        duration = end - pendingStart
+      }
+      segments.push({
+        start: pendingStart,
+        end: Number.isFinite(end) ? end : null,
+        duration: Number.isFinite(duration) ? duration : 0,
+      })
+      pendingStart = null
+    }
+  }
+  return segments
+}
+
+/**
+ * Parse FFmpeg `-f framemd5` stdout into the ordered list of per-frame hashes.
+ * Lines beginning with `#` are headers/comments. Data lines look like:
+ *   `0,        0,        0,        1,    27648, d41d8cd9...`
+ * The last comma-separated field is the frame hash.
+ * @returns {string[]}
+ */
+export function parseFramemd5(stdout) {
+  const hashes = []
+  for (const rawLine of stdout.split(/\r?\n/)) {
+    const line = rawLine.trim()
+    if (!line || line.startsWith('#')) {
+      continue
+    }
+    const fields = line.split(',')
+    if (fields.length < 2) {
+      continue
+    }
+    hashes.push(fields[fields.length - 1].trim())
+  }
+  return hashes
+}
+
+/**
+ * Find the longest run of consecutive identical values and every run longer than
+ * `threshold`. A "run" of N identical frames means N−1 repeated frames following
+ * the first. We report run length as the count of identical consecutive frames.
+ * @returns {{maxRun:number, bursts:{startIndex:number, run:number}[]}}
+ */
+export function maxConsecutiveRun(values, threshold = 1) {
+  let maxRun = values.length > 0 ? 1 : 0
+  const bursts = []
+  let runStart = 0
+  let runLen = values.length > 0 ? 1 : 0
+  for (let i = 1; i < values.length; i += 1) {
+    if (values[i] === values[i - 1]) {
+      runLen += 1
+    } else {
+      if (runLen > maxRun) maxRun = runLen
+      if (runLen > threshold) bursts.push({ startIndex: runStart, run: runLen })
+      runStart = i
+      runLen = 1
+    }
+  }
+  if (runLen > maxRun) maxRun = runLen
+  if (values.length > 0 && runLen > threshold) bursts.push({ startIndex: runStart, run: runLen })
+  return { maxRun, bursts }
+}
+
+/**
+ * Parse a CSV (`-of csv=p=0`) stream of one float per line (e.g. frame pts_time)
+ * into a numeric array, skipping non-numeric ("N/A") entries.
+ * @returns {number[]}
+ */
+export function parseCsvFloatColumn(text, column = 0) {
+  const values = []
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim()
+    if (!line) continue
+    const field = line.split(',')[column]
+    const value = Number.parseFloat(field)
+    if (Number.isFinite(value)) values.push(value)
+  }
+  return values
+}
+
+/**
+ * Frame-pacing statistics from an ordered list of presentation timestamps (s).
+ * Detects variable frame rate and the largest inter-frame gap.
+ * @returns {{count:number, meanIntervalMs:number|null, maxGapMs:number|null,
+ *   jitterMs:number|null, observedFps:number|null}}
+ */
+export function pacingStats(ptsTimes) {
+  const sorted = [...ptsTimes].sort((a, b) => a - b)
+  const count = sorted.length
+  if (count < 2) {
+    return { count, meanIntervalMs: null, maxGapMs: null, jitterMs: null, observedFps: null }
+  }
+  const intervals = []
+  for (let i = 1; i < count; i += 1) intervals.push(sorted[i] - sorted[i - 1])
+  const mean = intervals.reduce((sum, v) => sum + v, 0) / intervals.length
+  const maxGap = Math.max(...intervals)
+  const variance = intervals.reduce((sum, v) => sum + (v - mean) ** 2, 0) / intervals.length
+  const span = sorted[count - 1] - sorted[0]
+  return {
+    count,
+    meanIntervalMs: mean * 1000,
+    maxGapMs: maxGap * 1000,
+    jitterMs: Math.sqrt(variance) * 1000,
+    observedFps: span > 0 ? (count - 1) / span : null,
+  }
+}
+
+/**
+ * Detect gaps between consecutive audio packets: a packet whose presentation time
+ * jumps further than its predecessor's duration (plus tolerance) implies missing
+ * samples. `packets` is an ordered list of {ptsTime, durationTime}.
+ * @returns {{maxGapMs:number, gaps:{at:number, gapMs:number}[]}}
+ */
+export function audioPtsGaps(packets, toleranceMs = 5) {
+  const gaps = []
+  let maxGapMs = 0
+  for (let i = 1; i < packets.length; i += 1) {
+    const prev = packets[i - 1]
+    const cur = packets[i]
+    if (!Number.isFinite(prev.ptsTime) || !Number.isFinite(cur.ptsTime)) continue
+    const expected = Number.isFinite(prev.durationTime) ? prev.durationTime : 0
+    const actual = cur.ptsTime - prev.ptsTime
+    const gapMs = (actual - expected) * 1000
+    if (gapMs > toleranceMs) {
+      gaps.push({ at: prev.ptsTime, gapMs })
+      if (gapMs > maxGapMs) maxGapMs = gapMs
+    }
+  }
+  return { maxGapMs, gaps }
+}
+
+/**
+ * A/V skew in ms, preferring stream start-time offset, falling back to a duration
+ * mismatch. Mirrors repair.rs::av_skew_ms. This is a coarse container-level signal,
+ * NOT measured lip-sync (which needs capture-clock instrumentation).
+ * @returns {number|null}
+ */
+export function avSkewMs(probe) {
+  const video = probe.video
+  const audio = probe.audio?.[0]
+  if (!video || !audio) return null
+  if (Number.isFinite(video.startTime) && Number.isFinite(audio.startTime)) {
+    return Math.abs(video.startTime - audio.startTime) * 1000
+  }
+  if (Number.isFinite(video.duration) && Number.isFinite(audio.duration)) {
+    return Math.abs(video.duration - audio.duration) * 1000
+  }
+  return null
+}
+
+function parseFraction(value) {
+  if (typeof value !== 'string') return null
+  const [num, den] = value.split('/')
+  const n = Number.parseFloat(num)
+  const d = Number.parseFloat(den)
+  if (!Number.isFinite(n) || !Number.isFinite(d) || d === 0) return null
+  const fps = n / d
+  return Number.isFinite(fps) && fps > 0 ? fps : null
+}
+
+function parseMaybeFloat(value) {
+  const v = Number.parseFloat(value)
+  return Number.isFinite(v) ? v : null
+}
+
+function parseMaybeInt(value) {
+  const v = Number.parseInt(value, 10)
+  return Number.isFinite(v) ? v : null
+}
+
+/**
+ * Normalize ffprobe `-show_format -show_streams -of json` into a compact probe.
+ * @returns {{formatDuration:number|null, video:object|null, audio:object[],
+ *   encoderTag:string|null}}
+ */
+export function normalizeProbe(ffprobeJson) {
+  const raw = typeof ffprobeJson === 'string' ? JSON.parse(ffprobeJson) : ffprobeJson
+  const streams = Array.isArray(raw.streams) ? raw.streams : []
+  const videoRaw = streams.find((s) => s.codec_type === 'video')
+  const video = videoRaw
+    ? {
+        codec: videoRaw.codec_name ?? '',
+        width: videoRaw.width ?? 0,
+        height: videoRaw.height ?? 0,
+        avgFps: parseFraction(videoRaw.avg_frame_rate),
+        nominalFps: parseFraction(videoRaw.r_frame_rate),
+        nbFrames: parseMaybeInt(videoRaw.nb_frames),
+        duration: parseMaybeFloat(videoRaw.duration),
+        startTime: parseMaybeFloat(videoRaw.start_time),
+        pixFmt: videoRaw.pix_fmt ?? null,
+        encoderTag: videoRaw.tags?.encoder ?? null,
+        handler: videoRaw.tags?.handler_name ?? null,
+      }
+    : null
+  const audio = streams
+    .filter((s) => s.codec_type === 'audio')
+    .map((s) => ({
+      codec: s.codec_name ?? '',
+      channels: s.channels ?? 0,
+      channelLayout: s.channel_layout ?? null,
+      sampleRate: parseMaybeInt(s.sample_rate),
+      duration: parseMaybeFloat(s.duration),
+      startTime: parseMaybeFloat(s.start_time),
+    }))
+  return {
+    formatDuration: parseMaybeFloat(raw.format?.duration),
+    video,
+    audio,
+    encoderTag: raw.format?.tags?.encoder ?? video?.encoderTag ?? null,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Gate evaluation (pure)
+// ---------------------------------------------------------------------------
+
+/**
+ * Apply the gates to a computed metrics object and return pass/fail with reasons.
+ * `metrics` carries the numbers produced by the runners below.
+ * @returns {{pass:boolean, failures:string[], warnings:string[]}}
+ */
+export function evaluateGates(metrics, gates = DEFAULT_GATES) {
+  const failures = []
+  const warnings = []
+
+  if (!metrics.hasVideo) {
+    failures.push('no video stream in the recording')
+  }
+
+  // Freeze segments.
+  if (metrics.longestFreezeMs != null && metrics.longestFreezeMs > gates.maxFreezeMs) {
+    failures.push(
+      `freeze segment ${metrics.longestFreezeMs.toFixed(0)}ms exceeds ${gates.maxFreezeMs}ms ` +
+        `(${metrics.freezeCount} segment(s))`
+    )
+  }
+
+  // Repeated-frame bursts (exact decoded-frame duplicates).
+  if (metrics.maxRepeatedFrameRun != null && metrics.maxRepeatedFrameRun > gates.maxRepeatedFrameRun) {
+    failures.push(
+      `repeated-frame burst of ${metrics.maxRepeatedFrameRun} consecutive identical frames ` +
+        `exceeds ${gates.maxRepeatedFrameRun} (${metrics.repeatedBurstCount} burst(s))`
+    )
+  }
+
+  // Frame count vs expected (dropped-frame evidence).
+  if (metrics.expectedFrames != null && metrics.observedFrames != null && metrics.expectedFrames > 0) {
+    const diff = Math.abs(metrics.observedFrames - metrics.expectedFrames)
+    const ratio = diff / metrics.expectedFrames
+    if (ratio > gates.frameCountTolerance) {
+      failures.push(
+        `frame count ${metrics.observedFrames} vs expected ~${metrics.expectedFrames} ` +
+          `(${(ratio * 100).toFixed(1)}% off, tolerance ${(gates.frameCountTolerance * 100).toFixed(0)}%)`
+      )
+    }
+  }
+
+  // Audio gaps (only when audio is expected/present).
+  if (metrics.hasAudio) {
+    if (metrics.maxAudioGapMs != null && metrics.maxAudioGapMs > gates.maxAudioGapMs) {
+      failures.push(
+        `audio PTS gap ${metrics.maxAudioGapMs.toFixed(0)}ms exceeds ${gates.maxAudioGapMs}ms`
+      )
+    }
+    if (metrics.longestSilenceMs != null && metrics.longestSilenceMs > gates.minSilenceGapMs) {
+      // Silence can be intentional; surface as a warning to inspect, not a hard fail.
+      warnings.push(
+        `silence segment ${metrics.longestSilenceMs.toFixed(0)}ms detected ` +
+          `(${metrics.silenceCount} segment(s)) — verify it is intentional, not a dropout`
+      )
+    }
+  } else if (metrics.expectAudio) {
+    failures.push('audio expected but no audio stream present')
+  }
+
+  // A/V skew.
+  if (metrics.avSkewMs != null) {
+    if (metrics.avSkewMs > gates.avSyncHardFailMs) {
+      failures.push(
+        `A/V skew ${metrics.avSkewMs.toFixed(0)}ms exceeds hard-fail ${gates.avSyncHardFailMs}ms`
+      )
+    } else if (metrics.avSkewMs > gates.avSyncTargetMs) {
+      warnings.push(
+        `A/V skew ${metrics.avSkewMs.toFixed(0)}ms exceeds target ${gates.avSyncTargetMs}ms ` +
+          `(below hard-fail ${gates.avSyncHardFailMs}ms)`
+      )
+    }
+  }
+
+  return { pass: failures.length === 0, failures, warnings }
+}
+
+// ---------------------------------------------------------------------------
+// Process runners (I/O)
+// ---------------------------------------------------------------------------
+
+function run(command, args, { maxBufferMb = 256 } = {}) {
+  return new Promise((resolveRun, rejectRun) => {
+    const child = spawn(command, args)
+    let stdout = ''
+    let stderr = ''
+    let stdoutBytes = 0
+    const cap = maxBufferMb * 1024 * 1024
+    child.stdout.setEncoding('utf8')
+    child.stderr.setEncoding('utf8')
+    child.stdout.on('data', (text) => {
+      stdoutBytes += text.length
+      if (stdoutBytes <= cap) stdout += text
+    })
+    child.stderr.on('data', (text) => {
+      stderr += text
+    })
+    child.on('error', rejectRun)
+    child.on('close', (code) => resolveRun({ status: code ?? 1, stdout, stderr }))
+  })
+}
+
+export async function probeMedia(filePath, { ffprobePath = 'ffprobe' } = {}) {
+  const { status, stdout, stderr } = await run(ffprobePath, [
+    '-v',
+    'error',
+    '-show_format',
+    '-show_streams',
+    '-of',
+    'json',
+    filePath,
+  ])
+  if (status !== 0) {
+    throw new Error(`ffprobe failed for ${filePath}: ${stderr.trim()}`)
+  }
+  return normalizeProbe(stdout)
+}
+
+export async function runFreezedetect(
+  filePath,
+  { ffmpegPath = 'ffmpeg', noiseDb = DEFAULT_GATES.freezeNoiseDb, minFreezeMs = DEFAULT_GATES.maxFreezeMs } = {}
+) {
+  const seconds = (minFreezeMs / 1000).toFixed(3)
+  const { stderr } = await run(ffmpegPath, [
+    '-hide_banner',
+    '-nostats',
+    '-i',
+    filePath,
+    '-map',
+    '0:v:0',
+    '-vf',
+    `freezedetect=n=${noiseDb}dB:d=${seconds}`,
+    '-f',
+    'null',
+    '-',
+  ])
+  return parseFreezedetect(stderr)
+}
+
+export async function runSilencedetect(
+  filePath,
+  { ffmpegPath = 'ffmpeg', noiseDb = DEFAULT_GATES.silenceDb, minSilenceMs = DEFAULT_GATES.minSilenceGapMs } = {}
+) {
+  const seconds = (minSilenceMs / 1000).toFixed(3)
+  const { stderr } = await run(ffmpegPath, [
+    '-hide_banner',
+    '-nostats',
+    '-i',
+    filePath,
+    '-map',
+    '0:a:0',
+    '-af',
+    `silencedetect=noise=${noiseDb}dB:d=${seconds}`,
+    '-f',
+    'null',
+    '-',
+  ])
+  return parseSilencedetect(stderr)
+}
+
+export async function runFramemd5(filePath, { ffmpegPath = 'ffmpeg' } = {}) {
+  const { status, stdout, stderr } = await run(ffmpegPath, [
+    '-hide_banner',
+    '-nostats',
+    '-i',
+    filePath,
+    '-an',
+    '-map',
+    '0:v:0',
+    '-f',
+    'framemd5',
+    '-',
+  ])
+  if (status !== 0 && stdout === '') {
+    throw new Error(`framemd5 failed for ${filePath}: ${stderr.trim()}`)
+  }
+  return parseFramemd5(stdout)
+}
+
+export async function runVideoPacing(filePath, { ffprobePath = 'ffprobe' } = {}) {
+  const { stdout } = await run(ffprobePath, [
+    '-v',
+    'error',
+    '-select_streams',
+    'v:0',
+    '-show_entries',
+    'frame=pts_time',
+    '-of',
+    'csv=p=0',
+    filePath,
+  ])
+  return parseCsvFloatColumn(stdout, 0)
+}
+
+export async function runAudioPackets(filePath, { ffprobePath = 'ffprobe' } = {}) {
+  const { stdout } = await run(ffprobePath, [
+    '-v',
+    'error',
+    '-select_streams',
+    'a:0',
+    '-show_entries',
+    'packet=pts_time,duration_time',
+    '-of',
+    'csv=p=0',
+    filePath,
+  ])
+  const packets = []
+  for (const rawLine of stdout.split(/\r?\n/)) {
+    const line = rawLine.trim()
+    if (!line) continue
+    const [pts, dur] = line.split(',')
+    packets.push({ ptsTime: Number.parseFloat(pts), durationTime: Number.parseFloat(dur) })
+  }
+  packets.sort((a, b) => a.ptsTime - b.ptsTime)
+  return packets
+}
+
+// ---------------------------------------------------------------------------
+// Orchestration
+// ---------------------------------------------------------------------------
+
+/**
+ * Analyze a finished recording against the strict OBS-quality gates.
+ *
+ * @param {string} filePath
+ * @param {object} options
+ * @param {string} [options.ffmpegPath]
+ * @param {string} [options.ffprobePath]
+ * @param {number} [options.intendedFps] - the session's selected fps (for the frame-count gate)
+ * @param {boolean} [options.expectAudio] - whether a mic was selected (default: infer from stream)
+ * @param {object} [options.gates] - overrides for DEFAULT_GATES
+ * @returns {Promise<object>} the full report (verdict + metrics + raw findings)
+ */
+export async function analyzeRecording(filePath, options = {}) {
+  if (!existsSync(filePath)) {
+    throw new Error(`recording not found: ${filePath}`)
+  }
+  const ffmpegPath = options.ffmpegPath ?? 'ffmpeg'
+  const ffprobePath = options.ffprobePath ?? 'ffprobe'
+  const gates = { ...DEFAULT_GATES, ...(options.gates ?? {}) }
+
+  const fileBytes = statSync(filePath).size
+  const probe = await probeMedia(filePath, { ffprobePath })
+  const hasVideo = probe.video != null
+  const hasAudio = probe.audio.length > 0
+  const expectAudio = options.expectAudio ?? hasAudio
+
+  // Run the video passes (freeze, exact-dup frames, pacing) and the audio passes
+  // (packet gaps, silence) concurrently. A frozen/black source can still produce a
+  // technically valid file, so every pass observes the decoded artifact directly.
+  const [freezes, frameHashes, ptsTimes, audioPackets, silences] = await Promise.all([
+    hasVideo ? runFreezedetect(filePath, { ffmpegPath, noiseDb: gates.freezeNoiseDb, minFreezeMs: gates.maxFreezeMs }) : [],
+    hasVideo ? runFramemd5(filePath, { ffmpegPath }) : [],
+    hasVideo ? runVideoPacing(filePath, { ffprobePath }) : [],
+    hasAudio ? runAudioPackets(filePath, { ffprobePath }) : [],
+    hasAudio ? runSilencedetect(filePath, { ffmpegPath, noiseDb: gates.silenceDb, minSilenceMs: gates.minSilenceGapMs }) : [],
+  ])
+
+  const pacing = pacingStats(ptsTimes)
+  const repeated = maxConsecutiveRun(frameHashes, gates.maxRepeatedFrameRun)
+  const longestFreeze = freezes.reduce((max, f) => Math.max(max, f.duration), 0)
+  const longestSilence = silences.reduce((max, s) => Math.max(max, s.duration), 0)
+  const audioGaps = audioPtsGaps(audioPackets)
+  const skew = avSkewMs(probe)
+
+  const intendedFps =
+    options.intendedFps ?? probe.video?.nominalFps ?? probe.video?.avgFps ?? null
+  const durationForCount = probe.video?.duration ?? probe.formatDuration ?? null
+  const observedFrames =
+    probe.video?.nbFrames ?? (frameHashes.length > 0 ? frameHashes.length : pacing.count || null)
+  const expectedFrames =
+    intendedFps != null && durationForCount != null
+      ? Math.round(intendedFps * durationForCount)
+      : null
+
+  const metrics = {
+    fileBytes,
+    hasVideo,
+    hasAudio,
+    expectAudio,
+    intendedFps,
+    durationSeconds: durationForCount,
+    codec: probe.video?.codec ?? null,
+    pixFmt: probe.video?.pixFmt ?? null,
+    encoderTag: probe.encoderTag,
+    width: probe.video?.width ?? null,
+    height: probe.video?.height ?? null,
+    avgFps: probe.video?.avgFps ?? null,
+    nominalFps: probe.video?.nominalFps ?? null,
+    observedFps: pacing.observedFps,
+    meanIntervalMs: pacing.meanIntervalMs,
+    maxFrameGapMs: pacing.maxGapMs,
+    frameJitterMs: pacing.jitterMs,
+    observedFrames,
+    expectedFrames,
+    freezeCount: freezes.length,
+    longestFreezeMs: hasVideo ? longestFreeze * 1000 : null,
+    maxRepeatedFrameRun: hasVideo ? repeated.maxRun : null,
+    repeatedBurstCount: repeated.bursts.length,
+    maxAudioGapMs: hasAudio ? audioGaps.maxGapMs : null,
+    audioGapCount: audioGaps.gaps.length,
+    silenceCount: silences.length,
+    longestSilenceMs: hasAudio ? longestSilence * 1000 : null,
+    avSkewMs: skew,
+  }
+
+  const verdict = evaluateGates(metrics, gates)
+
+  return {
+    file: filePath,
+    analyzedAtIso: new Date().toISOString(),
+    gates,
+    verdict,
+    metrics,
+    probe,
+    findings: {
+      freezes,
+      repeatedBursts: repeated.bursts,
+      audioGaps: audioGaps.gaps,
+      silences,
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Reporting
+// ---------------------------------------------------------------------------
+
+function fmt(value, digits = 1) {
+  return typeof value === 'number' && Number.isFinite(value) ? value.toFixed(digits) : 'n/a'
+}
+
+function fmtBytes(value) {
+  if (typeof value !== 'number') return 'n/a'
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(0)} KiB`
+  return `${(value / (1024 * 1024)).toFixed(1)} MiB`
+}
+
+/** Render a human-readable markdown report from an analyzeRecording() result. */
+export function renderMarkdownReport(report) {
+  const { metrics: m, verdict } = report
+  const lines = []
+  lines.push(`# Recording Quality Report`)
+  lines.push('')
+  lines.push(`- File: \`${report.file}\``)
+  lines.push(`- Analyzed: ${report.analyzedAtIso}`)
+  lines.push(`- Verdict: **${verdict.pass ? 'PASS' : 'FAIL'}**`)
+  lines.push('')
+  if (verdict.failures.length > 0) {
+    lines.push('## Gate failures')
+    lines.push('')
+    for (const f of verdict.failures) lines.push(`- ❌ ${f}`)
+    lines.push('')
+  }
+  if (verdict.warnings.length > 0) {
+    lines.push('## Warnings')
+    lines.push('')
+    for (const w of verdict.warnings) lines.push(`- ⚠️ ${w}`)
+    lines.push('')
+  }
+  lines.push('## Metrics')
+  lines.push('')
+  lines.push(`- Container: ${m.codec ?? 'n/a'} ${m.width ?? '?'}×${m.height ?? '?'} ${m.pixFmt ?? ''}`.trim())
+  lines.push(`- Encoder tag: ${m.encoderTag ?? 'n/a'}`)
+  lines.push(`- Size: ${fmtBytes(m.fileBytes)} | Duration: ${fmt(m.durationSeconds, 2)}s`)
+  lines.push(
+    `- FPS: intended ${fmt(m.intendedFps, 2)} | avg ${fmt(m.avgFps, 2)} | nominal ${fmt(m.nominalFps, 2)} | observed ${fmt(m.observedFps, 2)}`
+  )
+  lines.push(`- Frames: observed ${m.observedFrames ?? 'n/a'} | expected ~${m.expectedFrames ?? 'n/a'}`)
+  lines.push(
+    `- Frame pacing: mean ${fmt(m.meanIntervalMs)}ms | max gap ${fmt(m.maxFrameGapMs)}ms | jitter ${fmt(m.frameJitterMs)}ms`
+  )
+  lines.push(`- Freeze: longest ${fmt(m.longestFreezeMs)}ms across ${m.freezeCount} segment(s)`)
+  lines.push(`- Repeated frames: max run ${m.maxRepeatedFrameRun ?? 'n/a'} across ${m.repeatedBurstCount} burst(s)`)
+  if (m.hasAudio) {
+    lines.push(`- Audio gaps: max ${fmt(m.maxAudioGapMs)}ms across ${m.audioGapCount} gap(s)`)
+    lines.push(`- Silence: longest ${fmt(m.longestSilenceMs)}ms across ${m.silenceCount} segment(s)`)
+  } else {
+    lines.push(`- Audio: ${m.expectAudio ? 'EXPECTED BUT MISSING' : 'none (not expected)'}`)
+  }
+  lines.push(`- A/V skew: ${m.avSkewMs == null ? 'n/a' : `${fmt(m.avSkewMs)}ms`}`)
+  lines.push('')
+  lines.push('## Caveats')
+  lines.push('')
+  lines.push(
+    '- `freezedetect` flags any near-identical run, including legitimately static screen content. ' +
+      'For real-source acceptance the composite includes a moving camera, so a true pipeline freeze ' +
+      'freezes everything; static screen + moving camera will not trip it.'
+  )
+  lines.push(
+    '- Audio A/V skew here is a container start/duration delta, not measured lip-sync. ' +
+      'True lip-sync needs capture-clock instrumentation (backend Phase 5).'
+  )
+  lines.push(
+    '- `aresample=async=1` in the recording pipeline can mask capture-side audio gaps in the final ' +
+      'file, so a clean audio-gap result does not by itself prove the mic never stalled.'
+  )
+  lines.push('')
+  return lines.join('\n')
+}
+
+/**
+ * Write `<base>.quality.json` and `<base>.quality.md` next to the recording (or in
+ * `options.outDir`). Returns the two written paths.
+ */
+export function writeReports(report, { outDir } = {}) {
+  const dir = outDir ?? dirname(report.file)
+  mkdirSync(dir, { recursive: true })
+  const base = report.file.split('/').pop().replace(/\.[^.]+$/, '')
+  const jsonPath = join(dir, `${base}.quality.json`)
+  const mdPath = join(dir, `${base}.quality.md`)
+  writeFileSync(jsonPath, JSON.stringify(report, null, 2))
+  writeFileSync(mdPath, renderMarkdownReport(report))
+  return { jsonPath, mdPath }
+}

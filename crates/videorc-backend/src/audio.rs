@@ -14,10 +14,33 @@ use crate::protocol::{AudioMeterResult, AudioMeterStatus, Device, DeviceKind, De
 
 pub const NATIVE_AUDIO_SAMPLE_RATE: u32 = 48_000;
 pub const NATIVE_AUDIO_CHANNELS: u16 = 2;
+/// Minimum elapsed capture time before audio-capture coverage is meaningful — below this
+/// the sampled count is too noisy (start-up jitter, FIFO preroll) to judge a gap.
+pub const AUDIO_COVERAGE_WARMUP_SECS: f64 = 3.0;
 const AUDIO_RING_CAPACITY_FRAMES: usize = 256;
 const METER_SAMPLE_DURATION: Duration = Duration::from_millis(700);
 const FIFO_OPEN_RETRY: Duration = Duration::from_millis(20);
 pub const NATIVE_AUDIO_FFMPEG_QUEUE_SIZE: u32 = 256;
+
+/// Fraction of the expected audio sample-frames that were actually captured over the
+/// elapsed window: `captured / (elapsed × sample_rate)`. 1.0 means full real-time
+/// coverage; values meaningfully below 1.0 indicate the mic stalled (a capture gap).
+/// Returns `None` before [`AUDIO_COVERAGE_WARMUP_SECS`] (too little signal) or when the
+/// sample rate is zero. Pure and deterministic, so it is unit-tested directly.
+pub fn audio_capture_coverage(
+    captured_frames: u64,
+    elapsed_secs: f64,
+    sample_rate: u32,
+) -> Option<f64> {
+    if sample_rate == 0 || !elapsed_secs.is_finite() || elapsed_secs < AUDIO_COVERAGE_WARMUP_SECS {
+        return None;
+    }
+    let expected = elapsed_secs * f64::from(sample_rate);
+    if expected <= 0.0 {
+        return None;
+    }
+    Some(captured_frames as f64 / expected)
+}
 
 #[derive(Debug, Clone)]
 pub struct AudioFrame {
@@ -637,6 +660,20 @@ fn list_platform_microphones() -> Result<Vec<Device>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn audio_capture_coverage_flags_real_time_vs_stalled_capture() {
+        // Below warmup: not enough signal yet.
+        assert_eq!(audio_capture_coverage(48_000, 1.0, 48_000), None);
+        // Full real-time capture over 4s ≈ 1.0 coverage.
+        let full = audio_capture_coverage(4 * 48_000, 4.0, 48_000).unwrap();
+        assert!((full - 1.0).abs() < 1e-6, "full coverage {full}");
+        // Mic delivered only half the expected samples → a clear gap.
+        let stalled = audio_capture_coverage(2 * 48_000, 4.0, 48_000).unwrap();
+        assert!((stalled - 0.5).abs() < 1e-6, "stalled coverage {stalled}");
+        // Zero sample rate is undefined.
+        assert_eq!(audio_capture_coverage(1000, 5.0, 0), None);
+    }
 
     #[test]
     fn fake_pcm_frames_keep_monotonic_timestamps() {

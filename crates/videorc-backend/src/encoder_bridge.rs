@@ -48,12 +48,51 @@ struct EncoderBridgeProgress {
     last_error: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 struct EncoderBridgeRuntimeStats {
     queue_depth: u64,
     input_fps: Option<f64>,
     dropped_frames: u64,
     encoder_speed: Option<f64>,
+    /// Compositor frames re-fed to the encoder because no newer frame was ready by the
+    /// CFR deadline — these become duplicate frames in the final file (the classic
+    /// "frozen capture, ffmpeg duplicates the last frame" failure, now counted).
+    repeated_fed_frames: u64,
+    /// Ticks where no usable compositor frame existed and synthetic filler was fed.
+    synthetic_fallback_frames: u64,
+    /// Max age (ms) of a compositor frame at the moment it was fed to the encoder.
+    source_to_encode_age_ms: Option<u64>,
+}
+
+/// A compositor frame fed into the encoder FIFO on one tick.
+#[derive(Debug, Clone, Copy)]
+struct FedCompositorFrame {
+    sequence: u64,
+    age_ms: u64,
+}
+
+/// How one encoder-bridge tick consumed a compositor frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BridgeFrameSource {
+    /// A fresh compositor frame whose sequence advanced past the last fed one.
+    Fresh,
+    /// The same compositor frame as the previous tick — re-encoded as a CFR duplicate.
+    Repeated,
+    /// No usable compositor frame; synthetic filler was fed.
+    SyntheticFallback,
+}
+
+/// Classify a tick from the sequence of the frame it fed versus the last fed sequence.
+/// A repeat means the compositor did not publish a new frame before the encoder's CFR
+/// deadline, so the previous frame's bytes are encoded again as a duplicate.
+fn classify_bridge_frame(last_fed: Option<u64>, fed: Option<u64>) -> BridgeFrameSource {
+    match fed {
+        None => BridgeFrameSource::SyntheticFallback,
+        Some(sequence) => match last_fed {
+            Some(previous) if previous == sequence => BridgeFrameSource::Repeated,
+            _ => BridgeFrameSource::Fresh,
+        },
+    }
 }
 
 #[derive(Debug)]
@@ -105,6 +144,7 @@ pub async fn run_synthetic_encoder_bridge(
             input_fps: None,
             dropped_frames: 0,
             encoder_speed: None,
+            ..Default::default()
         },
         None,
     )
@@ -172,6 +212,7 @@ pub async fn run_synthetic_encoder_bridge(
                     input_fps,
                     dropped_frames: dropped_frames.saturating_add(encoder_progress.dropped_frames),
                     encoder_speed: encoder_progress.encoder_speed,
+                    ..Default::default()
                 },
                 encoder_progress.last_error,
             )
@@ -207,6 +248,7 @@ pub async fn run_synthetic_encoder_bridge(
                 input_fps: measured_input_fps(frames_written, write_started_at),
                 dropped_frames: dropped_frames.saturating_add(final_progress.dropped_frames),
                 encoder_speed: final_progress.encoder_speed,
+                ..Default::default()
             },
             Some(error.clone()),
         )
@@ -225,6 +267,7 @@ pub async fn run_synthetic_encoder_bridge(
             input_fps,
             dropped_frames,
             encoder_speed: final_progress.encoder_speed,
+            ..Default::default()
         },
         final_progress.last_error,
     )
@@ -511,6 +554,7 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
                     input_fps: None,
                     dropped_frames: 0,
                     encoder_speed: None,
+                    ..Default::default()
                 },
                 Some(format!(
                     "Could not open recording encoder bridge FIFO {}: {error}",
@@ -528,6 +572,10 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
     let mut window_started_at = Instant::now();
     let mut next_frame_at = Instant::now();
     let mut queue_depth = 0_u64;
+    let mut repeated_fed_frames = 0_u64;
+    let mut synthetic_fallback_frames = 0_u64;
+    let mut max_source_to_encode_age_ms: Option<u64> = None;
+    let mut last_fed_sequence: Option<u64> = None;
 
     while !stop.load(Ordering::Relaxed) {
         let now = Instant::now();
@@ -536,9 +584,22 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
         }
         next_frame_at += frame_interval;
         sequence = sequence.saturating_add(1);
-        if !copy_latest_compositor_frame(frame_store.as_ref(), &mut bytes) {
-            let frame = source.render(sequence, width, height);
-            render_synthetic_yuv420p_frame(&frame, &mut bytes);
+        let fed = copy_latest_compositor_frame(frame_store.as_ref(), &mut bytes);
+        match classify_bridge_frame(last_fed_sequence, fed.map(|frame| frame.sequence)) {
+            BridgeFrameSource::SyntheticFallback => {
+                let frame = source.render(sequence, width, height);
+                render_synthetic_yuv420p_frame(&frame, &mut bytes);
+                synthetic_fallback_frames = synthetic_fallback_frames.saturating_add(1);
+            }
+            BridgeFrameSource::Repeated => {
+                repeated_fed_frames = repeated_fed_frames.saturating_add(1);
+            }
+            BridgeFrameSource::Fresh => {}
+        }
+        if let Some(frame) = fed {
+            last_fed_sequence = Some(frame.sequence);
+            max_source_to_encode_age_ms =
+                Some(max_source_to_encode_age_ms.map_or(frame.age_ms, |age| age.max(frame.age_ms)));
         }
 
         queue_depth = 1;
@@ -552,6 +613,9 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
                     input_fps: measured_input_fps(frames_in_window, window_started_at),
                     dropped_frames: 0,
                     encoder_speed: None,
+                    repeated_fed_frames,
+                    synthetic_fallback_frames,
+                    source_to_encode_age_ms: max_source_to_encode_age_ms,
                 },
                 Some(format!(
                     "Could not write compositor frame into recording FFmpeg: {error}"
@@ -572,6 +636,9 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
                     input_fps: measured_input_fps(frames_in_window, window_started_at),
                     dropped_frames: 0,
                     encoder_speed: None,
+                    repeated_fed_frames,
+                    synthetic_fallback_frames,
+                    source_to_encode_age_ms: max_source_to_encode_age_ms,
                 },
                 None,
             );
@@ -591,27 +658,30 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
             input_fps: None,
             dropped_frames: 0,
             encoder_speed: None,
+            repeated_fed_frames,
+            synthetic_fallback_frames,
+            source_to_encode_age_ms: max_source_to_encode_age_ms,
         },
         None,
     );
 }
 
-fn copy_latest_compositor_frame(frame_store: Option<&CompositorFrameStore>, bytes: &mut [u8]) -> bool {
-    let Some(frame_store) = frame_store else {
-        return false;
-    };
-    let Some(frame) = frame_store
+fn copy_latest_compositor_frame(
+    frame_store: Option<&CompositorFrameStore>,
+    bytes: &mut [u8],
+) -> Option<FedCompositorFrame> {
+    let frame = frame_store?
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .latest()
-    else {
-        return false;
-    };
+        .latest()?;
     if frame.bytes.len() != bytes.len() {
-        return false;
+        return None;
     }
     bytes.copy_from_slice(&frame.bytes);
-    true
+    Some(FedCompositorFrame {
+        sequence: frame.sequence,
+        age_ms: frame.captured_at.elapsed().as_millis() as u64,
+    })
 }
 
 fn open_recording_fifo_writer(path: &Path, stop: &AtomicBool) -> io::Result<File> {
@@ -754,6 +824,9 @@ async fn emit_encoder_bridge_diagnostics(
                 input_fps: runtime.input_fps,
                 dropped_frames: runtime.dropped_frames,
                 encoder_speed: runtime.encoder_speed,
+                repeated_fed_frames: runtime.repeated_fed_frames,
+                synthetic_fallback_frames: runtime.synthetic_fallback_frames,
+                source_to_encode_age_ms: runtime.source_to_encode_age_ms,
                 error,
             },
             target_fps,
@@ -784,6 +857,29 @@ fn frame_count(duration_ms: u64, fps: u32) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bridge_frame_with_no_compositor_frame_is_synthetic_fallback() {
+        assert_eq!(
+            classify_bridge_frame(Some(4), None),
+            BridgeFrameSource::SyntheticFallback
+        );
+        assert_eq!(
+            classify_bridge_frame(None, None),
+            BridgeFrameSource::SyntheticFallback
+        );
+    }
+
+    #[test]
+    fn bridge_frame_with_unchanged_sequence_is_a_repeat() {
+        assert_eq!(classify_bridge_frame(Some(7), Some(7)), BridgeFrameSource::Repeated);
+    }
+
+    #[test]
+    fn bridge_frame_with_advancing_or_first_sequence_is_fresh() {
+        assert_eq!(classify_bridge_frame(Some(7), Some(8)), BridgeFrameSource::Fresh);
+        assert_eq!(classify_bridge_frame(None, Some(1)), BridgeFrameSource::Fresh);
+    }
 
     fn test_settings() -> EncoderBridgeSettings {
         EncoderBridgeSettings {

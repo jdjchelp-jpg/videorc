@@ -355,6 +355,7 @@ async fn run_synthetic_compositor_loop(
     let mut dropped_frames = 0_u64;
     let mut window_started_at = Instant::now();
     let mut previous_tick_at: Option<Instant> = None;
+    let mut previous_fingerprint: Option<SourceFrameFingerprint> = None;
     let mut frame_times_ms = Vec::with_capacity(128);
 
     loop {
@@ -379,8 +380,13 @@ async fn run_synthetic_compositor_loop(
                 let render_started_at = Instant::now();
                 frames_rendered = frames_rendered.saturating_add(1);
                 frames_in_window = frames_in_window.saturating_add(1);
-                let fallback_frame_age_ms =
+                let published =
                     publish_compositor_frame(&state, frames_rendered, width, height).await;
+                let fallback_frame_age_ms = published.fallback_frame_age_ms;
+                if is_repeated_compositor_frame(previous_fingerprint, published.fingerprint) {
+                    repeated_frames = repeated_frames.saturating_add(1);
+                }
+                previous_fingerprint = Some(published.fingerprint);
                 frame_times_ms.push(render_started_at.elapsed().as_secs_f64() * 1000.0);
 
                 let surface_status = update_preview_surface_frames(&state, frames_rendered).await;
@@ -440,7 +446,8 @@ async fn run_synthetic_compositor_loop(
                     );
                     window_started_at = Instant::now();
                     frames_in_window = 0;
-                    repeated_frames = 0;
+                    // repeated_frames and dropped_frames accumulate over the whole run
+                    // (cumulative totals, like dropped_frames) — not reset per window.
                     frame_times_ms.clear();
                 }
             }
@@ -456,7 +463,50 @@ async fn compositor_dimensions(state: &AppState) -> (u32, u32) {
     )
 }
 
-async fn publish_compositor_frame(state: &AppState, sequence: u64, width: u32, height: u32) -> u64 {
+/// Identifies which real source frames fed one composited frame, so consecutive ticks
+/// can be compared to detect compositor-level repeated frames.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct SourceFrameFingerprint {
+    camera: Option<u64>,
+    screen: Option<u64>,
+}
+
+impl SourceFrameFingerprint {
+    fn has_real_source(self) -> bool {
+        self.camera.is_some() || self.screen.is_some()
+    }
+}
+
+/// The result of compositing and publishing one frame: how stale the frame was, plus
+/// the fingerprint of the real source frames that fed it.
+struct CompositorPublishResult {
+    fallback_frame_age_ms: u64,
+    fingerprint: SourceFrameFingerprint,
+}
+
+/// Whether the composited frame for this tick repeats the previous one. A repeat means
+/// at least one real source fed the frame and NONE of the real sources changed (same
+/// sequence, none appeared or disappeared) since the previous tick. Pure-synthetic
+/// frames (no real source) are never counted, because the synthetic generator animates
+/// every tick. This honestly counts compositor ticks that re-presented stale source
+/// content: a 60fps compositor pulling a 30fps source repeats ~every other tick, while
+/// a stalled real source repeats every tick.
+fn is_repeated_compositor_frame(
+    previous: Option<SourceFrameFingerprint>,
+    current: SourceFrameFingerprint,
+) -> bool {
+    match previous {
+        Some(previous) => current.has_real_source() && previous == current,
+        None => false,
+    }
+}
+
+async fn publish_compositor_frame(
+    state: &AppState,
+    sequence: u64,
+    width: u32,
+    height: u32,
+) -> CompositorPublishResult {
     let (frame_store, snapshot, active_image_source) = {
         let compositor = state.compositor.lock().await;
         let active_image_source = compositor
@@ -473,6 +523,10 @@ async fn publish_compositor_frame(state: &AppState, sequence: u64, width: u32, h
     };
     let camera_frame = preview_camera_latest_frame(state).await;
     let screen_frame = preview_screen_latest_frame(state).await;
+    let fingerprint = SourceFrameFingerprint {
+        camera: camera_frame.as_ref().map(|(frame, _layout)| frame.sequence),
+        screen: screen_frame.as_ref().map(|frame| frame.sequence),
+    };
     let captured_at = Instant::now();
     let mut store = frame_store
         .lock()
@@ -498,7 +552,10 @@ async fn publish_compositor_frame(state: &AppState, sequence: u64, width: u32, h
         captured_at,
         bytes,
     );
-    captured_at.elapsed().as_millis() as u64
+    CompositorPublishResult {
+        fallback_frame_age_ms: captured_at.elapsed().as_millis() as u64,
+        fingerprint,
+    }
 }
 
 struct CompositorRenderInputs<'a> {
@@ -1305,6 +1362,45 @@ mod tests {
     use crate::protocol::{SceneConfigParams, StreamScreenStatus, VideoPreset, VideoSettings};
     use crate::storage::Database;
     use tokio::sync::broadcast;
+
+    fn fp(camera: Option<u64>, screen: Option<u64>) -> SourceFrameFingerprint {
+        SourceFrameFingerprint { camera, screen }
+    }
+
+    #[test]
+    fn first_tick_is_never_a_repeat() {
+        assert!(!is_repeated_compositor_frame(None, fp(Some(1), None)));
+    }
+
+    #[test]
+    fn pure_synthetic_frames_are_never_repeats() {
+        let none = SourceFrameFingerprint::default();
+        assert!(!is_repeated_compositor_frame(Some(none), none));
+    }
+
+    #[test]
+    fn unchanged_real_source_is_a_repeat() {
+        let f = fp(Some(5), Some(9));
+        assert!(is_repeated_compositor_frame(Some(f), f));
+        // A stalled camera with no screen still repeats.
+        let c = fp(Some(7), None);
+        assert!(is_repeated_compositor_frame(Some(c), c));
+    }
+
+    #[test]
+    fn an_advancing_source_is_not_a_repeat() {
+        let prev = fp(Some(5), Some(9));
+        assert!(!is_repeated_compositor_frame(Some(prev), fp(Some(6), Some(9))));
+        assert!(!is_repeated_compositor_frame(Some(prev), fp(Some(5), Some(10))));
+    }
+
+    #[test]
+    fn an_appearing_or_disappearing_source_is_not_a_repeat() {
+        let prev = fp(None, Some(9));
+        assert!(!is_repeated_compositor_frame(Some(prev), fp(Some(1), Some(9))));
+        let prev = fp(Some(1), Some(9));
+        assert!(!is_repeated_compositor_frame(Some(prev), fp(None, Some(9))));
+    }
 
     fn test_state() -> AppState {
         let (events, _) = broadcast::channel(16);
