@@ -306,6 +306,9 @@ const idlePreviewSurfaceStatus = (): PreviewSurfaceStatus => ({
   message: 'Native preview surface is not running.'
 })
 
+const isPreviewSurfaceTransport = (transport: PreviewLiveStatus['transport']): boolean =>
+  transport === 'native-surface' || transport === 'electron-proof-surface'
+
 const idlePreviewCameraStatus = (): PreviewCameraStatus => ({
   state: 'device-missing',
   targetFps: 0,
@@ -463,7 +466,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
   }, [])
 
   const applyPreviewLiveStatus = useCallback((status: PreviewLiveStatus) => {
-    if (nativePreviewSurfaceEnabled && status.transport !== 'native-surface') {
+    if (nativePreviewSurfaceEnabled && !isPreviewSurfaceTransport(status.transport)) {
       setPreviewLoading(false)
       setPreviewUrl(null)
       return
@@ -1378,7 +1381,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       setPreviewLiveStatus({
         state: 'live',
         source: 'idle-preview',
-        transport: 'native-surface',
+        transport: 'electron-proof-surface',
         targetFps: activeSourceStatus.targetFps || previewSurfaceStatusRef.current.targetFps,
         width: (activeSourceStatus.width ?? previewSurfaceStatusRef.current.width) || undefined,
         height: (activeSourceStatus.height ?? previewSurfaceStatusRef.current.height) || undefined,
@@ -1475,7 +1478,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       setPreviewLiveStatus({
         state: 'live',
         source: 'idle-preview',
-        transport: 'native-surface',
+        transport: 'electron-proof-surface',
         targetFps: backendStatus.targetFps,
         width: backendStatus.width,
         height: backendStatus.height,

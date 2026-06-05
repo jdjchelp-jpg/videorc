@@ -19,7 +19,7 @@ export const DEFAULT_ACCEPTANCE_GATES = Object.freeze({
  * @param {{pass:boolean, failures:string[]}} input.analyzerVerdict - from analyzeRecording()
  * @param {{pass:boolean, failures:string[]}} [input.startupVerdict] - from analyzeStartupResolution()
  * @param {object} input.diagnostics - summarized live diagnostics for the run
- * @param {boolean} input.claimsNative - whether the preview reported a native transport
+ * @param {boolean} input.claimsNative - whether the preview reported the real native Metal transport
  * @param {boolean} input.expectAudio - whether a mic was selected
  * @param {object} [gates]
  * @returns {{pass:boolean, failures:string[]}}

@@ -26,8 +26,8 @@ use crate::protocol::{
     CameraFit, CameraShape, CompositorSceneSourceFit, CompositorSceneSourceKind,
     CompositorSceneSourceStatus, CompositorSceneUpdateParams, CompositorSourceKind,
     CompositorSourceStatus, CompositorState, CompositorStatus, LayoutPreset, LayoutSettings,
-    PreviewCameraState, PreviewScreenSourceKind, PreviewScreenState, PreviewSurfaceState, Scene,
-    SceneSourceKind, SceneTransform, StreamScreen,
+    PreviewCameraState, PreviewScreenSourceKind, PreviewScreenState, PreviewSurfaceState,
+    PreviewTransport, Scene, SceneSourceKind, SceneTransform, StreamScreen,
 };
 use crate::state::AppState;
 
@@ -533,11 +533,16 @@ async fn run_synthetic_compositor_loop(
                     let Some(status) = status else {
                         break;
                     };
+                    let preview_transport = surface_status
+                        .as_ref()
+                        .map(|status| status.transport)
+                        .unwrap_or(PreviewTransport::Unavailable);
                     let diagnostic_stats = {
                         let mut diagnostics = state.diagnostics.lock().await;
                         let next = apply_compositor_stats(
                             diagnostics.clone(),
                             target_fps,
+                            preview_transport,
                             measured_fps,
                             frame_age_ms,
                             repeated_frames,

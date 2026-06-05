@@ -1759,13 +1759,13 @@ async fn recording_native_surface_preview_status(
             PreviewLiveState::Connecting
         },
         source: PreviewLiveSource::RecordingSession,
-        transport: PreviewTransport::NativeSurface,
+        transport: PreviewTransport::ElectronProofSurface,
         target_fps: Some(compositor.target_fps),
         width: Some(compositor.width),
         height: Some(compositor.height),
         url: None,
         message: Some(message.unwrap_or_else(|| {
-            "Preview is using the native compositor surface; JPEG/MJPEG fallback is inactive."
+            "Preview is using the Electron proof compositor surface; JPEG/MJPEG fallback is inactive."
                 .to_string()
         })),
     }
@@ -2978,8 +2978,7 @@ async fn should_use_compositor_encoder_bridge(
 
 async fn recording_compositor_target_fps(state: &AppState, video: &VideoSettings) -> u32 {
     let preview_surface = state.preview_surface.lock().await.status.clone();
-    if preview_surface.state == PreviewSurfaceState::Live
-        && preview_surface.transport == PreviewTransport::NativeSurface
+    if preview_surface.state == PreviewSurfaceState::Live && preview_surface.transport.is_surface()
     {
         return video.fps.max(preview_surface.target_fps).max(1);
     }
@@ -5876,12 +5875,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bridge_compositor_uses_native_surface_fps_when_preview_is_live() {
+    async fn bridge_compositor_uses_surface_fps_when_preview_is_live() {
         let state = test_state();
         {
             let mut surface = state.preview_surface.lock().await;
             surface.status.state = PreviewSurfaceState::Live;
-            surface.status.transport = PreviewTransport::NativeSurface;
+            surface.status.transport = PreviewTransport::ElectronProofSurface;
             surface.status.target_fps = 60;
         }
         let video = VideoSettings {

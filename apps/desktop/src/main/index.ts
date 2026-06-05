@@ -660,7 +660,7 @@ async function createNativePreviewSurface(bounds: PreviewSurfaceBounds): Promise
       : nativePreviewSurfaceScene?.sources.some((source) => source.kind === 'camera')
         ? 'camera'
         : 'synthetic',
-    transport: 'native-surface',
+    transport: 'electron-proof-surface',
     targetFps: 60,
     width: rect.width,
     height: rect.height,
@@ -675,8 +675,8 @@ async function createNativePreviewSurface(bounds: PreviewSurfaceBounds): Promise
     startedAt: nativePreviewSurfaceStatus.startedAt ?? new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     message: nativePreviewSurfaceScene
-      ? 'Native scene preview surface hosted by Electron.'
-      : 'Synthetic native preview surface hosted by Electron.'
+      ? 'Electron proof scene preview surface.'
+      : 'Synthetic Electron proof preview surface.'
   }
   return nativePreviewSurfaceStatus
 }
@@ -692,7 +692,7 @@ async function updateNativePreviewSurfaceBounds(bounds: PreviewSurfaceBounds): P
     ...nativePreviewSurfaceStatus,
     state: 'live',
     source: nativePreviewSurfaceStatus.source,
-    transport: 'native-surface',
+    transport: 'electron-proof-surface',
     width: rect.width,
     height: rect.height,
     droppedFrames: nativePreviewSurfaceStatus.droppedFrames ?? 0,
@@ -761,7 +761,7 @@ async function updateNativePreviewSurfaceCompositor(status: CompositorStatus): P
     presentFps,
     intervalP95Ms,
     updatedAt: new Date().toISOString(),
-    message: status.state === 'live' ? 'Native preview surface is displaying compositor output.' : status.message
+    message: status.state === 'live' ? 'Electron proof preview surface is displaying compositor output.' : status.message
   }
   return nativePreviewSurfaceStatus
 }

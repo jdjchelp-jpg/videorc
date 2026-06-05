@@ -688,9 +688,19 @@ pub enum PreviewLiveSource {
 #[serde(rename_all = "kebab-case")]
 pub enum PreviewTransport {
     NativeSurface,
+    ElectronProofSurface,
     LatestJpegPolling,
     MjpegStream,
     Unavailable,
+}
+
+impl PreviewTransport {
+    pub fn is_surface(self) -> bool {
+        matches!(
+            self,
+            PreviewTransport::NativeSurface | PreviewTransport::ElectronProofSurface
+        )
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

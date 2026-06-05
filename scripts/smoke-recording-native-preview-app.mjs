@@ -23,6 +23,8 @@ const minPreviewFps = Number(process.env.VIDEORC_NATIVE_PREVIEW_MIN_FPS ?? 55)
 const maxPreviewIntervalP95Ms = Number(process.env.VIDEORC_NATIVE_PREVIEW_MAX_INTERVAL_P95_MS ?? 24)
 const layoutStressUpdates = Number(process.env.VIDEORC_NATIVE_PREVIEW_LAYOUT_STRESS_UPDATES ?? 0)
 const layoutStressIntervalMs = Number(process.env.VIDEORC_NATIVE_PREVIEW_LAYOUT_STRESS_INTERVAL_MS ?? 750)
+const expectedSurfaceTransport =
+  process.env.VIDEORC_EXPECT_NATIVE_METAL_PREVIEW === '1' ? 'native-surface' : 'electron-proof-surface'
 
 const scenarios = [
   ...(process.env.VIDEORC_NATIVE_PREVIEW_INCLUDE_1440 === '1'
@@ -131,7 +133,9 @@ async function runNativePreviewRecordingScenario(ws, smoke, samples, scenario, p
   const stats = summarizeDiagnostics(samples, scenario.fps, scenarioStartedAt, stopRequestedAt)
   assertStatsHealthy(scenario, stats)
   if (stats.nativePreviewSamples === 0) {
-    throw new Error(`[${scenario.label}] Recording diagnostics never reported native-surface preview transport.`)
+    throw new Error(
+      `[${scenario.label}] Recording diagnostics never reported ${expectedSurfaceTransport} preview transport.`
+    )
   }
   if (surfaceDuring.framesRendered <= previousSurface.framesRendered) {
     throw new Error(
@@ -328,7 +332,7 @@ async function waitForNativeSurface(ws, previousFrames = -1) {
     lastStatus = await request(ws, timeoutMs, 'preview.surface.status')
     if (
       lastStatus.state === 'live' &&
-      lastStatus.transport === 'native-surface' &&
+      lastStatus.transport === expectedSurfaceTransport &&
       (lastStatus.targetFps ?? 0) >= 60 &&
       lastStatus.framesRendered > previousFrames
     ) {
@@ -350,7 +354,7 @@ async function waitForNativePreviewDiagnostics(samples) {
       }
       lastDiagnostics = sample
       if (
-        sample.previewTransport === 'native-surface' &&
+        sample.previewTransport === expectedSurfaceTransport &&
         (sample.previewPresentFps ?? 0) >= minPreviewFps
       ) {
         return sample
@@ -359,7 +363,7 @@ async function waitForNativePreviewDiagnostics(samples) {
     await sleep(250)
   }
   throw new Error(
-    `Passive diagnostics did not report native-surface preview before recording. Last diagnostics: ${JSON.stringify(lastDiagnostics)}`
+    `Passive diagnostics did not report ${expectedSurfaceTransport} preview before recording. Last diagnostics: ${JSON.stringify(lastDiagnostics)}`
   )
 }
 
@@ -428,7 +432,7 @@ function summarizeDiagnostics(samples, targetFps, scenarioStartedAt, stopRequest
     duplicateCaptureSamples: measuredSamples.filter(
       (sample) => Array.isArray(sample.duplicateCaptureSources) && sample.duplicateCaptureSources.length > 0
     ).length,
-    nativePreviewSamples: measuredSamples.filter((sample) => sample.previewTransport === 'native-surface').length,
+    nativePreviewSamples: measuredSamples.filter((sample) => sample.previewTransport === expectedSurfaceTransport).length,
     maxBackendRssBytes: backendRssValues.length ? Math.max(...backendRssValues) : null,
     maxActiveFfmpegProcesses: ffmpegProcessValues.length ? Math.max(...ffmpegProcessValues) : 0,
     maxActiveFfprobeProcesses: ffprobeProcessValues.length ? Math.max(...ffprobeProcessValues) : 0,

@@ -568,7 +568,13 @@ function previewDiagnosisCopy({
   ) {
     return { label: 'Screen capture', tone: previewScreenStatus.state === 'failed' ? 'error' : 'warn' }
   }
-  if (!nativePreviewSurfaceEnabled || diagnosticStats.previewTransport !== 'native-surface') {
+  if (!nativePreviewSurfaceEnabled) {
+    return { label: 'Fallback', tone: diagnosticStats.previewTransport === 'unavailable' ? 'neutral' : 'warn' }
+  }
+  if (diagnosticStats.previewTransport === 'electron-proof-surface') {
+    return { label: 'Proof surface', tone: 'warn' }
+  }
+  if (diagnosticStats.previewTransport !== 'native-surface') {
     return { label: 'Fallback', tone: diagnosticStats.previewTransport === 'unavailable' ? 'neutral' : 'warn' }
   }
 
@@ -697,6 +703,8 @@ function formatPreviewTransport(transport?: string): string {
   switch (transport) {
     case 'native-surface':
       return 'Native'
+    case 'electron-proof-surface':
+      return 'Proof'
     case 'latest-jpeg-polling':
       return 'JPEG'
     case 'mjpeg-stream':
@@ -731,12 +739,14 @@ function formatImagePolls(counts?: DiagnosticStats['previewImagePollCounts']): s
     : `${total} (cam ${counts.cameraPng}, scr ${counts.screenPng}, jpg ${counts.liveJpeg}, mjpeg ${counts.liveMjpeg})`
 }
 
-// The plan's "OBS-native preview" vs "Fallback preview" badge. A native-surface transport
-// is the only OBS-native path; JPEG/MJPEG are honestly labelled as fallbacks.
+// The plan's "OBS-native preview" vs "Fallback preview" badge. Only the real Metal
+// layer may report native-surface; the Electron proof window stays explicitly non-native.
 function previewPathBadge(transport?: string): { label: string; tone: StatusTone } {
   switch (transport) {
     case 'native-surface':
       return { label: 'OBS-native', tone: 'good' }
+    case 'electron-proof-surface':
+      return { label: 'Proof surface', tone: 'warn' }
     case 'latest-jpeg-polling':
       return { label: 'Fallback (JPEG)', tone: 'warn' }
     case 'mjpeg-stream':

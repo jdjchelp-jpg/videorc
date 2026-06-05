@@ -140,7 +140,7 @@ export function PreviewStage({
   const [imageFailed, setImageFailed] = useState(false)
   const [screenImageFailed, setScreenImageFailed] = useState(false)
   const [displayPreviewUrl, setDisplayPreviewUrl] = useState<string | null>(previewUrl)
-  const usingNativeSurface = nativePreviewSurfaceEnabled && previewSurfaceStatus?.transport === 'native-surface'
+  const usingNativeSurface = nativePreviewSurfaceEnabled && isPreviewSurfaceTransport(previewSurfaceStatus?.transport)
   const nativeSurfaceLive = usingNativeSurface && previewSurfaceStatus?.state === 'live'
   const isLive = usingNativeSurface ? previewSurfaceStatus?.state === 'live' : previewLiveStatus.state === 'live'
   const latestFrameUrl = useMemo(
@@ -398,7 +398,16 @@ export function PreviewStage({
           {previewBadge.label}
         </Badge>
         {transportLabel && transportLabel !== previewBadge.label ? (
-          <Badge className="absolute top-9 left-2" variant={activeTransport === 'native-surface' ? 'success' : 'secondary'}>
+          <Badge
+            className="absolute top-9 left-2"
+            variant={
+              activeTransport === 'native-surface'
+                ? 'success'
+                : activeTransport === 'electron-proof-surface'
+                  ? 'warning'
+                  : 'secondary'
+            }
+          >
             {transportLabel}
           </Badge>
         ) : null}
@@ -566,6 +575,9 @@ function previewBadgeState({
       return { label: 'Preview failed', variant: 'destructive' }
     }
     if (previewSurfaceStatus?.state === 'live') {
+      if (previewSurfaceStatus.transport === 'electron-proof-surface') {
+        return { label: 'Proof surface', variant: 'warning' }
+      }
       return { label: 'Native preview', variant: 'success' }
     }
     return { label: 'Connecting', variant: 'secondary' }
@@ -587,6 +599,8 @@ function previewTransportLabel(transport: PreviewLiveStatus['transport']): strin
   switch (transport) {
     case 'native-surface':
       return 'Native preview'
+    case 'electron-proof-surface':
+      return 'Electron proof'
     case 'latest-jpeg-polling':
       return 'JPEG fallback'
     case 'mjpeg-stream':
@@ -594,6 +608,10 @@ function previewTransportLabel(transport: PreviewLiveStatus['transport']): strin
     default:
       return null
   }
+}
+
+function isPreviewSurfaceTransport(transport?: PreviewLiveStatus['transport']): boolean {
+  return transport === 'native-surface' || transport === 'electron-proof-surface'
 }
 
 function fileUrlFromPath(path: string): string {

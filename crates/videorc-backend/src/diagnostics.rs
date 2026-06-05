@@ -16,8 +16,9 @@ use crate::source_registry::SourceRegistrySnapshot;
 /// A truly OBS-native preview consumes the compositor surface directly and never hits
 /// these routes, so a recording session in which these counters climb is — by
 /// definition — NOT native (the transport-honesty gate). The "native-surface" label is
-/// the backend's assertion of intent; these counts are the only honest evidence of what
-/// the client actually fetched. Const-constructible, so it needs no runtime init.
+/// reserved for the real Metal layer; Electron proof surfaces report their own transport
+/// so the badge cannot claim OBS-native parity early. Const-constructible, so it needs no
+/// runtime init.
 #[derive(Debug)]
 pub struct PreviewTransportCounters {
     camera_png: AtomicU64,
@@ -483,6 +484,7 @@ pub fn apply_preview_surface_resize(
 pub fn apply_compositor_stats(
     mut stats: DiagnosticStats,
     target_fps: u32,
+    preview_transport: PreviewTransport,
     render_fps: f64,
     frame_age_ms: u64,
     repeated_frames: u64,
@@ -493,7 +495,7 @@ pub fn apply_compositor_stats(
 ) -> DiagnosticStats {
     stats.preview_target_fps = Some(f64::from(target_fps));
     stats.preview_frame_age_ms = Some(frame_age_ms);
-    stats.preview_transport = PreviewTransport::NativeSurface;
+    stats.preview_transport = preview_transport;
     stats
         .preview_source_fps
         .insert("synthetic-compositor".to_string(), render_fps);

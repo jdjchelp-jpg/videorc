@@ -191,6 +191,8 @@ async function main() {
 
     // Full real-source acceptance gate: final-file verdict + recording repeats +
     // encoder speed + mic drops/coverage + transport honesty, all enforced together.
+    // The Electron proof surface reports metrics, but only native-surface is the real
+    // CAMetalLayer path and therefore an OBS-native claim.
     const claimsNative =
       previewTransport === 'native-surface' || diagnostics.transports.includes('native-surface')
     const acceptance = evaluateAcceptance({

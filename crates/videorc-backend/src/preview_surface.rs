@@ -37,15 +37,15 @@ pub async fn create_preview_surface(
     let target_fps = params.target_fps.clamp(30, 120);
     let now = Utc::now().to_rfc3339();
     let message = match params.source {
-        PreviewSurfaceSource::Camera => "Native camera preview surface running.",
-        PreviewSurfaceSource::Screen => "Native screen preview surface running.",
-        PreviewSurfaceSource::Window => "Native window preview surface running.",
-        PreviewSurfaceSource::Synthetic => "Synthetic native preview surface running.",
+        PreviewSurfaceSource::Camera => "Electron proof camera preview surface running.",
+        PreviewSurfaceSource::Screen => "Electron proof screen preview surface running.",
+        PreviewSurfaceSource::Window => "Electron proof window preview surface running.",
+        PreviewSurfaceSource::Synthetic => "Synthetic Electron proof preview surface running.",
     };
     let status = PreviewSurfaceStatus {
         state: PreviewSurfaceState::Live,
         source: params.source,
-        transport: PreviewTransport::NativeSurface,
+        transport: PreviewTransport::ElectronProofSurface,
         target_fps,
         width: surface_dimension(params.bounds.width),
         height: surface_dimension(params.bounds.height),
@@ -269,7 +269,7 @@ mod tests {
         .await;
 
         assert_eq!(status.state, PreviewSurfaceState::Live);
-        assert_eq!(status.transport, PreviewTransport::NativeSurface);
+        assert_eq!(status.transport, PreviewTransport::ElectronProofSurface);
         assert_eq!(status.target_fps, 60);
         assert_eq!(status.width, 800);
         assert_eq!(status.height, 450);

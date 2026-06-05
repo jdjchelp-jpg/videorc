@@ -755,7 +755,12 @@ export interface PreviewSnapshot {
 
 export type PreviewLiveState = 'connecting' | 'live' | 'reconnecting' | 'unavailable'
 export type PreviewLiveSource = 'idle-preview' | 'recording-session' | 'unavailable'
-export type PreviewTransport = 'native-surface' | 'latest-jpeg-polling' | 'mjpeg-stream' | 'unavailable'
+export type PreviewTransport =
+  | 'native-surface'
+  | 'electron-proof-surface'
+  | 'latest-jpeg-polling'
+  | 'mjpeg-stream'
+  | 'unavailable'
 
 /** Which encoder a recording session requested. `-allow_sw 1` means videotoolbox may still
  * fall back to software, so this is the requested backend; the final-file codec/encoder tag

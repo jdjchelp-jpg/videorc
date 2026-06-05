@@ -11,6 +11,8 @@ const measurementMs = Number(process.env.VIDEORC_PREVIEW_MOTION_SAMPLE_MS ?? 100
 const obsMinFps = Number(process.env.VIDEORC_PREVIEW_MOTION_OBS_MIN_FPS ?? 55)
 const obsMaxFrameAgeMs = Number(process.env.VIDEORC_PREVIEW_MOTION_OBS_MAX_AGE_MS ?? 100)
 const obsMaxIntervalP95Ms = Number(process.env.VIDEORC_PREVIEW_MOTION_OBS_MAX_INTERVAL_P95_MS ?? 24)
+const expectedSurfaceTransport =
+  process.env.VIDEORC_EXPECT_NATIVE_METAL_PREVIEW === '1' ? 'native-surface' : 'electron-proof-surface'
 const outputDirectory = resolve(
   process.env.VIDEORC_SMOKE_OUTPUT_DIR ?? join(tmpdir(), `videorc-preview-motion-${Date.now()}`)
 )
@@ -150,7 +152,7 @@ async function waitForNativeSurface(ws, previousFrames = -1) {
     lastStatus = await request(ws, timeoutMs, 'preview.surface.status')
     if (
       lastStatus.state === 'live' &&
-      lastStatus.transport === 'native-surface' &&
+      lastStatus.transport === expectedSurfaceTransport &&
       (lastStatus.targetFps ?? 0) >= 60 &&
       lastStatus.framesRendered > previousFrames
     ) {

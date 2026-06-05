@@ -13,6 +13,10 @@ const resizedMeasurementMs = Number(
 )
 const minFps = Number(process.env.VIDEORC_PREVIEW_SURFACE_MIN_FPS ?? 55)
 const maxIntervalP95Ms = Number(process.env.VIDEORC_PREVIEW_SURFACE_MAX_INTERVAL_P95_MS ?? 24)
+const expectedSurfaceTransport =
+  process.env.VIDEORC_EXPECT_NATIVE_METAL_PREVIEW === '1' ? 'native-surface' : 'electron-proof-surface'
+const expectedSurfaceBadge =
+  expectedSurfaceTransport === 'native-surface' ? 'Native preview' : 'Electron proof'
 const outputDirectory = resolve(
   process.env.VIDEORC_SMOKE_OUTPUT_DIR ?? join(tmpdir(), `videorc-preview-surface-${Date.now()}`)
 )
@@ -50,8 +54,10 @@ async function runPreviewSurfaceSmoke(connection, smoke) {
     assertNativeMeasurement(firstMeasurement, 'initial')
 
     const firstDiagnostics = await request(ws, timeoutMs, 'diagnostics.stats')
-    if (firstDiagnostics.previewTransport !== 'native-surface') {
-      throw new Error(`Diagnostics preview transport is ${firstDiagnostics.previewTransport}, expected native-surface.`)
+    if (firstDiagnostics.previewTransport !== expectedSurfaceTransport) {
+      throw new Error(
+        `Diagnostics preview transport is ${firstDiagnostics.previewTransport}, expected ${expectedSurfaceTransport}.`
+      )
     }
     if ((firstDiagnostics.previewPresentFps ?? 0) < minFps) {
       throw new Error(`Diagnostics preview FPS ${format(firstDiagnostics.previewPresentFps)} is below ${minFps}.`)
@@ -91,7 +97,7 @@ async function waitForNativeSurface(ws, previousFrames = -1) {
     lastStatus = await request(ws, timeoutMs, 'preview.surface.status')
     if (
       lastStatus.state === 'live' &&
-      lastStatus.transport === 'native-surface' &&
+      lastStatus.transport === expectedSurfaceTransport &&
       (lastStatus.targetFps ?? 0) >= 60 &&
       lastStatus.framesRendered > previousFrames
     ) {
@@ -177,8 +183,8 @@ function assertNativeBootstrap(result, options = {}) {
 
 function assertNativePreviewBadge(result) {
   const badges = result.badges ?? []
-  if (!badges.includes('Native preview')) {
-    throw new Error(`Preview stage badges did not include "Native preview": ${JSON.stringify(badges)}`)
+  if (!badges.includes(expectedSurfaceBadge)) {
+    throw new Error(`Preview stage badges did not include "${expectedSurfaceBadge}": ${JSON.stringify(badges)}`)
   }
 }
 
