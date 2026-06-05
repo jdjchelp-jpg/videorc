@@ -16,6 +16,7 @@
     "dist:desktop:signed": "pnpm package:backend && pnpm ffmpeg:build:macos && pnpm --filter @videorc/desktop dist:signed",
     "analyze:recording": "node scripts/analyze-recording.mjs",
     "test:analyzer": "node --test scripts/lib/recording-analyzer.test.mjs",
+    "test:scripts": "node --test scripts/lib/*.test.mjs",
     "baseline:real-source": "node scripts/real-source-baseline-app.mjs",
     "smoke:dev": "node scripts/smoke-dev-app.mjs",
     "smoke:sources": "node scripts/smoke-source-reconciliation.mjs",

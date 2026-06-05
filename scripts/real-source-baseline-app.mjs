@@ -33,6 +33,7 @@ import { dirname, join, resolve } from 'node:path'
 import { launchDevApp, stopProcess } from './lib/app-launcher.mjs'
 import { connectBackend, request } from './smoke-recording-session.mjs'
 import { analyzeRecording, renderMarkdownReport, writeReports } from './lib/recording-analyzer.mjs'
+import { evaluateAcceptance } from './lib/acceptance-gate.mjs'
 
 const config = {
   recordingMs: Number(process.env.VIDEORC_BASELINE_RECORDING_MS ?? 60000),
@@ -169,14 +170,18 @@ async function main() {
     const diagnostics = summarizeDiagnostics(diagnosticsEvents, snapshots, scenarioStartedAt, stopRequestedAt)
     const baselinePath = writeBaselineReport(outputPath, { sources, previewTransport, size, diagnostics, report })
 
-    printSummary(report, diagnostics, previewTransport, baselinePath)
-
-    // The transport-honesty gate: a preview that claims "native" but fetched image-poll
-    // routes during the session is not native, and fails the gate alongside the analyzer.
+    // Full real-source acceptance gate: final-file verdict + recording repeats +
+    // encoder speed + mic drops/coverage + transport honesty, all enforced together.
     const claimsNative =
       previewTransport === 'native-surface' || diagnostics.transports.includes('native-surface')
-    const transportDishonest = claimsNative && (diagnostics.imagePollDuringSession.total ?? 0) > 0
-    return { pass: report.verdict.pass && !transportDishonest, transportDishonest }
+    const acceptance = evaluateAcceptance({
+      analyzerVerdict: report.verdict,
+      diagnostics,
+      claimsNative,
+      expectAudio: Boolean(sources.microphone),
+    })
+    printSummary(report, diagnostics, previewTransport, baselinePath, acceptance)
+    return acceptance
   } finally {
     ws.close()
   }
@@ -421,9 +426,11 @@ function writeBaselineReport(outputPath, { sources, previewTransport, size, diag
   return reportPath
 }
 
-function printSummary(report, diagnostics, previewTransport, baselinePath) {
+function printSummary(report, diagnostics, previewTransport, baselinePath, acceptance) {
   console.log('')
   console.log('════════ REAL-SOURCE BASELINE ════════')
+  console.log(`Acceptance gate: ${acceptance.pass ? 'PASS' : 'FAIL'}`)
+  for (const f of acceptance.failures) console.log(`  ✗ ${f}`)
   console.log(`Final-file verdict: ${report.verdict.pass ? 'PASS' : 'FAIL'}`)
   for (const f of report.verdict.failures) console.log(`  ❌ ${f}`)
   for (const w of report.verdict.warnings) console.log(`  ⚠️  ${w}`)

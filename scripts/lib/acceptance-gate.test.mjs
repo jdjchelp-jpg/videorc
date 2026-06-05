@@ -1,0 +1,104 @@
+// Unit tests for the real-source acceptance gate.
+// Run: node --test scripts/lib/acceptance-gate.test.mjs
+
+import assert from 'node:assert/strict'
+import { describe, it } from 'node:test'
+
+import { evaluateAcceptance } from './acceptance-gate.mjs'
+
+const cleanInput = () => ({
+  analyzerVerdict: { pass: true, failures: [] },
+  diagnostics: {
+    encoderBridgeRepeatedFrames: 0,
+    encoderBridgeSyntheticFrames: 0,
+    minEncoderSpeed: 1.0,
+    micDroppedFrames: 0,
+    minMicCaptureCoverage: 1.0,
+    imagePollDuringSession: { total: 0 },
+  },
+  claimsNative: true,
+  expectAudio: true,
+})
+
+describe('evaluateAcceptance', () => {
+  it('passes a clean real-source run', () => {
+    const v = evaluateAcceptance(cleanInput())
+    assert.equal(v.pass, true)
+    assert.deepEqual(v.failures, [])
+  })
+
+  it('fails when the final-file analyzer fails, surfacing its reasons', () => {
+    const input = cleanInput()
+    input.analyzerVerdict = { pass: false, failures: ['freeze segment 250ms exceeds 100ms (1 segment(s))'] }
+    const v = evaluateAcceptance(input)
+    assert.equal(v.pass, false)
+    assert.match(v.failures[0], /final-file: freeze segment 250ms/)
+  })
+
+  it('fails on duplicate frames re-fed to the encoder', () => {
+    const input = cleanInput()
+    input.diagnostics.encoderBridgeRepeatedFrames = 12
+    const v = evaluateAcceptance(input)
+    assert.equal(v.pass, false)
+    assert.match(v.failures.join(' '), /12 duplicate frame\(s\) re-fed/)
+  })
+
+  it('fails on synthetic filler frames', () => {
+    const input = cleanInput()
+    input.diagnostics.encoderBridgeSyntheticFrames = 3
+    const v = evaluateAcceptance(input)
+    assert.equal(v.pass, false)
+    assert.match(v.failures.join(' '), /3 synthetic filler frame/)
+  })
+
+  it('fails when the encoder falls behind real-time', () => {
+    const input = cleanInput()
+    input.diagnostics.minEncoderSpeed = 0.8
+    const v = evaluateAcceptance(input)
+    assert.equal(v.pass, false)
+    assert.match(v.failures.join(' '), /speed 0.80x below 0.98x/)
+  })
+
+  it('fails on mic drops and low capture coverage only when audio is expected', () => {
+    const dropped = cleanInput()
+    dropped.diagnostics.micDroppedFrames = 5
+    assert.equal(evaluateAcceptance(dropped).pass, false)
+
+    const lowCoverage = cleanInput()
+    lowCoverage.diagnostics.minMicCaptureCoverage = 0.5
+    assert.equal(evaluateAcceptance(lowCoverage).pass, false)
+
+    // Same problems but no audio expected → not gated.
+    const noAudio = cleanInput()
+    noAudio.expectAudio = false
+    noAudio.diagnostics.micDroppedFrames = 5
+    noAudio.diagnostics.minMicCaptureCoverage = 0.5
+    assert.equal(evaluateAcceptance(noAudio).pass, true)
+  })
+
+  it('fails a "native" preview that fetched image-poll routes (transport honesty)', () => {
+    const input = cleanInput()
+    input.diagnostics.imagePollDuringSession = { total: 240 }
+    const v = evaluateAcceptance(input)
+    assert.equal(v.pass, false)
+    assert.match(v.failures.join(' '), /240 image-poll request\(s\) during a "native"/)
+
+    // Image polling is fine when the preview does NOT claim to be native (it IS a fallback).
+    const fallback = cleanInput()
+    fallback.claimsNative = false
+    fallback.diagnostics.imagePollDuringSession = { total: 240 }
+    assert.equal(evaluateAcceptance(fallback).pass, true)
+  })
+
+  it('accumulates every failure at once', () => {
+    const input = cleanInput()
+    input.analyzerVerdict = { pass: false, failures: ['repeated-frame burst of 7 consecutive identical frames'] }
+    input.diagnostics.encoderBridgeRepeatedFrames = 4
+    input.diagnostics.minEncoderSpeed = 0.5
+    input.diagnostics.micDroppedFrames = 2
+    input.diagnostics.imagePollDuringSession = { total: 100 }
+    const v = evaluateAcceptance(input)
+    assert.equal(v.pass, false)
+    assert.ok(v.failures.length >= 5, `expected ≥5 failures, got ${v.failures.length}`)
+  })
+})
