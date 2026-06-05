@@ -19,7 +19,7 @@ use tokio::time::{Duration, sleep, timeout};
 use uuid::Uuid;
 
 use crate::audio::{
-    AudioProcessingSettings, NATIVE_AUDIO_CHANNELS, NATIVE_AUDIO_FFMPEG_QUEUE_SIZE,
+    AudioCaptureStats, AudioProcessingSettings, NATIVE_AUDIO_CHANNELS, NATIVE_AUDIO_FFMPEG_QUEUE_SIZE,
     NATIVE_AUDIO_SAMPLE_RATE, NativeAudioCaptureSession, NativeAudioSource, attach_fifo_writer,
     audio_capture_coverage, create_native_audio_fifo, native_audio_fifo_path,
     parse_coreaudio_microphone_id, start_native_audio_source,
@@ -389,6 +389,13 @@ pub async fn start_session(
     let mut capture = resolve_capture_inputs(&ffmpeg_path, &params).await;
     let native_audio_source =
         prepare_native_audio_source(&state, &session_id, &mut capture, &params).await;
+    // Warm up the microphone before the video pipeline starts so audio and video begin in
+    // lockstep. CoreAudio takes a few hundred ms to deliver its first callback while video
+    // frames flow immediately; without this wait the recorded audio lags the picture by
+    // that startup latency (measured ~360-390ms on real recordings).
+    if let Some(prepared) = native_audio_source.as_ref() {
+        await_microphone_warmup(&state, prepared.source.stats_handle()).await;
+    }
     let audio_tracks = capture_audio_tracks(&capture);
     if matches!(capture.video, VideoInput::TestPattern) {
         let (code, message) = if matches!(params.layout.layout_preset, LayoutPreset::CameraOnly) {
@@ -2684,6 +2691,34 @@ async fn resolve_screen_input(ffmpeg_path: &str, screen_id: Option<&str>) -> Opt
     }
 
     None
+}
+
+/// Maximum time to wait for the microphone to warm up before starting the video pipeline.
+const MICROPHONE_WARMUP_TIMEOUT: Duration = Duration::from_millis(1500);
+
+/// Wait for CoreAudio to deliver its first callback (the mic-warmed-up signal) before the
+/// video pipeline starts, so audio and video begin in lockstep instead of the audio
+/// trailing the picture by the AudioUnit startup latency. Degrades gracefully — proceeds
+/// after the timeout if the mic never warms up — so a flaky mic never blocks recording.
+async fn await_microphone_warmup(state: &AppState, stats: Arc<AudioCaptureStats>) {
+    let started_at = std::time::Instant::now();
+    while stats.captured_frames() == 0 {
+        if started_at.elapsed() >= MICROPHONE_WARMUP_TIMEOUT {
+            state.emit_log(
+                "warn",
+                "Microphone did not warm up before the timeout; audio may start slightly late.",
+            );
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    state.emit_log(
+        "info",
+        format!(
+            "Microphone warmed up in {}ms; starting video aligned to audio.",
+            started_at.elapsed().as_millis()
+        ),
+    );
 }
 
 async fn prepare_native_audio_source(

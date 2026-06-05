@@ -99,6 +99,15 @@ pub struct NativeAudioSource {
     audio_unit: Option<coreaudio::audio_unit::AudioUnit>,
 }
 
+impl NativeAudioSource {
+    /// A cloneable, `Send` handle to the capture stats — lets callers poll mic warmup
+    /// across await points without holding the (`!Send`) source itself. `captured_frames`
+    /// stays zero until CoreAudio delivers its first callback (the warmed-up signal).
+    pub fn stats_handle(&self) -> Arc<AudioCaptureStats> {
+        self.stats.clone()
+    }
+}
+
 impl std::fmt::Debug for NativeAudioSource {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
