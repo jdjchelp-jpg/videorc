@@ -9,6 +9,7 @@ mod encoder_bridge;
 mod ffmpeg;
 mod ffmpeg_work;
 mod frame_store;
+mod live_chat;
 mod live_pipeline;
 mod live_render;
 mod live_scene;
@@ -1411,6 +1412,16 @@ async fn handle_text_message(state: &AppState, text: &str) -> ServerResponse {
             Err(error) => ServerResponse::error(
                 command.id,
                 "platform-accounts-list-failed",
+                error.to_string(),
+            ),
+        },
+        "liveChat.capability" => match state.database.list_platform_accounts() {
+            Ok(accounts) => {
+                ServerResponse::ok(command.id, live_chat::chat_capabilities(&accounts))
+            }
+            Err(error) => ServerResponse::error(
+                command.id,
+                "live-chat-capability-failed",
                 error.to_string(),
             ),
         },
