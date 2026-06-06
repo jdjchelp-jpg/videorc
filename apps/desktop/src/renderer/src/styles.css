@@ -186,4 +186,19 @@
   html {
     @apply font-sans;
   }
+  /* Visible keyboard focus for any interactive element that doesn't set its own ring. */
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-ring/70;
+  }
+  /* Honour reduced-motion: collapse transitions/animations, keep behaviour. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    ::before,
+    ::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
 }
