@@ -1198,7 +1198,11 @@ function sendToWindows(channel: string, ...args: unknown[]): void {
       continue
     }
 
-    window.webContents.send(channel, ...args)
+    try {
+      window.webContents.send(channel, ...args)
+    } catch {
+      // The renderer can be disposed between the destroyed check and send during app shutdown.
+    }
   }
 }
 
