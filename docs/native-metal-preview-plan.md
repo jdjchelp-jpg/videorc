@@ -41,6 +41,9 @@ fails a "native" claim — by design.
   `NSWindow`; renderer bounds now include screen height so the host can convert Electron
   top-left coordinates to AppKit bottom-left frames. The remaining native-host work is
   command lifecycle, frame presentation, and on-device validation.
+- The renderer now merges backend preview-surface status with the actual host status so a
+  future live `CAMetalLayer` host can report `native-surface` / `cametal-layer` without
+  being overwritten by the backend's Electron proof-surface startup status.
 - `make_preview_layer()` / `MetalPreviewPresenter` / `present_texture_to_layer()` — the
   GPU-side preview present (CAMetalLayer + render-scaled texture present), compile-and-run
   tested headlessly.

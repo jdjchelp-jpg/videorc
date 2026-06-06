@@ -1546,19 +1546,19 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
         current.state === 'live'
           ? await window.videorc.updateNativePreviewSurfaceBounds(bounds)
           : await window.videorc.createNativePreviewSurface(bounds)
-      applyPreviewSurfaceStatus({
-        ...backendStatus,
-        framesRendered: Math.max(backendStatus.framesRendered, hostStatus.framesRendered),
-        message: backendStatus.message ?? hostStatus.message
-      })
+      const surfaceStatus = mergePreviewSurfaceHostStatus(backendStatus, hostStatus)
+      applyPreviewSurfaceStatus(surfaceStatus)
       setPreviewLiveStatus({
         state: 'live',
         source: 'idle-preview',
-        transport: 'electron-proof-surface',
-        targetFps: backendStatus.targetFps,
-        width: backendStatus.width,
-        height: backendStatus.height,
-        message: 'Native preview surface proof mode is active.'
+        transport: surfaceStatus.transport,
+        targetFps: surfaceStatus.targetFps,
+        width: surfaceStatus.width,
+        height: surfaceStatus.height,
+        message:
+          surfaceStatus.transport === 'native-surface'
+            ? 'Native preview surface is active.'
+            : 'Native preview surface proof mode is active.'
       })
       setPreviewUrl(null)
       setPreviewLoading(false)
@@ -2884,6 +2884,49 @@ function isEditableTargetSafe(target: EventTarget | null): boolean {
   return target instanceof HTMLElement
     ? Boolean(target.closest('input, textarea, select, button, [contenteditable="true"]'))
     : false
+}
+
+function mergePreviewSurfaceHostStatus(
+  backendStatus: PreviewSurfaceStatus,
+  hostStatus: PreviewSurfaceStatus
+): PreviewSurfaceStatus {
+  const hostLive = hostStatus.state === 'live'
+  const hostTransport = hostStatus.transport !== 'unavailable' ? hostStatus.transport : backendStatus.transport
+  const hostBacking = hostStatus.backing !== 'none' ? hostStatus.backing : backendStatus.backing
+
+  if (!hostLive) {
+    return {
+      ...backendStatus,
+      framesRendered: Math.max(backendStatus.framesRendered, hostStatus.framesRendered),
+      message: backendStatus.message ?? hostStatus.message
+    }
+  }
+
+  return {
+    ...backendStatus,
+    state: hostStatus.state,
+    source: hostStatus.source,
+    transport: hostTransport,
+    backing: hostBacking,
+    width: hostStatus.width > 0 ? hostStatus.width : backendStatus.width,
+    height: hostStatus.height > 0 ? hostStatus.height : backendStatus.height,
+    targetFps: hostStatus.targetFps > 0 ? hostStatus.targetFps : backendStatus.targetFps,
+    framesRendered: Math.max(backendStatus.framesRendered, hostStatus.framesRendered),
+    presentedFrameId: hostStatus.presentedFrameId ?? backendStatus.presentedFrameId,
+    compositorFrameLag: hostStatus.compositorFrameLag ?? backendStatus.compositorFrameLag,
+    droppedFrames: hostStatus.droppedFrames ?? backendStatus.droppedFrames,
+    inputToPresentLatencyMs: hostStatus.inputToPresentLatencyMs ?? backendStatus.inputToPresentLatencyMs,
+    inputToPresentLatencyP50Ms: hostStatus.inputToPresentLatencyP50Ms ?? backendStatus.inputToPresentLatencyP50Ms,
+    inputToPresentLatencyP95Ms: hostStatus.inputToPresentLatencyP95Ms ?? backendStatus.inputToPresentLatencyP95Ms,
+    inputToPresentLatencyP99Ms: hostStatus.inputToPresentLatencyP99Ms ?? backendStatus.inputToPresentLatencyP99Ms,
+    presentFps: hostStatus.presentFps ?? backendStatus.presentFps,
+    intervalP95Ms: hostStatus.intervalP95Ms ?? backendStatus.intervalP95Ms,
+    intervalP99Ms: hostStatus.intervalP99Ms ?? backendStatus.intervalP99Ms,
+    bounds: hostStatus.bounds ?? backendStatus.bounds,
+    startedAt: hostStatus.startedAt ?? backendStatus.startedAt,
+    updatedAt: hostStatus.updatedAt,
+    message: hostStatus.message ?? backendStatus.message
+  }
 }
 
 function delay(ms: number): Promise<void> {
