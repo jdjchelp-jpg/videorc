@@ -99,30 +99,66 @@ export function launchDevApp({
 }
 
 /** SIGTERM the process group, escalating to SIGKILL after a grace period. */
-export function stopProcess(child, beforeStop) {
-  return new Promise((resolveStop) => {
-    if (!child?.pid || child.killed) {
-      resolveStop()
-      return
+export async function stopProcess(child, beforeStop) {
+  if (!child?.pid) return
+
+  const pid = child.pid
+  beforeStop?.()
+  signalProcessGroup(pid, child, 'SIGTERM')
+  await waitForChildExit(child, 5000)
+
+  if (processGroupExists(pid)) {
+    signalProcessGroup(pid, child, 'SIGTERM')
+    await waitForProcessGroupExit(pid, 500)
+  }
+  if (processGroupExists(pid)) {
+    signalProcessGroup(pid, child, 'SIGKILL')
+    await waitForProcessGroupExit(pid, 1000)
+  }
+}
+
+function signalProcessGroup(pid, child, sig) {
+  try {
+    process.kill(-pid, sig)
+  } catch {
+    try {
+      child?.kill(sig)
+    } catch {
+      // Nothing left to signal.
     }
-    beforeStop?.()
-    const timer = setTimeout(() => {
-      signal(child, 'SIGKILL')
-      resolveStop()
-    }, 5000)
+  }
+}
+
+function waitForChildExit(child, timeoutMs) {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve()
+  return new Promise((resolveWait) => {
+    const timer = setTimeout(resolveWait, timeoutMs)
     child.once('exit', () => {
       clearTimeout(timer)
-      resolveStop()
+      resolveWait()
     })
-    signal(child, 'SIGTERM')
   })
 }
 
-function signal(child, sig) {
-  if (!child?.pid) return
+function waitForProcessGroupExit(pid, timeoutMs) {
+  const startedAt = Date.now()
+  return new Promise((resolveWait) => {
+    const poll = () => {
+      if (!processGroupExists(pid) || Date.now() - startedAt >= timeoutMs) {
+        resolveWait()
+        return
+      }
+      setTimeout(poll, 50)
+    }
+    poll()
+  })
+}
+
+function processGroupExists(pid) {
   try {
-    process.kill(-child.pid, sig)
-  } catch {
-    child.kill(sig)
+    process.kill(-pid, 0)
+    return true
+  } catch (error) {
+    return error?.code === 'EPERM'
   }
 }

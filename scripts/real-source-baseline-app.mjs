@@ -67,15 +67,17 @@ const NATIVE_PREFIX = {
 let launched
 mkdirSync(config.outputDirectory, { recursive: true })
 
+let exitCode = 0
 try {
   const verdict = await main()
-  process.exit(config.gate && verdict && !verdict.pass ? 1 : 0)
+  exitCode = config.gate && verdict && !verdict.pass ? 1 : 0
 } catch (error) {
   console.error(`real-source baseline failed: ${error?.message ?? error}`)
-  process.exit(2)
+  exitCode = 2
 } finally {
   if (launched) await stopProcess(launched.process)
 }
+process.exit(exitCode)
 
 async function main() {
   console.log('Launching dev app for real-source baseline (no preview-motion synthetic mode)…')
