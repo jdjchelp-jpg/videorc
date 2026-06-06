@@ -4,6 +4,7 @@ import {
   CheckCircle,
   FolderOpen,
   ImageSquare,
+  Monitor,
   Play,
   Record,
   SpeakerHigh,
@@ -235,6 +236,21 @@ export function StudioTab(): ReactElement {
                 />
               </Field>
             </div>
+          </InspectorSection>
+
+          <InspectorSection
+            icon={Monitor}
+            title="Source"
+            summary={selectedCaptureDevice?.name ?? selectedCamera?.name ?? 'No source'}
+          >
+            <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
+              <SummaryRow label="Screen" value={selectedCaptureDevice?.name ?? 'None'} />
+              <SummaryRow label="Camera" value={selectedCamera?.name ?? 'Off'} />
+              <SummaryRow label="Microphone" value={selectedMicrophone?.name ?? 'Off'} />
+            </dl>
+            <Button size="sm" variant="outline" className="w-fit" onClick={() => setActive('sources')}>
+              Configure sources
+            </Button>
           </InspectorSection>
 
           <InspectorSection icon={ImageSquare} title="Screens">

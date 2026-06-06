@@ -4,9 +4,7 @@ import {
   FilmReel,
   Gauge,
   GearSix,
-  ImageSquare,
   Layout,
-  Monitor,
   Sparkle,
   VideoCamera,
   type Icon
@@ -41,8 +39,6 @@ export const WORKSPACE_TABS: WorkspaceTabMeta[] = [
   { id: 'studio', label: 'Studio', icon: VideoCamera, group: 'primary' },
   { id: 'library', label: 'Library', icon: FilmReel, group: 'primary' },
   { id: 'ai', label: 'AI', icon: Sparkle, group: 'primary' },
-  { id: 'sources', label: 'Sources', icon: Monitor, group: 'setup' },
-  { id: 'screens', label: 'Screens', icon: ImageSquare, group: 'setup' },
   { id: 'layout', label: 'Layout', icon: Layout, group: 'setup' },
   { id: 'recording', label: 'Recording', icon: FileVideo, group: 'setup' },
   { id: 'streaming', label: 'Streaming', icon: Broadcast, group: 'setup' },
