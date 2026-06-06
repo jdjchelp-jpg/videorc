@@ -844,7 +844,8 @@ mod macos {
     use objc2::{AnyThread, DefinedClass, define_class, msg_send};
     use objc2_av_foundation::{
         AVAuthorizationStatus, AVCaptureConnection, AVCaptureDevice, AVCaptureDeviceFormat,
-        AVCaptureDeviceInput, AVCaptureOutput, AVCaptureSession, AVCaptureVideoDataOutput,
+        AVCaptureDeviceInput, AVCaptureOutput, AVCaptureSession,
+        AVCaptureSessionPresetInputPriority, AVCaptureVideoDataOutput,
         AVCaptureVideoDataOutputSampleBufferDelegate, AVMediaTypeVideo,
     };
     use objc2_core_media::{CMSampleBuffer, CMTime, CMVideoFormatDescriptionGetDimensions};
@@ -980,6 +981,9 @@ mod macos {
 
         unsafe {
             session.beginConfiguration();
+            if session.canSetSessionPreset(AVCaptureSessionPresetInputPriority) {
+                session.setSessionPreset(AVCaptureSessionPresetInputPriority);
+            }
             set_bgra_video_settings(&output);
             output.setAlwaysDiscardsLateVideoFrames(true);
             output.setSampleBufferDelegate_queue(
