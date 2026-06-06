@@ -33,7 +33,7 @@ any image-poll route during the session fails on transport honesty.
 |---|---|---|
 | Final-file freeze segment | none > **100 ms** | analyzer (`freezedetect`) |
 | Repeated-frame burst | none > **2** consecutive | analyzer (`framemd5`) |
-| Startup resolution | first 2s decoded frames match target output; no preview-sized frame leak | startup analyzer |
+| Startup resolution | first 2s decoded frames match target output; no preview-sized frame leak; report includes first-frame evidence and dimension timeline | startup analyzer |
 | Frame count vs `duration × fps` | within **2%** | analyzer (`ffprobe`) |
 | Recording duplicate/synthetic fed frames | **0** | `encoderBridgeRepeatedFrames` / `encoderBridgeSyntheticFrames` |
 | Encoder speed | ≥ **0.98×** | diagnostics |
@@ -88,7 +88,7 @@ the **same** camera, the **same** screen/window, and the **same** output FPS.
 ### Done gate
 
 - [ ] All automated metric gates pass for 1080p30, 1440p30, (1080p60 if supported), and the 10-min endurance run.
-- [ ] The startup-resolution report passes for every real-source recording; the first 2 seconds match the requested output resolution/layout.
+- [ ] The startup-resolution report passes for every real-source recording; the first 2 seconds match the requested output resolution/layout, with a clean one-run dimension timeline.
 - [ ] The lip-sync measurement is within target on a flash+click (or clap) recording.
 - [ ] The manual OBS side-by-side checklist is fully checked — a normal user cannot tell Videorc preview motion/currentness apart from OBS, and the final recording is smooth and synced.
 - [ ] The user's previous failure pattern (laggy/soft preview, glitchy/desynced recordings) no longer reproduces.

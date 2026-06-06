@@ -74,6 +74,29 @@ export function normalizeStartupFrames(ffprobeJson, fallback = {}) {
   }))
 }
 
+export function summarizeDimensionRuns(frames) {
+  const runs = []
+  for (const frame of frames) {
+    const previous = runs[runs.length - 1]
+    if (previous && previous.width === frame.width && previous.height === frame.height) {
+      previous.endIndex = frame.index
+      previous.endTime = frame.time
+      previous.count += 1
+      continue
+    }
+    runs.push({
+      startIndex: frame.index,
+      endIndex: frame.index,
+      startTime: frame.time,
+      endTime: frame.time,
+      width: frame.width,
+      height: frame.height,
+      count: 1,
+    })
+  }
+  return runs
+}
+
 export function evaluateStartupGates(metrics, gates = DEFAULT_STARTUP_GATES) {
   const failures = []
   const warnings = []
@@ -180,6 +203,17 @@ function dimensionTarget(options, probe) {
   return {
     width: expectedWidth ?? probe.video?.width ?? null,
     height: expectedHeight ?? probe.video?.height ?? null,
+  }
+}
+
+function frameEvidence(frame, hashes) {
+  return {
+    index: frame.index,
+    time: frame.time,
+    width: frame.width,
+    height: frame.height,
+    pictType: frame.pictType,
+    hash: hashes[frame.index] ?? null,
   }
 }
 
@@ -362,6 +396,7 @@ export async function analyzeStartupResolution(filePath, options = {}) {
     if (target.width == null || target.height == null) return false
     return crop.width <= target.width * 0.96 || crop.height <= target.height * 0.96
   })
+  const dimensionRuns = summarizeDimensionRuns(frames)
 
   const metrics = {
     fileBytes,
@@ -379,6 +414,10 @@ export async function analyzeStartupResolution(filePath, options = {}) {
     startupFrameCount: frames.length,
     hashCount: hashes.length,
     hashes,
+    firstStartupFrame: frames[0] ? frameEvidence(frames[0], hashes) : null,
+    dimensionRuns,
+    dimensionMismatchSamples: dimensionMismatches.slice(0, 10).map((frame) => frameEvidence(frame, hashes)),
+    previewSizedFrameSamples: previewSizedFrames.slice(0, 10).map((frame) => frameEvidence(frame, hashes)),
     maxRepeatedFrameRun: hasVideo ? repeated.maxRun : null,
     repeatedBurstCount: repeated.bursts.length,
     dimensionMismatchCount: dimensionMismatches.length,
@@ -425,6 +464,26 @@ function fmtBytes(value) {
   return `${(value / (1024 * 1024)).toFixed(1)} MiB`
 }
 
+function fmtFrameTime(value) {
+  return typeof value === 'number' && Number.isFinite(value) ? `${value.toFixed(3)}s` : 'n/a'
+}
+
+function fmtFrameEvidence(frame) {
+  return (
+    `frame ${frame.index} @ ${fmtFrameTime(frame.time)} ` +
+    `${frame.width ?? 'n/a'}x${frame.height ?? 'n/a'} ` +
+    `${frame.pictType ?? 'unknown'} hash ${frame.hash ?? 'n/a'}`
+  )
+}
+
+function fmtDimensionRun(run) {
+  const frameRange = run.startIndex === run.endIndex ? `${run.startIndex}` : `${run.startIndex}-${run.endIndex}`
+  return (
+    `frames ${frameRange} (${run.count}): ${run.width ?? 'n/a'}x${run.height ?? 'n/a'} ` +
+    `${fmtFrameTime(run.startTime)}-${fmtFrameTime(run.endTime)}`
+  )
+}
+
 export function renderStartupMarkdownReport(report) {
   const { metrics: m, verdict } = report
   const lines = []
@@ -455,6 +514,7 @@ export function renderStartupMarkdownReport(report) {
   lines.push(`- Dimension target used: ${m.targetWidth ?? 'n/a'}x${m.targetHeight ?? 'n/a'}`)
   lines.push(`- FPS: intended ${fmt(m.intendedFps, 2)}`)
   lines.push(`- Startup frames: decoded ${m.startupFrameCount} | expected ~${m.expectedStartupFrames ?? 'n/a'} | hashes ${m.hashCount}`)
+  lines.push(`- First decoded frame: ${m.firstStartupFrame ? fmtFrameEvidence(m.firstStartupFrame) : 'n/a'}`)
   lines.push(`- Dimension mismatches: ${m.dimensionMismatchCount}`)
   lines.push(`- Repeated frames: max run ${m.maxRepeatedFrameRun ?? 'n/a'} across ${m.repeatedBurstCount} burst(s)`)
   lines.push(`- Preview-sized frames (${m.previewWidth}x${m.previewHeight}): ${m.previewSizedFrameCount}`)
@@ -462,6 +522,24 @@ export function renderStartupMarkdownReport(report) {
   lines.push(`- Letterbox/pillarbox candidates: ${m.letterboxCandidateCount}`)
   lines.push(`- Synthetic evidence: ${m.syntheticEvidence == null ? 'not available from pixels' : `${m.syntheticEvidence} diagnostic frame(s)`}`)
   lines.push('')
+  if (m.dimensionRuns?.length) {
+    lines.push('## Startup frame dimensions')
+    lines.push('')
+    for (const run of m.dimensionRuns) lines.push(`- ${fmtDimensionRun(run)}`)
+    lines.push('')
+  }
+  if (m.dimensionMismatchSamples?.length) {
+    lines.push('## Dimension mismatch samples')
+    lines.push('')
+    for (const frame of m.dimensionMismatchSamples) lines.push(`- ${fmtFrameEvidence(frame)}`)
+    lines.push('')
+  }
+  if (m.previewSizedFrameSamples?.length) {
+    lines.push('## Preview-sized frame samples')
+    lines.push('')
+    for (const frame of m.previewSizedFrameSamples) lines.push(`- ${fmtFrameEvidence(frame)}`)
+    lines.push('')
+  }
   lines.push('## First-frame hashes')
   lines.push('')
   for (const [index, hash] of m.hashes.entries()) {

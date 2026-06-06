@@ -15,6 +15,7 @@ import {
   normalizeStartupFrames,
   parseBlackframe,
   parseCropdetect,
+  summarizeDimensionRuns,
 } from './startup-resolution-analyzer.mjs'
 
 const ffmpegPath = process.env.VIDEORC_SMOKE_FFMPEG_PATH ?? 'ffmpeg'
@@ -49,6 +50,47 @@ describe('normalizeStartupFrames', () => {
     assert.deepEqual(frames, [
       { index: 0, time: 0, width: 1920, height: 1080, pictType: 'I' },
       { index: 1, time: 0.033333, width: 1920, height: 1080, pictType: 'P' },
+    ])
+  })
+})
+
+describe('summarizeDimensionRuns', () => {
+  it('groups contiguous startup frames by decoded dimensions', () => {
+    const runs = summarizeDimensionRuns([
+      { index: 0, time: 0, width: 1920, height: 1080 },
+      { index: 1, time: 0.033333, width: 1920, height: 1080 },
+      { index: 2, time: 0.066667, width: 640, height: 360 },
+      { index: 3, time: 0.1, width: 1920, height: 1080 },
+    ])
+
+    assert.deepEqual(runs, [
+      {
+        startIndex: 0,
+        endIndex: 1,
+        startTime: 0,
+        endTime: 0.033333,
+        width: 1920,
+        height: 1080,
+        count: 2,
+      },
+      {
+        startIndex: 2,
+        endIndex: 2,
+        startTime: 0.066667,
+        endTime: 0.066667,
+        width: 640,
+        height: 360,
+        count: 1,
+      },
+      {
+        startIndex: 3,
+        endIndex: 3,
+        startTime: 0.1,
+        endTime: 0.1,
+        width: 1920,
+        height: 1080,
+        count: 1,
+      },
     ])
   })
 })
@@ -153,6 +195,20 @@ describe('analyzeStartupResolution (integration)', () => {
     assert.equal(report.verdict.pass, true, `unexpected failures: ${report.verdict.failures.join('; ')}`)
     assert.equal(report.metrics.startupFrameCount, 60)
     assert.equal(report.metrics.hashCount, 60)
+    assert.deepEqual(report.metrics.dimensionRuns, [
+      {
+        startIndex: 0,
+        endIndex: 59,
+        startTime: 0,
+        endTime: 1.966667,
+        width: 320,
+        height: 240,
+        count: 60,
+      },
+    ])
+    assert.equal(report.metrics.firstStartupFrame.width, 320)
+    assert.equal(report.metrics.firstStartupFrame.height, 240)
+    assert.equal(typeof report.metrics.firstStartupFrame.hash, 'string')
   })
 
   it('fails a startup with excessive exact repeated frames', async () => {
@@ -182,6 +238,7 @@ describe('analyzeStartupResolution (integration)', () => {
     })
     assert.equal(report.verdict.pass, false)
     assert.equal(report.metrics.previewSizedFrameCount, 60)
+    assert.equal(report.metrics.previewSizedFrameSamples.length, 10)
     assert.match(report.verdict.failures.join(' '), /metadata width 640/)
     assert.match(report.verdict.failures.join(' '), /preview size 640x360/)
   })
