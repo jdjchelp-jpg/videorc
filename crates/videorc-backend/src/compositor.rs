@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fmt;
 use std::path::Path;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Instant, SystemTime};
@@ -35,7 +36,57 @@ use crate::state::AppState;
 const COMPOSITOR_DIAGNOSTIC_WINDOW: Duration = Duration::from_secs(2);
 
 pub type CompositorSlot = std::sync::Arc<tokio::sync::Mutex<CompositorRuntime>>;
-pub type CompositorFrameStore = Arc<StdMutex<FrameStore<CompositorPixelFormat>>>;
+pub type CompositorFrameStore =
+    Arc<StdMutex<FrameStore<CompositorPixelFormat, CompositorFrameExportHandle>>>;
+
+#[derive(Clone, Default)]
+pub struct CompositorFrameExportHandle {
+    #[cfg(target_os = "macos")]
+    metal_target: Option<Arc<crate::metal_compositor::MetalCompositorTargetPixelBuffer>>,
+}
+
+impl CompositorFrameExportHandle {
+    #[cfg(target_os = "macos")]
+    fn metal_target(target: crate::metal_compositor::MetalCompositorTargetPixelBuffer) -> Self {
+        Self {
+            metal_target: Some(Arc::new(target)),
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn has_metal_iosurface_target(&self) -> bool {
+        self.metal_target_dimensions().is_some()
+    }
+
+    pub fn metal_target_dimensions(&self) -> Option<(u32, u32)> {
+        #[cfg(target_os = "macos")]
+        {
+            let target = self.metal_target.as_ref()?;
+            return Some((target.width() as u32, target.height() as u32));
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            None
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[allow(dead_code)]
+    pub fn metal_target_pixel_buffer(
+        &self,
+    ) -> Option<Arc<crate::metal_compositor::MetalCompositorTargetPixelBuffer>> {
+        self.metal_target.clone()
+    }
+}
+
+impl fmt::Debug for CompositorFrameExportHandle {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CompositorFrameExportHandle")
+            .field("metal_target_dimensions", &self.metal_target_dimensions())
+            .finish()
+    }
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompositorPixelFormat {
     Yuv420p { export: CompositorFrameExportKind },
@@ -743,6 +794,7 @@ enum GpuCompositor {}
 struct GpuCompositorFrame {
     yuv: Vec<u8>,
     pixel_format: CompositorPixelFormat,
+    export_handle: CompositorFrameExportHandle,
 }
 
 #[cfg(target_os = "macos")]
@@ -995,17 +1047,22 @@ fn synthetic_test_pattern_bgra(sequence: u64) -> Vec<u8> {
 
 #[cfg(target_os = "macos")]
 fn gpu_compositor_frame(gpu: &GpuCompositor, yuv: Vec<u8>) -> GpuCompositorFrame {
-    let pixel_format = gpu
+    let export_handle = gpu
         .latest_target_pixel_buffer()
         .filter(|target| target.has_iosurface())
-        .map(|target| {
-            CompositorPixelFormat::yuv420p_with_metal_iosurface_target(
-                target.width() as u32,
-                target.height() as u32,
-            )
+        .map(CompositorFrameExportHandle::metal_target)
+        .unwrap_or_default();
+    let pixel_format = export_handle
+        .metal_target_dimensions()
+        .map(|(width, height)| {
+            CompositorPixelFormat::yuv420p_with_metal_iosurface_target(width, height)
         })
         .unwrap_or_else(CompositorPixelFormat::yuv420p_cpu_buffer);
-    GpuCompositorFrame { yuv, pixel_format }
+    GpuCompositorFrame {
+        yuv,
+        pixel_format,
+        export_handle,
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -1088,6 +1145,7 @@ async fn publish_compositor_frame(
     let mut compositor_backend = CompositorBackend::CpuFallback;
     let mut compositor_fallback_reason = None;
     let mut pixel_format = CompositorPixelFormat::yuv420p_cpu_buffer();
+    let mut export_handle = CompositorFrameExportHandle::default();
     {
         let mut store = frame_store
             .lock()
@@ -1108,6 +1166,7 @@ async fn publish_compositor_frame(
                 let len = bytes.len().min(frame.yuv.len());
                 bytes[..len].copy_from_slice(&frame.yuv[..len]);
                 pixel_format = frame.pixel_format;
+                export_handle = frame.export_handle;
                 compositor_backend = CompositorBackend::Metal;
             }
             Err(reason) => {
@@ -1115,7 +1174,15 @@ async fn publish_compositor_frame(
                 render_compositor_yuv420p_frame(inputs, &mut bytes);
             }
         }
-        store.publish(sequence, width, height, pixel_format, captured_at, bytes);
+        store.publish_with_metadata(
+            sequence,
+            width,
+            height,
+            pixel_format,
+            export_handle,
+            captured_at,
+            bytes,
+        );
     }
     let evidence = CompositorFrameEvidence {
         sequence,
@@ -2252,6 +2319,13 @@ mod tests {
             gpu.latest_target_pixel_buffer()
                 .is_some_and(|target| target.has_iosurface())
         );
+        assert_eq!(
+            output.export_handle.has_metal_iosurface_target(),
+            output.pixel_format.has_metal_iosurface_target()
+        );
+        if output.export_handle.has_metal_iosurface_target() {
+            assert_eq!(output.export_handle.metal_target_dimensions(), Some((8, 4)));
+        }
     }
 
     #[cfg(target_os = "macos")]
@@ -2321,6 +2395,60 @@ mod tests {
             gpu.latest_target_pixel_buffer()
                 .is_some_and(|target| target.has_iosurface())
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn publish_compositor_frame_retains_metal_target_export_handle_or_skips() {
+        let Some(mut gpu) = new_gpu_compositor() else {
+            eprintln!("skipping: Metal compositor unavailable");
+            return;
+        };
+        let state = test_state();
+        let layout = crate::protocol::default_layout_settings();
+        let scene = crate::scene::scene_from_capture_config(SceneConfigParams {
+            sources: crate::protocol::SourceSelection {
+                screen_id: None,
+                window_id: None,
+                camera_id: None,
+                microphone_id: None,
+                test_pattern: true,
+            },
+            layout: layout.clone(),
+            video: Some(VideoSettings {
+                preset: VideoPreset::Custom,
+                width: 8,
+                height: 4,
+                fps: 30,
+                bitrate_kbps: 2000,
+            }),
+        });
+        {
+            let mut compositor = state.compositor.lock().await;
+            compositor.scene = Some(CompositorSceneSnapshot {
+                revision: 1,
+                scene: Some(scene),
+                layout,
+                active_screen: None,
+            });
+        }
+
+        let result = publish_compositor_frame(&state, 7, 8, 4, Some(&mut gpu)).await;
+        if result.compositor_backend != CompositorBackend::Metal {
+            eprintln!("skipping: Metal compositor did not render this frame");
+            return;
+        }
+        let frame_store = compositor_frame_store(&state).await;
+        let latest = frame_store
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .latest()
+            .expect("published compositor frame");
+
+        assert!(latest.pixel_format.has_metal_iosurface_target());
+        assert!(latest.metadata.has_metal_iosurface_target());
+        assert_eq!(latest.metadata.metal_target_dimensions(), Some((8, 4)));
+        assert!(latest.metadata.metal_target_pixel_buffer().is_some());
     }
 
     #[cfg(target_os = "macos")]
@@ -2934,6 +3062,7 @@ mod tests {
             width: 4,
             height: 4,
             pixel_format: PreviewCameraPixelFormat::Bgra8,
+            metadata: (),
             bytes: [0, 0, 255, 255].repeat(16),
             captured_at: Instant::now(),
         });

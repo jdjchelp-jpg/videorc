@@ -201,6 +201,16 @@ impl MetalCompositorTargetPixelBuffer {
     }
 }
 
+// SAFETY: The wrapper owns a retained CoreVideo pixel buffer whose IOSurface-backed storage
+// is designed to be passed between producer, preview, and encoder threads. Access remains
+// immutable here; consumers that lock or encode the buffer are responsible for their own API
+// synchronization.
+unsafe impl Send for MetalCompositorTargetPixelBuffer {}
+
+// SAFETY: Shared references expose only immutable metadata and the retained CVPixelBuffer
+// handle. CoreVideo/IOSurface lifetime is retained independently of the compositor.
+unsafe impl Sync for MetalCompositorTargetPixelBuffer {}
+
 // SAFETY: The cached render target is owned by one compositor instance and is only used
 // sequentially by the compositor loop. Metal resources are valid across threads; this
 // wrapper only allows Tokio to move the owning task between worker threads.

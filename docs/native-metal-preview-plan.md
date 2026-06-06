@@ -107,6 +107,12 @@ fails a "native" claim — by design.
   private compositor texture state. The regression
   `metal_scene_compositor_exports_retained_target_pixel_buffer_or_skips` passed on
   2026-06-06.
+- Compositor frame-store entries now retain typed export metadata alongside the raw YUV
+  bytes. On macOS, Metal-composited frames carry the retained IOSurface-backed target
+  `CVPixelBuffer`; the regression
+  `publish_compositor_frame_retains_metal_target_export_handle_or_skips` passed on
+  2026-06-06. This gives the encoder bridge an actual handle for the VideoToolbox slice
+  instead of only a boolean candidate tag.
 - Published compositor frames now carry an honest export tag: CPU YUV420P buffer or
   IOSurface-backed Metal target available. The recording FIFO bridge still copies raw
   video bytes into FFmpeg, but diagnostics now separate `encoderBridgeMetalTargetFrames`
@@ -134,13 +140,13 @@ fails a "native" claim — by design.
   regression verifies that a missing visible camera frame reports the specific camera
   source instead of the old generic `camera frame unavailable` reason.
 - 2026-06-06 source-aware fallback smoke: `pnpm smoke:recording-native-preview`
-  passed at 1080p30 with preview 120.20fps, proof-host p95 interval 9.40ms,
-  present 18.60fps, source-to-present p95/p99 10ms, compositor lag 0,
-  startup/final max repeated-frame run 2, `Metal targets 1`, `raw copied 425`,
-  `Metal copied 1`, `zero-copy 0`, `CPU fallback frames 292 (camera source
+  passed at 1080p30 with preview 120.20fps, proof-host p95 interval 9.80ms,
+  present 30.31fps, source-to-present p95/p99 11ms, compositor lag 0,
+  startup/final max repeated-frame run 2, `Metal targets 1`, `raw copied 423`,
+  `Metal copied 1`, `zero-copy 0`, `CPU fallback frames 412 (camera source
   "Camera" id=source:camera frame unavailable)`, and 18ms A/V skew. FFmpeg
-  speed/live FPS telemetry and preview-present diagnostics still warned, but decoded
-  startup/final-file gates and direct proof-host measurement passed.
+  speed/live FPS telemetry still warned, but decoded startup/final-file gates and direct
+  proof-host measurement passed.
 - The native-preview recording smoke now has an opt-in source-complete Metal stress mode:
   set `VIDEORC_NATIVE_PREVIEW_SOURCE_COMPLETE_SCENE=1` to replace the intentionally missing
   camera overlay with a synthetic test-pattern overlay. On 2026-06-06, the default smoke
