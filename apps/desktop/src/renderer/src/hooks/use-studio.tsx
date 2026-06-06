@@ -423,6 +423,8 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
   const nativePreviewCameraKeyRef = useRef<string | null>(null)
   const nativePreviewScreenKeyRef = useRef<string | null>(null)
   const nativePreviewSurfaceSceneRevisionRef = useRef(0)
+  const nativePreviewCompositorPendingRef = useRef<CompositorStatus | null>(null)
+  const nativePreviewCompositorPresentingRef = useRef(false)
   const sourceReconciliationMessages = useRef<string[]>([])
   const toastedFailedTargets = useRef<Set<string>>(new Set())
   const platformLifecycleRun = useRef(0)
@@ -495,6 +497,67 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     previewSurfaceStatusRef.current = status
     setPreviewSurfaceStatus(status)
   }, [])
+
+  const queueNativePreviewCompositorPresent = useCallback((activeClient: BackendClient, status: CompositorStatus) => {
+    const updateCompositor = typeof window === 'undefined' ? undefined : window.videorc?.updateNativePreviewSurfaceCompositor
+    if (
+      !nativePreviewSurfaceEnabled ||
+      !updateCompositor
+    ) {
+      nativePreviewCompositorPendingRef.current = null
+      return
+    }
+
+    nativePreviewCompositorPendingRef.current = status
+    if (nativePreviewCompositorPresentingRef.current) {
+      return
+    }
+
+    nativePreviewCompositorPresentingRef.current = true
+    void (async () => {
+      try {
+        while (nativePreviewCompositorPendingRef.current) {
+          const nextStatus = nativePreviewCompositorPendingRef.current
+          nativePreviewCompositorPendingRef.current = null
+          const surfaceStatus = await updateCompositor(nextStatus)
+          const pendingStatus = nativePreviewCompositorPendingRef.current as CompositorStatus | null
+          if (
+            pendingStatus &&
+            pendingStatus.framesRendered > nextStatus.framesRendered
+          ) {
+            continue
+          }
+
+          applyPreviewSurfaceStatus({
+            ...surfaceStatus,
+            framesRendered: Math.max(surfaceStatus.framesRendered, nextStatus.framesRendered)
+          })
+          const presentParams: PreviewSurfacePresentParams = {
+            transport: surfaceStatus.transport,
+            backing: surfaceStatus.backing,
+            presentedFrameId: surfaceStatus.presentedFrameId,
+            compositorFrameLag: surfaceStatus.compositorFrameLag,
+            droppedFrames: surfaceStatus.droppedFrames,
+            inputToPresentLatencyMs: surfaceStatus.inputToPresentLatencyMs,
+            inputToPresentLatencyP50Ms: surfaceStatus.inputToPresentLatencyP50Ms,
+            inputToPresentLatencyP95Ms: surfaceStatus.inputToPresentLatencyP95Ms,
+            inputToPresentLatencyP99Ms: surfaceStatus.inputToPresentLatencyP99Ms,
+            presentFps: surfaceStatus.presentFps,
+            intervalP95Ms: surfaceStatus.intervalP95Ms,
+            intervalP99Ms: surfaceStatus.intervalP99Ms
+          }
+          await activeClient.request<PreviewSurfaceStatus>('preview.surface.present', presentParams)
+        }
+      } catch (error: unknown) {
+        console.error('Native preview compositor present failed:', error)
+      } finally {
+        nativePreviewCompositorPresentingRef.current = false
+        if (nativePreviewCompositorPendingRef.current) {
+          queueNativePreviewCompositorPresent(activeClient, nativePreviewCompositorPendingRef.current)
+        }
+      }
+    })()
+  }, [applyPreviewSurfaceStatus, nativePreviewSurfaceEnabled])
 
   const applyPreviewCameraStatus = useCallback((status: PreviewCameraStatus) => {
     previewCameraStatusRef.current = status
@@ -890,36 +953,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       }),
       nextClient.on('compositor.status', (payload) => {
         const status = payload as CompositorStatus
-        if (nativePreviewSurfaceEnabled && window.videorc?.updateNativePreviewSurfaceCompositor) {
-          void window.videorc
-            .updateNativePreviewSurfaceCompositor(status)
-            .then((surfaceStatus) => {
-              applyPreviewSurfaceStatus({
-                ...surfaceStatus,
-                framesRendered: Math.max(surfaceStatus.framesRendered, status.framesRendered)
-              })
-              const presentParams: PreviewSurfacePresentParams = {
-                transport: surfaceStatus.transport,
-                backing: surfaceStatus.backing,
-                presentedFrameId: surfaceStatus.presentedFrameId,
-                compositorFrameLag: surfaceStatus.compositorFrameLag,
-                droppedFrames: surfaceStatus.droppedFrames,
-                inputToPresentLatencyMs: surfaceStatus.inputToPresentLatencyMs,
-                inputToPresentLatencyP50Ms: surfaceStatus.inputToPresentLatencyP50Ms,
-                inputToPresentLatencyP95Ms: surfaceStatus.inputToPresentLatencyP95Ms,
-                inputToPresentLatencyP99Ms: surfaceStatus.inputToPresentLatencyP99Ms,
-                presentFps: surfaceStatus.presentFps,
-                intervalP95Ms: surfaceStatus.intervalP95Ms,
-                intervalP99Ms: surfaceStatus.intervalP99Ms
-              }
-              void nextClient.request<PreviewSurfaceStatus>('preview.surface.present', presentParams).catch((error: unknown) => {
-                console.error('Native preview present metrics failed:', error)
-              })
-            })
-            .catch((error: unknown) => {
-              console.error('Native preview compositor update failed:', error)
-            })
-        }
+        queueNativePreviewCompositorPresent(nextClient, status)
       }),
       nextClient.on('preview.camera.status', (payload) => {
         applyPreviewCameraStatus(payload as PreviewCameraStatus)
@@ -1035,6 +1069,8 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       })
 
     return () => {
+      nativePreviewCompositorPendingRef.current = null
+      nativePreviewCompositorPresentingRef.current = false
       for (const unsubscribe of unsubscribers) {
         unsubscribe()
       }
@@ -1050,6 +1086,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     applyPreviewSurfaceStatus,
     connection,
     nativePreviewSurfaceEnabled,
+    queueNativePreviewCompositorPresent,
     refreshPlatformAccountsForClient,
     refreshScreensForClient,
     refreshStreamMetadataForClient,
