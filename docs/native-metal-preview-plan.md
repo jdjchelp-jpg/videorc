@@ -115,6 +115,11 @@ fails a "native" claim — by design.
   repeated-frame run 1, final max repeated-frame run 2, preview 120.04fps, p95 interval
   9.6ms, and 1ms A/V skew. Live FFmpeg speed/FPS telemetry still warned, but decoded
   startup/final-file gates passed for both resolutions.
+- With `VIDEORC_NATIVE_PREVIEW_LAYOUT_STRESS_UPDATES=4`, the guarded native-preview
+  recording smoke passed at 1080p30 while applying camera layout updates during recording:
+  preview 120.08fps, p95 interval 9.9ms, startup max repeated-frame run 1, final max
+  repeated-frame run 2, and 18ms A/V skew. Live FFmpeg speed/FPS telemetry still warned,
+  but decoded startup/final-file gates passed.
 - The preview-surface smoke now retries launch connection timeouts like the recording
   smoke, and after the proof-host shell hardening `pnpm smoke:preview-surface` passed at
   120.4fps initial, 120.2fps after resize, scene update 13.1ms, 105 compositor frames,
