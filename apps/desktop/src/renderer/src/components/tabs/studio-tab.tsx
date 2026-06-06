@@ -4,6 +4,7 @@ import {
   CheckCircle,
   FolderOpen,
   ImageSquare,
+  Layout,
   Monitor,
   Play,
   Record,
@@ -250,6 +251,19 @@ export function StudioTab(): ReactElement {
             </dl>
             <Button size="sm" variant="outline" className="w-fit" onClick={() => setActive('sources')}>
               Configure sources
+            </Button>
+          </InspectorSection>
+
+          <InspectorSection
+            icon={Layout}
+            title="Scene & layout"
+            summary={captureConfig.layout.layoutPreset.replace(/-/g, ' ')}
+          >
+            <p className="text-sm text-muted-foreground">
+              Camera and screen arrangement, crop, and output resolution.
+            </p>
+            <Button size="sm" variant="outline" className="w-fit" onClick={() => setActive('layout')}>
+              Edit layout
             </Button>
           </InspectorSection>
 

@@ -4,7 +4,6 @@ import {
   FilmReel,
   Gauge,
   GearSix,
-  Layout,
   Sparkle,
   VideoCamera,
   type Icon
@@ -39,7 +38,6 @@ export const WORKSPACE_TABS: WorkspaceTabMeta[] = [
   { id: 'studio', label: 'Studio', icon: VideoCamera, group: 'primary' },
   { id: 'library', label: 'Library', icon: FilmReel, group: 'primary' },
   { id: 'ai', label: 'AI', icon: Sparkle, group: 'primary' },
-  { id: 'layout', label: 'Layout', icon: Layout, group: 'setup' },
   { id: 'recording', label: 'Recording', icon: FileVideo, group: 'setup' },
   { id: 'streaming', label: 'Streaming', icon: Broadcast, group: 'setup' },
   { id: 'settings', label: 'Settings', icon: GearSix, group: 'system' },
