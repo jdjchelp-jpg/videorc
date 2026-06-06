@@ -28,7 +28,7 @@ use crate::protocol::{
     CompositorSceneSourceStatus, CompositorSceneUpdateParams, CompositorSourceKind,
     CompositorSourceStatus, CompositorState, CompositorStatus, LayoutPreset, LayoutSettings,
     PreviewCameraState, PreviewScreenSourceKind, PreviewScreenState, PreviewSurfaceState,
-    PreviewTransport, Scene, SceneSourceKind, SceneTransform, StreamScreen,
+    PreviewTransport, Scene, SceneSource, SceneSourceKind, SceneTransform, StreamScreen,
 };
 use crate::state::AppState;
 
@@ -810,6 +810,44 @@ fn new_gpu_compositor() -> Option<GpuCompositor> {
     None
 }
 
+fn missing_scene_source_frame_reason(source: &SceneSource) -> String {
+    format!("{} frame unavailable", scene_source_label(source))
+}
+
+fn scene_source_label(source: &SceneSource) -> String {
+    let mut label = match source.name.trim() {
+        "" => format!(
+            "{} source id={}",
+            scene_source_kind_label(&source.kind),
+            source.id
+        ),
+        name => format!(
+            "{} source \"{}\" id={}",
+            scene_source_kind_label(&source.kind),
+            name,
+            source.id
+        ),
+    };
+    if let Some(device_id) = source
+        .device_id
+        .as_deref()
+        .filter(|device_id| !device_id.is_empty())
+    {
+        label.push_str(" device=");
+        label.push_str(device_id);
+    }
+    label
+}
+
+fn scene_source_kind_label(kind: &SceneSourceKind) -> &'static str {
+    match kind {
+        SceneSourceKind::Screen => "screen",
+        SceneSourceKind::Window => "window",
+        SceneSourceKind::Camera => "camera",
+        SceneSourceKind::TestPattern => "test-pattern",
+    }
+}
+
 /// Compose the scene on the GPU for the cases the GPU path reproduces exactly:
 /// Screen/Window/Camera/TestPattern sources with transform crop, cover/contain fitting,
 /// camera mirror, and camera circle masks. Uploaded-image sources still fall back to the
@@ -819,7 +857,7 @@ fn new_gpu_compositor() -> Option<GpuCompositor> {
 fn try_gpu_compose(
     gpu: Option<&mut GpuCompositor>,
     inputs: &CompositorRenderInputs<'_>,
-) -> Result<GpuCompositorFrame, &'static str> {
+) -> Result<GpuCompositorFrame, String> {
     let gpu = gpu.ok_or_else(|| {
         if metal_compositor_enabled() {
             "Metal compositor unavailable"
@@ -849,7 +887,7 @@ fn try_gpu_compose(
         return Ok(gpu_compositor_frame(gpu, yuv));
     }
     if inputs.active_image_source.is_some() {
-        return Err("active screen image is not cached");
+        return Err("active screen image is not cached".to_string());
     }
     let scene = snapshot
         .scene
@@ -864,7 +902,9 @@ fn try_gpu_compose(
         let source_crop = source_crop_from_transform(transform);
         match source.kind {
             SceneSourceKind::Camera => {
-                let frame = inputs.camera_frame.ok_or("camera frame unavailable")?;
+                let frame = inputs
+                    .camera_frame
+                    .ok_or_else(|| missing_scene_source_frame_reason(source))?;
                 let (dest, crop) = gpu_source_placement(
                     frame.width,
                     frame.height,
@@ -886,7 +926,9 @@ fn try_gpu_compose(
                 });
             }
             SceneSourceKind::Screen | SceneSourceKind::Window => {
-                let frame = inputs.screen_frame.ok_or("screen frame unavailable")?;
+                let frame = inputs
+                    .screen_frame
+                    .ok_or_else(|| missing_scene_source_frame_reason(source))?;
                 let (dest, crop) = gpu_source_placement(
                     frame.width,
                     frame.height,
@@ -933,7 +975,7 @@ fn try_gpu_compose(
         }
     }
     if prepared_sources.is_empty() {
-        return Err("no visible compositor sources");
+        return Err("no visible compositor sources".to_string());
     }
     let sources = prepared_sources
         .iter()
@@ -1008,8 +1050,8 @@ fn rgba_to_bgra_bytes(rgba: &[u8]) -> Vec<u8> {
 fn try_gpu_compose(
     _gpu: Option<&mut GpuCompositor>,
     _inputs: &CompositorRenderInputs<'_>,
-) -> Result<GpuCompositorFrame, &'static str> {
-    Err("Metal compositor unavailable on this OS")
+) -> Result<GpuCompositorFrame, String> {
+    Err("Metal compositor unavailable on this OS".to_string())
 }
 
 async fn publish_compositor_frame(
@@ -1069,7 +1111,7 @@ async fn publish_compositor_frame(
                 compositor_backend = CompositorBackend::Metal;
             }
             Err(reason) => {
-                compositor_fallback_reason = Some(reason.to_string());
+                compositor_fallback_reason = Some(reason);
                 render_compositor_yuv420p_frame(inputs, &mut bytes);
             }
         }
@@ -2017,6 +2059,45 @@ mod tests {
     }
 
     #[test]
+    fn missing_source_frame_reason_names_scene_source() {
+        let source = SceneSource {
+            id: "source:face-cam".to_string(),
+            name: "Face cam".to_string(),
+            kind: SceneSourceKind::Camera,
+            device_id: Some("camera-device-1".to_string()),
+            transform: full_frame_transform(),
+            default_transform: full_frame_transform(),
+            visible: true,
+            locked: false,
+        };
+
+        let reason = missing_scene_source_frame_reason(&source);
+
+        assert!(reason.contains("camera source \"Face cam\""));
+        assert!(reason.contains("id=source:face-cam"));
+        assert!(reason.contains("device=camera-device-1"));
+        assert!(reason.contains("frame unavailable"));
+    }
+
+    #[test]
+    fn missing_source_frame_reason_handles_unnamed_source_without_device() {
+        let source = SceneSource {
+            id: "source:screen".to_string(),
+            name: "  ".to_string(),
+            kind: SceneSourceKind::Screen,
+            device_id: None,
+            transform: full_frame_transform(),
+            default_transform: full_frame_transform(),
+            visible: true,
+            locked: false,
+        };
+
+        let reason = missing_scene_source_frame_reason(&source);
+
+        assert_eq!(reason, "screen source id=source:screen frame unavailable");
+    }
+
+    #[test]
     fn yuv_blit_applies_transform_crop_before_cover_fit() {
         let mut source = Vec::new();
         for _ in 0..2 {
@@ -2240,6 +2321,72 @@ mod tests {
             gpu.latest_target_pixel_buffer()
                 .is_some_and(|target| target.has_iosurface())
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn metal_compose_missing_camera_frame_names_scene_source() {
+        let Some(mut gpu) = new_gpu_compositor() else {
+            eprintln!("skipping: Metal compositor unavailable");
+            return;
+        };
+        let layout = crate::protocol::default_layout_settings();
+        let mut scene = crate::scene::scene_from_capture_config(SceneConfigParams {
+            sources: crate::protocol::SourceSelection {
+                screen_id: None,
+                window_id: None,
+                camera_id: Some("camera-device-1".to_string()),
+                microphone_id: None,
+                test_pattern: false,
+            },
+            layout: layout.clone(),
+            video: Some(VideoSettings {
+                preset: VideoPreset::Custom,
+                width: 8,
+                height: 4,
+                fps: 30,
+                bitrate_kbps: 2000,
+            }),
+        });
+        scene
+            .sources
+            .retain(|source| matches!(source.kind, SceneSourceKind::Camera));
+        let camera = scene
+            .sources
+            .iter_mut()
+            .find(|source| matches!(source.kind, SceneSourceKind::Camera))
+            .expect("camera scene source");
+        camera.id = "source:face-cam".to_string();
+        camera.name = "Face cam".to_string();
+        camera.transform = full_frame_transform();
+        camera.default_transform = full_frame_transform();
+        let snapshot = CompositorSceneSnapshot {
+            revision: 1,
+            scene: Some(scene),
+            layout,
+            active_screen: None,
+        };
+
+        let reason = match try_gpu_compose(
+            Some(&mut gpu),
+            &CompositorRenderInputs {
+                sequence: 7,
+                width: 8,
+                height: 4,
+                snapshot: Some(&snapshot),
+                active_image_source: None,
+                camera_frame: None,
+                screen_frame: None,
+            },
+        ) {
+            Ok(_) => panic!("missing camera frame should fall back to CPU"),
+            Err(reason) => reason,
+        };
+
+        assert!(reason.contains("camera source \"Face cam\""));
+        assert!(reason.contains("id=source:face-cam"));
+        assert!(reason.contains("device=camera-device-1"));
+        assert!(reason.contains("frame unavailable"));
     }
 
     fn test_state() -> AppState {

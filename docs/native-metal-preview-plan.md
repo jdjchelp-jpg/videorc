@@ -127,6 +127,10 @@ fails a "native" claim — by design.
   target: this smoke scene later includes a visible camera source without camera frames,
   so most frames still fall back until source availability and zero-copy load work are
   finished.
+- Metal fallback reasons now name the visible scene source that forced CPU fallback,
+  including source kind, name/id, and device id when available. The focused compositor
+  regression verifies that a missing visible camera frame reports the specific camera
+  source instead of the old generic `camera frame unavailable` reason.
 - A focused Metal regression now proves a synthetic test-pattern overlay scene can compose
   on Metal without requiring camera frames. Switching the default native-preview smoke to
   that fully Metal overlay path is still premature: the readback/encode path exposed the
