@@ -11,6 +11,9 @@ export function createPreviewSurfaceOutputGuard() {
         failures.push(line.trim())
       }
     },
+    failures() {
+      return [...failures]
+    },
     assertClean() {
       if (failures.length === 0) {
         return

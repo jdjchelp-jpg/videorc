@@ -14,6 +14,9 @@ test('preview surface output guard fails on ipc handler errors', () => {
   const guard = createPreviewSurfaceOutputGuard()
   guard.inspectLine("Error occurred in handler for 'preview-surface:apply-host-commands': TypeError: Object has been destroyed")
 
+  assert.deepEqual(guard.failures(), [
+    "Error occurred in handler for 'preview-surface:apply-host-commands': TypeError: Object has been destroyed",
+  ])
   assert.throws(
     () => guard.assertClean(),
     /Preview surface host emitted handler error\(s\).*preview-surface:apply-host-commands/

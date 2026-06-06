@@ -46,6 +46,7 @@ import {
   strongestPreviewBacking,
   strongestPreviewTransport,
 } from './lib/native-preview-claim.mjs'
+import { createPreviewSurfaceOutputGuard } from './lib/smoke-output-guards.mjs'
 
 const config = {
   recordingMs: Number(process.env.VIDEORC_BASELINE_RECORDING_MS ?? 60000),
@@ -75,6 +76,7 @@ const NATIVE_PREFIX = {
 }
 
 let launched
+const previewSurfaceOutputGuard = createPreviewSurfaceOutputGuard()
 mkdirSync(config.outputDirectory, { recursive: true })
 
 let exitCode = 0
@@ -103,7 +105,10 @@ async function main() {
       VIDEORC_DISABLE_AUTO_PREVIEW: config.noPreviewSurface ? '1' : '0',
       VIDEORC_ENCODER_BRIDGE_VIDEO_OUTPUT: config.bridgeVideoOutput,
     },
-    onLine: (line) => console.log(line),
+    onLine: (line) => {
+      previewSurfaceOutputGuard.inspectLine(line)
+      console.log(line)
+    },
   })
 
   const ws = await connectBackend(launched.connections['backend-ready'], config.timeoutMs)
@@ -200,17 +205,22 @@ async function main() {
       const diagnostics = summarizeDiagnostics(diagnosticsEvents, snapshots, scenarioStartedAt, blockedAt, {
         includePreStart: true,
       })
+      const previewSurfaceOutputFailures = previewSurfaceOutputGuard.failures()
       const baselinePath = writeBlockedStartupReport({
         sources,
         previewTransport,
         diagnostics,
         healthEvents: healthEvents.filter((event) => (event.receivedAt ?? 0) >= scenarioStartedAt - 250),
         error,
+        previewSurfaceOutputFailures,
       })
       printBlockedStartupSummary(error, diagnostics, previewTransport, baselinePath)
       return {
         pass: false,
-        failures: [`session.start failed before encoding: ${error?.message ?? error}`],
+        failures: [
+          `session.start failed before encoding: ${error?.message ?? error}`,
+          ...previewSurfaceOutputFailureMessages(previewSurfaceOutputFailures),
+        ],
         warnings: [],
       }
     }
@@ -253,6 +263,7 @@ async function main() {
       ffmpegPath: config.ffmpegPath,
     })
     const claimsNative = claimsNativePreview({ previewTransport, diagnostics })
+    const previewSurfaceOutputFailures = previewSurfaceOutputGuard.failures()
     const ownership = classifyObsParityEvidence({
       analyzerVerdict: report.verdict,
       startupVerdict: startupReport.verdict,
@@ -269,21 +280,25 @@ async function main() {
       startupReport,
       startupPaths,
       ownership,
+      previewSurfaceOutputFailures,
     })
 
     // Full real-source acceptance gate: final-file verdict + recording repeats +
     // encoder speed + mic drops/coverage + transport honesty, all enforced together.
     // The Electron proof surface reports metrics, but only native-surface plus a real
     // CAMetalLayer backing is an OBS-native claim.
-    const acceptance = evaluateAcceptance({
-      analyzerVerdict: report.verdict,
-      startupVerdict: startupReport.verdict,
-      diagnostics,
-      claimsNative,
-      requireObsNativePreview: !config.noPreviewSurface,
-      requireGpuCompositor: true,
-      expectAudio: Boolean(sources.microphone),
-    })
+    const acceptance = appendPreviewSurfaceOutputFailures(
+      evaluateAcceptance({
+        analyzerVerdict: report.verdict,
+        startupVerdict: startupReport.verdict,
+        diagnostics,
+        claimsNative,
+        requireObsNativePreview: !config.noPreviewSurface,
+        requireGpuCompositor: true,
+        expectAudio: Boolean(sources.microphone),
+      }),
+      previewSurfaceOutputFailures
+    )
     printSummary(report, startupReport, diagnostics, previewTransport, baselinePath, acceptance, ownership)
     return acceptance
   } finally {
@@ -619,7 +634,20 @@ function summarizeDiagnostics(events, snapshots, startedAt, stopRequestedAt, opt
 
 // --- Report -----------------------------------------------------------------
 
-function writeBaselineReport(outputPath, { sources, previewTransport, size, diagnostics, report, startupReport, startupPaths, ownership }) {
+function writeBaselineReport(
+  outputPath,
+  {
+    sources,
+    previewTransport,
+    size,
+    diagnostics,
+    report,
+    startupReport,
+    startupPaths,
+    ownership,
+    previewSurfaceOutputFailures = [],
+  }
+) {
   const base = outputPath.split('/').pop().replace(/\.[^.]+$/, '')
   const reportPath = join(dirname(outputPath), `${base}.baseline.md`)
   const m = report.metrics
@@ -769,6 +797,15 @@ function writeBaselineReport(outputPath, { sources, previewTransport, size, diag
   )
   lines.push(`- Backend RSS max: ${mib(diagnostics.maxBackendRssBytes)} | ffmpeg procs ${diagnostics.maxActiveFfmpegProcesses} | ffprobe procs ${diagnostics.maxActiveFfprobeProcesses}`)
   lines.push(`- Maintenance overlap samples: ${diagnostics.maintenanceSamples} | duplicate-capture samples: ${diagnostics.duplicateCaptureSamples}`)
+  if (previewSurfaceOutputFailures.length) {
+    lines.push('')
+    lines.push('## Preview Surface Host Output Guard')
+    lines.push('')
+    lines.push('**FAIL**')
+    for (const failure of previewSurfaceOutputFailures) {
+      lines.push(`- ${failure}`)
+    }
+  }
   lines.push('')
   lines.push('## Problem ownership triage')
   lines.push('')
@@ -805,7 +842,14 @@ function writeBaselineReport(outputPath, { sources, previewTransport, size, diag
   return reportPath
 }
 
-function writeBlockedStartupReport({ sources, previewTransport, diagnostics, healthEvents, error }) {
+function writeBlockedStartupReport({
+  sources,
+  previewTransport,
+  diagnostics,
+  healthEvents,
+  error,
+  previewSurfaceOutputFailures = [],
+}) {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-')
   const reportPath = join(config.outputDirectory, `videorc-session-${stamp}.blocked-start.md`)
   const fmt = (v, d = 1) => (typeof v === 'number' && Number.isFinite(v) ? v.toFixed(d) : 'n/a')
@@ -875,6 +919,15 @@ function writeBlockedStartupReport({ sources, previewTransport, diagnostics, hea
   lines.push(`- Image polls at block: ${diagnostics.imagePollDuringSession.total ?? 'n/a'}`)
   lines.push(`- Compositor backend: ${diagnostics.compositorBackend ?? 'unknown'} | CPU fallback frames ${diagnostics.compositorCpuFallbackFrames}`)
   lines.push(`- Mic: captured ${diagnostics.micCapturedFrames ?? 'n/a'} | dropped ${diagnostics.micDroppedFrames}`)
+  if (previewSurfaceOutputFailures.length) {
+    lines.push('')
+    lines.push('## Preview Surface Host Output Guard')
+    lines.push('')
+    lines.push('**FAIL**')
+    for (const failure of previewSurfaceOutputFailures) {
+      lines.push(`- ${failure}`)
+    }
+  }
   lines.push('')
   lines.push('## Problem ownership triage')
   lines.push('')
@@ -890,6 +943,22 @@ function writeBlockedStartupReport({ sources, previewTransport, diagnostics, hea
 
   writeFileSync(reportPath, lines.join('\n'))
   return reportPath
+}
+
+function appendPreviewSurfaceOutputFailures(acceptance, failures) {
+  const outputFailures = previewSurfaceOutputFailureMessages(failures)
+  if (outputFailures.length === 0) {
+    return acceptance
+  }
+  return {
+    ...acceptance,
+    pass: false,
+    failures: [...(acceptance.failures ?? []), ...outputFailures],
+  }
+}
+
+function previewSurfaceOutputFailureMessages(failures) {
+  return (failures ?? []).map((failure) => `preview-surface: host emitted handler error: ${failure}`)
 }
 
 function printSummary(report, startupReport, diagnostics, previewTransport, baselinePath, acceptance, ownership) {
