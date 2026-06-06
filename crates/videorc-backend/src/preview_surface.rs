@@ -216,15 +216,27 @@ pub async fn update_preview_surface_present(
             return slot.status.clone();
         }
         let mut next = slot.status.clone();
+        let native_claim_allowed = native_present_claim_allowed(&slot.status, &params);
+        let blocked_native_claim = present_update_claims_native(&params) && !native_claim_allowed;
         if let Some(transport) = params.transport {
-            next.transport = transport;
+            if transport != PreviewTransport::NativeSurface || native_claim_allowed {
+                next.transport = transport;
+            }
         }
         if let Some(backing) = params.backing {
-            next.backing = backing;
+            if backing != PreviewSurfaceBacking::CaMetalLayer || native_claim_allowed {
+                next.backing = backing;
+            }
         }
         if let Some(frame_id) = params.presented_frame_id {
             next.presented_frame_id = Some(frame_id);
             next.frames_rendered = next.frames_rendered.max(frame_id);
+        }
+        if blocked_native_claim {
+            next.message = Some(
+                "Native preview surface is waiting for its first presented compositor frame."
+                    .to_string(),
+            );
         }
         next.compositor_frame_lag = params.compositor_frame_lag;
         next.dropped_frames = next.dropped_frames.max(params.dropped_frames);
@@ -253,6 +265,7 @@ pub async fn update_preview_surface_present(
         next.preview_frame_age_ms = status.input_to_present_latency_ms;
         next.preview_render_frame_time_p95_ms = status.interval_p95_ms;
         next.preview_render_frame_time_p99_ms = status.interval_p99_ms;
+        next.preview_transport = status.transport;
         next.preview_surface_backing = status.backing;
         next.updated_at = Utc::now().to_rfc3339();
         *diagnostics = next.clone();
@@ -274,6 +287,21 @@ fn is_stale_present_update(
         (current.presented_frame_id, params.presented_frame_id),
         (Some(current_frame), Some(next_frame)) if next_frame < current_frame
     )
+}
+
+fn present_update_claims_native(params: &PreviewSurfacePresentParams) -> bool {
+    matches!(params.transport, Some(PreviewTransport::NativeSurface))
+        || matches!(params.backing, Some(PreviewSurfaceBacking::CaMetalLayer))
+}
+
+fn native_present_claim_allowed(
+    current: &PreviewSurfaceStatus,
+    params: &PreviewSurfacePresentParams,
+) -> bool {
+    params.presented_frame_id.is_some()
+        || (current.transport == PreviewTransport::NativeSurface
+            && current.backing == PreviewSurfaceBacking::CaMetalLayer
+            && current.presented_frame_id.is_some())
 }
 
 pub async fn register_preview_surface_resize(state: &AppState) {
@@ -553,6 +581,10 @@ mod tests {
 
         let diagnostics = state.diagnostics.lock().await;
         assert_eq!(
+            diagnostics.preview_transport,
+            PreviewTransport::NativeSurface
+        );
+        assert_eq!(
             diagnostics.preview_surface_backing,
             PreviewSurfaceBacking::CaMetalLayer
         );
@@ -574,6 +606,117 @@ mod tests {
         assert_eq!(diagnostics.preview_dropped_frames, 3);
         assert_eq!(diagnostics.preview_render_frame_time_p95_ms, Some(19.0));
         assert_eq!(diagnostics.preview_render_frame_time_p99_ms, Some(24.0));
+    }
+
+    #[tokio::test]
+    async fn native_surface_claim_waits_for_presented_frame_id() {
+        let state = test_state();
+        create_preview_surface(
+            state.clone(),
+            PreviewSurfaceCreateParams {
+                bounds: bounds(800.0, 450.0),
+                target_fps: 60,
+                source: PreviewSurfaceSource::Synthetic,
+            },
+        )
+        .await;
+
+        let status = update_preview_surface_present(
+            &state,
+            PreviewSurfacePresentParams {
+                transport: Some(PreviewTransport::NativeSurface),
+                backing: Some(PreviewSurfaceBacking::CaMetalLayer),
+                presented_frame_id: None,
+                compositor_frame_lag: None,
+                dropped_frames: 0,
+                input_to_present_latency_ms: Some(37),
+                input_to_present_latency_p50_ms: Some(31),
+                input_to_present_latency_p95_ms: Some(48),
+                input_to_present_latency_p99_ms: Some(73),
+                present_fps: Some(58.5),
+                interval_p95_ms: Some(19.0),
+                interval_p99_ms: Some(24.0),
+            },
+        )
+        .await;
+
+        assert_eq!(status.transport, PreviewTransport::ElectronProofSurface);
+        assert_eq!(status.backing, PreviewSurfaceBacking::ElectronBrowserWindow);
+        assert_eq!(status.presented_frame_id, None);
+        assert!(
+            status
+                .message
+                .as_deref()
+                .is_some_and(|message| message.contains("first presented compositor frame"))
+        );
+
+        let diagnostics = state.diagnostics.lock().await;
+        assert_eq!(
+            diagnostics.preview_transport,
+            PreviewTransport::ElectronProofSurface
+        );
+        assert_eq!(
+            diagnostics.preview_surface_backing,
+            PreviewSurfaceBacking::ElectronBrowserWindow
+        );
+    }
+
+    #[tokio::test]
+    async fn native_surface_claim_stays_live_after_first_presented_frame() {
+        let state = test_state();
+        create_preview_surface(
+            state.clone(),
+            PreviewSurfaceCreateParams {
+                bounds: bounds(800.0, 450.0),
+                target_fps: 60,
+                source: PreviewSurfaceSource::Synthetic,
+            },
+        )
+        .await;
+
+        update_preview_surface_present(
+            &state,
+            PreviewSurfacePresentParams {
+                transport: Some(PreviewTransport::NativeSurface),
+                backing: Some(PreviewSurfaceBacking::CaMetalLayer),
+                presented_frame_id: Some(42),
+                compositor_frame_lag: Some(0),
+                dropped_frames: 0,
+                input_to_present_latency_ms: Some(37),
+                input_to_present_latency_p50_ms: Some(31),
+                input_to_present_latency_p95_ms: Some(48),
+                input_to_present_latency_p99_ms: Some(73),
+                present_fps: Some(58.5),
+                interval_p95_ms: Some(19.0),
+                interval_p99_ms: Some(24.0),
+            },
+        )
+        .await;
+
+        let status = update_preview_surface_present(
+            &state,
+            PreviewSurfacePresentParams {
+                transport: Some(PreviewTransport::NativeSurface),
+                backing: Some(PreviewSurfaceBacking::CaMetalLayer),
+                presented_frame_id: None,
+                compositor_frame_lag: Some(0),
+                dropped_frames: 1,
+                input_to_present_latency_ms: Some(20),
+                input_to_present_latency_p50_ms: Some(18),
+                input_to_present_latency_p95_ms: Some(24),
+                input_to_present_latency_p99_ms: Some(30),
+                present_fps: Some(60.0),
+                interval_p95_ms: Some(17.0),
+                interval_p99_ms: Some(18.0),
+            },
+        )
+        .await;
+
+        assert_eq!(status.transport, PreviewTransport::NativeSurface);
+        assert_eq!(status.backing, PreviewSurfaceBacking::CaMetalLayer);
+        assert_eq!(status.presented_frame_id, Some(42));
+        assert_eq!(status.dropped_frames, 1);
+        assert_eq!(status.input_to_present_latency_ms, Some(20));
     }
 
     #[tokio::test]

@@ -202,6 +202,10 @@ fails a "native" claim — by design.
   `encoderBridgeMetalTargetFrames`, and the at-risk classification. The real-source OBS
   gate now fails while the shared compositor is on CPU fallback or the preview surface
   backing is still the Electron proof BrowserWindow.
+- Preview-surface present updates can no longer claim `previewTransport = native-surface`
+  or `previewSurfaceBacking = cametal-layer` until the host has reported a presented
+  compositor frame id. The focused `preview_surface` regression keeps the Electron proof
+  status in place until that first native frame exists.
 
 ## What remains (on-device only)
 
