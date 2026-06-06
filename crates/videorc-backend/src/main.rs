@@ -33,6 +33,7 @@ mod state;
 mod storage;
 mod streaming;
 mod twitch;
+mod twitch_chat;
 mod x_live;
 mod youtube;
 mod youtube_chat;

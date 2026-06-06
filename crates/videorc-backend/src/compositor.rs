@@ -460,7 +460,7 @@ async fn run_synthetic_compositor_loop(
     let mut ticker = tokio::time::interval(frame_interval);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let (width, height) = compositor_dimensions(&state).await;
-    // Persisted GPU compositor (Some only on macOS with VIDEORC_METAL_COMPOSITOR + a GPU);
+    // Persisted GPU compositor (Some only on macOS when not disabled and a GPU exists);
     // built once and reused per frame. Held across the loop's awaits (it is Send).
     let gpu_compositor = new_gpu_compositor();
 
@@ -636,14 +636,17 @@ fn is_repeated_compositor_frame(
     }
 }
 
-/// Whether the flag-gated Metal/GPU compositor path is requested.
+/// Whether the Metal/GPU compositor path is requested. Metal is default-on for OBS
+/// parity; the env var is now an escape hatch for debugging CPU fallback.
 fn metal_compositor_enabled() -> bool {
-    std::env::var("VIDEORC_METAL_COMPOSITOR").is_ok_and(|value| {
-        matches!(
-            value.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "on"
-        )
-    })
+    metal_compositor_enabled_from_env(std::env::var("VIDEORC_METAL_COMPOSITOR").ok().as_deref())
+}
+
+fn metal_compositor_enabled_from_env(value: Option<&str>) -> bool {
+    !matches!(
+        value.map(|value| value.trim().to_ascii_lowercase()),
+        Some(value) if matches!(value.as_str(), "0" | "false" | "off" | "no")
+    )
 }
 
 #[cfg(target_os = "macos")]
@@ -659,12 +662,12 @@ fn new_gpu_compositor() -> Option<GpuCompositor> {
     }
     match GpuCompositor::new() {
         Some(compositor) => {
-            tracing::info!("Metal GPU compositor enabled (VIDEORC_METAL_COMPOSITOR)");
+            tracing::info!("Metal GPU compositor enabled");
             Some(compositor)
         }
         None => {
             tracing::warn!(
-                "VIDEORC_METAL_COMPOSITOR set but no Metal device is available; using the CPU compositor"
+                "Metal GPU compositor requested but no Metal device is available; using the CPU compositor"
             );
             None
         }
@@ -1818,6 +1821,18 @@ mod tests {
     }
 
     #[test]
+    fn metal_compositor_is_default_on_with_explicit_disable_values() {
+        assert!(metal_compositor_enabled_from_env(None));
+        assert!(metal_compositor_enabled_from_env(Some("1")));
+        assert!(metal_compositor_enabled_from_env(Some("true")));
+        assert!(metal_compositor_enabled_from_env(Some("unexpected")));
+        assert!(!metal_compositor_enabled_from_env(Some("0")));
+        assert!(!metal_compositor_enabled_from_env(Some("false")));
+        assert!(!metal_compositor_enabled_from_env(Some("off")));
+        assert!(!metal_compositor_enabled_from_env(Some("no")));
+    }
+
+    #[test]
     fn yuv_blit_applies_transform_crop_before_cover_fit() {
         let mut source = Vec::new();
         for _ in 0..2 {
@@ -1961,8 +1976,14 @@ mod tests {
         )
         .await;
 
-        tokio::time::sleep(COMPOSITOR_DIAGNOSTIC_WINDOW + Duration::from_millis(250)).await;
-        let status = compositor_status(&state).await;
+        let mut status = compositor_status(&state).await;
+        for _ in 0..30 {
+            if status.frames_rendered >= 30 && status.render_fps.unwrap_or_default() >= 30.0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            status = compositor_status(&state).await;
+        }
         stop_compositor(&state).await;
 
         assert_eq!(status.state, CompositorState::Live);

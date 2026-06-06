@@ -690,6 +690,7 @@ fn provider_config(platform: StreamPlatform) -> Result<OAuthProviderConfig> {
             scopes: vec![
                 "channel:manage:broadcast".to_string(),
                 "channel:read:stream_key".to_string(),
+                "user:read:chat".to_string(),
             ],
             extra_params: HashMap::new(),
             pkce: false,

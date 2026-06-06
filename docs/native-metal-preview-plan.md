@@ -18,8 +18,8 @@ fails a "native" claim — by design.
   tested. `MetalSceneCompositor` persists the device/queue/pipeline/sampler and is `Send`.
 - `bgra_to_yuv420p()` — full-range BT.601 conversion byte-compatible with the CPU
   compositor, so GPU frames drop straight into the existing encoder pipeline.
-- **The GPU compositor is wired into the live compositor loop** behind
-  `VIDEORC_METAL_COMPOSITOR` (default off): it composites Screen/Window/Camera scenes with
+- **The GPU compositor is wired into the live compositor loop** and is default-on on macOS
+  unless `VIDEORC_METAL_COMPOSITOR=0|false|off|no`: it composites Screen/Window/Camera scenes with
   transform crop, cover/contain fitting, camera mirror, circle masks, and cached screen
   images, and falls back to the exact CPU compositor for test patterns or uncached image
   sources, so enabling it never changes a frame it cannot reproduce.
@@ -55,8 +55,8 @@ fails a "native" claim — by design.
    Use `CVMetalTextureCache` to wrap them as `MTLTexture` without a CPU copy, replacing
    the current BGRA `replaceRegion` upload for live sources.
 3. **Render the scene** into a persistent target texture at the output cadence, driven by
-   the existing compositor loop (`compositor.rs`), behind a `VIDEORC_METAL_COMPOSITOR`
-   flag so the CPU path stays as fallback.
+   the existing compositor loop (`compositor.rs`), default-on on macOS with
+   `VIDEORC_METAL_COMPOSITOR=0|false|off|no` as the CPU fallback escape hatch.
 4. **Export to the encoder with the lowest copy available.** Allocate the target as an
    IOSurface-backed texture and feed that IOSurface/`CVPixelBuffer` to
    `h264_videotoolbox` (the bridge already uses VideoToolbox — Phase 4), avoiding the

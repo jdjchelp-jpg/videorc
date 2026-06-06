@@ -524,6 +524,8 @@ pub struct LiveChatStartParams {
     pub fake: Option<FakeChatConfig>,
     #[serde(default)]
     pub youtube: Option<crate::youtube_chat::YouTubeChatConfig>,
+    #[serde(default)]
+    pub twitch: Option<crate::twitch_chat::TwitchChatConfig>,
 }
 
 /// A deterministic, bounded fake chat source for tests / `smoke:live-chat-fake-providers`.
@@ -576,6 +578,15 @@ pub async fn start_live_chat(state: &AppState, params: LiveChatStartParams) -> L
             state.clone(),
             params.session_id.clone(),
             youtube,
+        ));
+        let mut coordinator = state.live_chat.lock().await;
+        coordinator.attach_task(handle);
+    }
+    if let Some(twitch) = params.twitch.clone() {
+        let handle = tokio::spawn(crate::twitch_chat::run_twitch_chat_connector(
+            state.clone(),
+            params.session_id.clone(),
+            twitch,
         ));
         let mut coordinator = state.live_chat.lock().await;
         coordinator.attach_task(handle);
