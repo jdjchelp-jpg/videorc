@@ -905,8 +905,12 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
                 compositorFrameLag: surfaceStatus.compositorFrameLag,
                 droppedFrames: surfaceStatus.droppedFrames,
                 inputToPresentLatencyMs: surfaceStatus.inputToPresentLatencyMs,
+                inputToPresentLatencyP50Ms: surfaceStatus.inputToPresentLatencyP50Ms,
+                inputToPresentLatencyP95Ms: surfaceStatus.inputToPresentLatencyP95Ms,
+                inputToPresentLatencyP99Ms: surfaceStatus.inputToPresentLatencyP99Ms,
                 presentFps: surfaceStatus.presentFps,
-                intervalP95Ms: surfaceStatus.intervalP95Ms
+                intervalP95Ms: surfaceStatus.intervalP95Ms,
+                intervalP99Ms: surfaceStatus.intervalP99Ms
               }
               void nextClient.request<PreviewSurfaceStatus>('preview.surface.present', presentParams).catch((error: unknown) => {
                 console.error('Native preview present metrics failed:', error)

@@ -56,8 +56,12 @@ pub async fn create_preview_surface(
         compositor_frame_lag: None,
         dropped_frames: 0,
         input_to_present_latency_ms: None,
+        input_to_present_latency_p50_ms: None,
+        input_to_present_latency_p95_ms: None,
+        input_to_present_latency_p99_ms: None,
         present_fps: None,
         interval_p95_ms: None,
+        interval_p99_ms: None,
         bounds: Some(params.bounds),
         started_at: Some(now.clone()),
         updated_at: now,
@@ -122,8 +126,12 @@ pub async fn destroy_preview_surface(state: &AppState) -> PreviewSurfaceStatus {
         next.compositor_frame_lag = None;
         next.dropped_frames = 0;
         next.input_to_present_latency_ms = None;
+        next.input_to_present_latency_p50_ms = None;
+        next.input_to_present_latency_p95_ms = None;
+        next.input_to_present_latency_p99_ms = None;
         next.present_fps = None;
         next.interval_p95_ms = None;
+        next.interval_p99_ms = None;
         next.started_at = None;
         next.updated_at = Utc::now().to_rfc3339();
         next.message = Some("Native preview surface stopped.".to_string());
@@ -158,8 +166,12 @@ pub async fn update_preview_surface_present(
         next.compositor_frame_lag = params.compositor_frame_lag;
         next.dropped_frames = params.dropped_frames;
         next.input_to_present_latency_ms = params.input_to_present_latency_ms;
+        next.input_to_present_latency_p50_ms = params.input_to_present_latency_p50_ms;
+        next.input_to_present_latency_p95_ms = params.input_to_present_latency_p95_ms;
+        next.input_to_present_latency_p99_ms = params.input_to_present_latency_p99_ms;
         next.present_fps = params.present_fps;
         next.interval_p95_ms = params.interval_p95_ms;
+        next.interval_p99_ms = params.interval_p99_ms;
         next.updated_at = Utc::now().to_rfc3339();
         slot.status = next.clone();
         next
@@ -170,9 +182,13 @@ pub async fn update_preview_surface_present(
         let mut next = diagnostics.clone();
         next.preview_present_fps = status.present_fps;
         next.preview_input_to_present_latency_ms = status.input_to_present_latency_ms;
+        next.preview_input_to_present_latency_p50_ms = status.input_to_present_latency_p50_ms;
+        next.preview_input_to_present_latency_p95_ms = status.input_to_present_latency_p95_ms;
+        next.preview_input_to_present_latency_p99_ms = status.input_to_present_latency_p99_ms;
         next.preview_dropped_frames = status.dropped_frames;
         next.preview_frame_age_ms = status.input_to_present_latency_ms;
         next.preview_render_frame_time_p95_ms = status.interval_p95_ms;
+        next.preview_render_frame_time_p99_ms = status.interval_p99_ms;
         next.preview_surface_backing = status.backing;
         next.updated_at = Utc::now().to_rfc3339();
         *diagnostics = next.clone();
@@ -230,8 +246,12 @@ fn unavailable_status(message: Option<String>) -> PreviewSurfaceStatus {
         compositor_frame_lag: None,
         dropped_frames: 0,
         input_to_present_latency_ms: None,
+        input_to_present_latency_p50_ms: None,
+        input_to_present_latency_p95_ms: None,
+        input_to_present_latency_p99_ms: None,
         present_fps: None,
         interval_p95_ms: None,
+        interval_p99_ms: None,
         bounds: None,
         started_at: None,
         updated_at: Utc::now().to_rfc3339(),
@@ -339,8 +359,12 @@ mod tests {
                 compositor_frame_lag: Some(1),
                 dropped_frames: 3,
                 input_to_present_latency_ms: Some(37),
+                input_to_present_latency_p50_ms: Some(31),
+                input_to_present_latency_p95_ms: Some(48),
+                input_to_present_latency_p99_ms: Some(73),
                 present_fps: Some(58.5),
                 interval_p95_ms: Some(19.0),
+                interval_p99_ms: Some(24.0),
             },
         )
         .await;
@@ -351,6 +375,9 @@ mod tests {
         assert_eq!(status.compositor_frame_lag, Some(1));
         assert_eq!(status.dropped_frames, 3);
         assert_eq!(status.input_to_present_latency_ms, Some(37));
+        assert_eq!(status.input_to_present_latency_p50_ms, Some(31));
+        assert_eq!(status.input_to_present_latency_p95_ms, Some(48));
+        assert_eq!(status.input_to_present_latency_p99_ms, Some(73));
         assert_eq!(status.present_fps, Some(58.5));
 
         let diagnostics = state.diagnostics.lock().await;
@@ -360,8 +387,21 @@ mod tests {
         );
         assert_eq!(diagnostics.preview_present_fps, Some(58.5));
         assert_eq!(diagnostics.preview_input_to_present_latency_ms, Some(37));
+        assert_eq!(
+            diagnostics.preview_input_to_present_latency_p50_ms,
+            Some(31)
+        );
+        assert_eq!(
+            diagnostics.preview_input_to_present_latency_p95_ms,
+            Some(48)
+        );
+        assert_eq!(
+            diagnostics.preview_input_to_present_latency_p99_ms,
+            Some(73)
+        );
         assert_eq!(diagnostics.preview_dropped_frames, 3);
         assert_eq!(diagnostics.preview_render_frame_time_p95_ms, Some(19.0));
+        assert_eq!(diagnostics.preview_render_frame_time_p99_ms, Some(24.0));
     }
 
     #[tokio::test]

@@ -328,6 +328,7 @@ function nativePreviewSurfaceHtml(initialScene: PreviewSurfaceSceneState | null)
         let presentedCompositorFrame = 0;
         let skippedCompositorFrames = 0;
         let inputToPresentLatencyMs = null;
+        const inputToPresentLatencies = [];
         let scene = ${initialSceneJson};
         let frames = 0;
         let liveLayerCount = 0;
@@ -532,6 +533,8 @@ function nativePreviewSurfaceHtml(initialScene: PreviewSurfaceSceneState | null)
             presentedCompositorFrame = Math.max(presentedCompositorFrame, frame);
             const frameAgeMs = Number(nextStatus.frameAgeMs ?? 0);
             inputToPresentLatencyMs = Math.max(0, Math.round(frameAgeMs + Math.max(0, now - receivedAt)));
+            inputToPresentLatencies.push(inputToPresentLatencyMs);
+            if (inputToPresentLatencies.length > 900) inputToPresentLatencies.shift();
             const width = Math.max(1, Number(nextStatus.width ?? window.innerWidth));
             const x = (frame * 7) % (width + 140);
             document.body.style.setProperty('--dot-x', String((x / Math.max(1, width)) * 100) + '%');
@@ -561,8 +564,8 @@ function nativePreviewSurfaceHtml(initialScene: PreviewSurfaceSceneState | null)
           }
           window.__videorcNativePreviewMetrics = () => {
             const intervals = frameTimes.slice(1).map((time, index) => time - frameTimes[index]);
-            const sorted = [...intervals].sort((a, b) => a - b);
-            const percentile = (p) => {
+            const percentile = (values, p) => {
+              const sorted = [...values].sort((a, b) => a - b);
               if (!sorted.length) return null;
               const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil((p / 100) * sorted.length) - 1));
               return sorted[index];
@@ -582,13 +585,16 @@ function nativePreviewSurfaceHtml(initialScene: PreviewSurfaceSceneState | null)
               compositorFrameLag: Math.max(0, compositorFrames - presentedCompositorFrame),
               skippedCompositorFrames,
               inputToPresentLatencyMs,
+              inputToPresentLatencyP50Ms: percentile(inputToPresentLatencies, 50),
+              inputToPresentLatencyP95Ms: percentile(inputToPresentLatencies, 95),
+              inputToPresentLatencyP99Ms: percentile(inputToPresentLatencies, 99),
               compositorSources: compositorStatus?.sources ?? [],
               layerCount: layers.size,
               liveLayerCount,
               sourceFrames: Object.fromEntries(sourceFrames),
-              intervalP50Ms: percentile(50),
-              intervalP95Ms: percentile(95),
-              intervalP99Ms: percentile(99),
+              intervalP50Ms: percentile(intervals, 50),
+              intervalP95Ms: percentile(intervals, 95),
+              intervalP99Ms: percentile(intervals, 99),
               blankFrames: 0,
               width: window.innerWidth,
               height: window.innerHeight
@@ -673,8 +679,12 @@ async function createNativePreviewSurface(bounds: PreviewSurfaceBounds): Promise
     compositorFrameLag: nativePreviewSurfaceStatus.compositorFrameLag,
     droppedFrames: nativePreviewSurfaceStatus.droppedFrames ?? 0,
     inputToPresentLatencyMs: nativePreviewSurfaceStatus.inputToPresentLatencyMs,
+    inputToPresentLatencyP50Ms: nativePreviewSurfaceStatus.inputToPresentLatencyP50Ms,
+    inputToPresentLatencyP95Ms: nativePreviewSurfaceStatus.inputToPresentLatencyP95Ms,
+    inputToPresentLatencyP99Ms: nativePreviewSurfaceStatus.inputToPresentLatencyP99Ms,
     presentFps: nativePreviewSurfaceStatus.presentFps,
     intervalP95Ms: nativePreviewSurfaceStatus.intervalP95Ms,
+    intervalP99Ms: nativePreviewSurfaceStatus.intervalP99Ms,
     bounds,
     startedAt: nativePreviewSurfaceStatus.startedAt ?? new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -777,8 +787,12 @@ async function presentNativePreviewSurfaceCompositor(status: CompositorStatus): 
   const compositorFrameLag = finiteMetric(metrics?.compositorFrameLag)
   const droppedFrames = finiteMetric(metrics?.skippedCompositorFrames) ?? nativePreviewSurfaceStatus.droppedFrames ?? 0
   const inputToPresentLatencyMs = finiteMetric(metrics?.inputToPresentLatencyMs)
+  const inputToPresentLatencyP50Ms = finiteMetric(metrics?.inputToPresentLatencyP50Ms)
+  const inputToPresentLatencyP95Ms = finiteMetric(metrics?.inputToPresentLatencyP95Ms)
+  const inputToPresentLatencyP99Ms = finiteMetric(metrics?.inputToPresentLatencyP99Ms)
   const presentFps = finiteMetric(metrics?.measuredFps)
   const intervalP95Ms = finiteMetric(metrics?.intervalP95Ms)
+  const intervalP99Ms = finiteMetric(metrics?.intervalP99Ms)
   nativePreviewSurfaceStatus = {
     ...nativePreviewSurfaceStatus,
     source: hasScreen ? 'screen' : hasCamera ? 'camera' : nativePreviewSurfaceStatus.source,
@@ -787,8 +801,12 @@ async function presentNativePreviewSurfaceCompositor(status: CompositorStatus): 
     compositorFrameLag,
     droppedFrames,
     inputToPresentLatencyMs,
+    inputToPresentLatencyP50Ms,
+    inputToPresentLatencyP95Ms,
+    inputToPresentLatencyP99Ms,
     presentFps,
     intervalP95Ms,
+    intervalP99Ms,
     updatedAt: new Date().toISOString(),
     message: status.state === 'live' ? 'Electron proof preview surface is displaying compositor output.' : status.message
   }
@@ -1173,8 +1191,12 @@ async function runSmokePreviewMotionCommand(command: string, params: Record<stri
       compositorFrameLag: finiteMetric(metrics.compositorFrameLag),
       droppedFrames: finiteMetric(metrics.skippedCompositorFrames) ?? nativePreviewSurfaceStatus.droppedFrames ?? 0,
       inputToPresentLatencyMs: finiteMetric(metrics.inputToPresentLatencyMs),
+      inputToPresentLatencyP50Ms: finiteMetric(metrics.inputToPresentLatencyP50Ms),
+      inputToPresentLatencyP95Ms: finiteMetric(metrics.inputToPresentLatencyP95Ms),
+      inputToPresentLatencyP99Ms: finiteMetric(metrics.inputToPresentLatencyP99Ms),
       presentFps: finiteMetric(metrics.measuredFps),
       intervalP95Ms: finiteMetric(metrics.intervalP95Ms),
+      intervalP99Ms: finiteMetric(metrics.intervalP99Ms),
       updatedAt: new Date().toISOString()
     }
     return {

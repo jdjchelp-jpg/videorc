@@ -29,6 +29,8 @@ fails a "native" claim — by design.
   camera-only early frame from satisfying a screen+camera recording barrier.
 - The Electron proof surface now coalesces compositor-status IPC updates while a paint is
   in flight, so stale preview frames are dropped before they reach the proof window.
+- Preview present diagnostics now carry source-to-present p50/p95/p99 latency and the
+  acceptance gate fails native previews above the OBS-parity latency budget.
 - `make_preview_layer()` / `MetalPreviewPresenter` / `present_texture_to_layer()` — the
   GPU-side preview present (CAMetalLayer + render-scaled texture present), compile-and-run
   tested headlessly.

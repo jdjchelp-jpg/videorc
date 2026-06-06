@@ -623,6 +623,8 @@ function previewDiagnosisCopy({
   if (
     diagnosticStats.previewDroppedFrames > 0 ||
     diagnosticStats.previewRepeatedFrames > targetFps ||
+    (typeof diagnosticStats.previewInputToPresentLatencyP95Ms === 'number' &&
+      diagnosticStats.previewInputToPresentLatencyP95Ms > 50) ||
     (typeof diagnosticStats.previewInputToPresentLatencyMs === 'number' &&
       diagnosticStats.previewInputToPresentLatencyMs > 150)
   ) {

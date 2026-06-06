@@ -133,9 +133,21 @@ describe('evaluateAcceptance', () => {
   })
 
   it('fails a native preview whose host-present latency or frame lag is too high', () => {
+    const p95 = cleanInput()
+    p95.diagnostics.previewInputToPresentLatencyP95Ms = 72
+    let v = evaluateAcceptance(p95)
+    assert.equal(v.pass, false)
+    assert.match(v.failures.join(' '), /p95 latency 72ms/)
+
+    const p99 = cleanInput()
+    p99.diagnostics.previewInputToPresentLatencyP99Ms = 140
+    v = evaluateAcceptance(p99)
+    assert.equal(v.pass, false)
+    assert.match(v.failures.join(' '), /p99 latency 140ms/)
+
     const slow = cleanInput()
     slow.diagnostics.previewInputToPresentLatencyMs = 180
-    let v = evaluateAcceptance(slow)
+    v = evaluateAcceptance(slow)
     assert.equal(v.pass, false)
     assert.match(v.failures.join(' '), /source-to-present latency 180ms/)
 

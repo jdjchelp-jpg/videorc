@@ -907,8 +907,12 @@ export interface PreviewSurfaceStatus {
   compositorFrameLag?: number
   droppedFrames: number
   inputToPresentLatencyMs?: number
+  inputToPresentLatencyP50Ms?: number
+  inputToPresentLatencyP95Ms?: number
+  inputToPresentLatencyP99Ms?: number
   presentFps?: number
   intervalP95Ms?: number
+  intervalP99Ms?: number
   bounds?: PreviewSurfaceBounds
   startedAt?: string
   updatedAt: string
@@ -922,8 +926,12 @@ export interface PreviewSurfacePresentParams {
   compositorFrameLag?: number
   droppedFrames: number
   inputToPresentLatencyMs?: number
+  inputToPresentLatencyP50Ms?: number
+  inputToPresentLatencyP95Ms?: number
+  inputToPresentLatencyP99Ms?: number
   presentFps?: number
   intervalP95Ms?: number
+  intervalP99Ms?: number
 }
 
 export interface PreviewSurfaceCreateParams {
@@ -1097,6 +1105,9 @@ export interface DiagnosticStats {
   previewSurfaceBacking: PreviewSurfaceBacking
   previewPresentFps?: number
   previewInputToPresentLatencyMs?: number
+  previewInputToPresentLatencyP50Ms?: number
+  previewInputToPresentLatencyP95Ms?: number
+  previewInputToPresentLatencyP99Ms?: number
   previewRenderFrameTimeP50Ms?: number
   previewRenderFrameTimeP95Ms?: number
   previewRenderFrameTimeP99Ms?: number

@@ -832,6 +832,9 @@ pub struct DiagnosticStats {
     pub preview_surface_backing: PreviewSurfaceBacking,
     pub preview_present_fps: Option<f64>,
     pub preview_input_to_present_latency_ms: Option<u64>,
+    pub preview_input_to_present_latency_p50_ms: Option<u64>,
+    pub preview_input_to_present_latency_p95_ms: Option<u64>,
+    pub preview_input_to_present_latency_p99_ms: Option<u64>,
     pub preview_render_frame_time_p50_ms: Option<f64>,
     pub preview_render_frame_time_p95_ms: Option<f64>,
     pub preview_render_frame_time_p99_ms: Option<f64>,
@@ -984,8 +987,12 @@ pub struct PreviewSurfacePresentParams {
     #[serde(default)]
     pub dropped_frames: u64,
     pub input_to_present_latency_ms: Option<u64>,
+    pub input_to_present_latency_p50_ms: Option<u64>,
+    pub input_to_present_latency_p95_ms: Option<u64>,
+    pub input_to_present_latency_p99_ms: Option<u64>,
     pub present_fps: Option<f64>,
     pub interval_p95_ms: Option<f64>,
+    pub interval_p99_ms: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1009,9 +1016,17 @@ pub struct PreviewSurfaceStatus {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_to_present_latency_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_to_present_latency_p50_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_to_present_latency_p95_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_to_present_latency_p99_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub present_fps: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub interval_p95_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub interval_p99_ms: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bounds: Option<PreviewSurfaceBounds>,
     #[serde(skip_serializing_if = "Option::is_none")]

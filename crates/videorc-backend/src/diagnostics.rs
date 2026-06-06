@@ -98,6 +98,9 @@ pub fn idle_diagnostics() -> DiagnosticStats {
         preview_surface_backing: PreviewSurfaceBacking::None,
         preview_present_fps: None,
         preview_input_to_present_latency_ms: None,
+        preview_input_to_present_latency_p50_ms: None,
+        preview_input_to_present_latency_p95_ms: None,
+        preview_input_to_present_latency_p99_ms: None,
         preview_render_frame_time_p50_ms: None,
         preview_render_frame_time_p95_ms: None,
         preview_render_frame_time_p99_ms: None,
@@ -451,6 +454,9 @@ pub fn apply_preview_stats(
         stats
             .preview_source_fps
             .insert("fallback-composite".to_string(), fps);
+        stats.preview_input_to_present_latency_p50_ms = Some(preview_latency_ms);
+        stats.preview_input_to_present_latency_p95_ms = Some(preview_latency_ms);
+        stats.preview_input_to_present_latency_p99_ms = Some(preview_latency_ms);
         stats.preview_render_frame_time_p50_ms = Some(preview_latency_ms as f64);
         stats.preview_render_frame_time_p95_ms = Some(preview_latency_ms as f64);
         stats.preview_render_frame_time_p99_ms = Some(preview_latency_ms as f64);
@@ -470,6 +476,9 @@ pub fn apply_preview_frame_age(
 ) -> DiagnosticStats {
     stats.preview_frame_age_ms = Some(preview_frame_age_ms);
     stats.preview_input_to_present_latency_ms = Some(preview_frame_age_ms);
+    stats.preview_input_to_present_latency_p50_ms = Some(preview_frame_age_ms);
+    stats.preview_input_to_present_latency_p95_ms = Some(preview_frame_age_ms);
+    stats.preview_input_to_present_latency_p99_ms = Some(preview_frame_age_ms);
     stats.preview_present_fps = preview_present_fps;
     stats.preview_repeated_frames = preview_repeated_frames;
     stats.updated_at = Utc::now().to_rfc3339();
@@ -515,6 +524,9 @@ pub fn apply_compositor_stats(
     stats.render_fps = Some(render_fps);
     stats.preview_present_fps = Some(render_fps);
     stats.preview_input_to_present_latency_ms = Some(frame_age_ms);
+    stats.preview_input_to_present_latency_p50_ms = Some(frame_age_ms);
+    stats.preview_input_to_present_latency_p95_ms = Some(frame_age_ms);
+    stats.preview_input_to_present_latency_p99_ms = Some(frame_age_ms);
     stats.preview_render_frame_time_p50_ms = Some(render_frame_time_p50_ms);
     stats.preview_render_frame_time_p95_ms = Some(render_frame_time_p95_ms);
     stats.preview_render_frame_time_p99_ms = Some(render_frame_time_p99_ms);
