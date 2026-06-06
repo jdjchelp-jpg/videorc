@@ -63,6 +63,30 @@ pub struct PreviewScreenFrameInfo {
     pub frame_age_ms: u64,
 }
 
+#[derive(Debug, Clone)]
+pub struct PreviewScreenFrameSource {
+    shared: Arc<StdMutex<PreviewScreenShared>>,
+    source_key: Option<SourceKey>,
+}
+
+impl PreviewScreenFrameSource {
+    pub fn source_key(&self) -> Option<&SourceKey> {
+        self.source_key.as_ref()
+    }
+
+    pub fn try_latest_frame(&self) -> Option<FrameHandle<PreviewScreenPixelFormat>> {
+        self.shared.try_lock().ok()?.frame_store.latest()
+    }
+
+    pub fn latest_frame_blocking(&self) -> Option<FrameHandle<PreviewScreenPixelFormat>> {
+        self.shared
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .frame_store
+            .latest()
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct PreviewScreenShared {
     frame_store: FrameStore<PreviewScreenPixelFormat>,
@@ -464,18 +488,13 @@ pub async fn preview_screen_latest_frame_info(state: &AppState) -> Option<Previe
     })
 }
 
-pub async fn preview_screen_latest_frame(
-    state: &AppState,
-) -> Option<FrameHandle<PreviewScreenPixelFormat>> {
-    let shared = {
-        let slot = state.preview_screen.lock().await;
-        Arc::clone(&slot.active.as_ref()?.shared)
-    };
-    shared
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .frame_store
-        .latest()
+pub async fn preview_screen_frame_source(state: &AppState) -> Option<PreviewScreenFrameSource> {
+    let slot = state.preview_screen.lock().await;
+    let active = slot.active.as_ref()?;
+    Some(PreviewScreenFrameSource {
+        shared: Arc::clone(&active.shared),
+        source_key: slot.source_key.clone(),
+    })
 }
 
 pub async fn latest_preview_screen_png(

@@ -59,6 +59,38 @@ pub struct PreviewCameraFrameInfo {
     pub frame_age_ms: u64,
 }
 
+#[derive(Debug, Clone)]
+pub struct PreviewCameraFrameSource {
+    shared: Arc<StdMutex<PreviewCameraShared>>,
+    layout: LayoutSettings,
+    source_key: Option<SourceKey>,
+}
+
+impl PreviewCameraFrameSource {
+    pub fn source_key(&self) -> Option<&SourceKey> {
+        self.source_key.as_ref()
+    }
+
+    pub fn try_latest_frame(
+        &self,
+    ) -> Option<(FrameHandle<PreviewCameraPixelFormat>, LayoutSettings)> {
+        let frame = self.shared.try_lock().ok()?.frame_store.latest()?;
+        Some((frame, self.layout.clone()))
+    }
+
+    pub fn latest_frame_blocking(
+        &self,
+    ) -> Option<(FrameHandle<PreviewCameraPixelFormat>, LayoutSettings)> {
+        let frame = self
+            .shared
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .frame_store
+            .latest()?;
+        Some((frame, self.layout.clone()))
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct PreviewCameraShared {
     frame_store: FrameStore<PreviewCameraPixelFormat>,
@@ -356,20 +388,14 @@ pub async fn preview_camera_latest_frame_info(state: &AppState) -> Option<Previe
     })
 }
 
-pub async fn preview_camera_latest_frame(
-    state: &AppState,
-) -> Option<(FrameHandle<PreviewCameraPixelFormat>, LayoutSettings)> {
-    let (shared, layout) = {
-        let slot = state.preview_camera.lock().await;
-        let active = slot.active.as_ref()?;
-        (Arc::clone(&active.shared), active.layout.clone())
-    };
-    let frame = shared
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .frame_store
-        .latest()?;
-    Some((frame, layout))
+pub async fn preview_camera_frame_source(state: &AppState) -> Option<PreviewCameraFrameSource> {
+    let slot = state.preview_camera.lock().await;
+    let active = slot.active.as_ref()?;
+    Some(PreviewCameraFrameSource {
+        shared: Arc::clone(&active.shared),
+        layout: active.layout.clone(),
+        source_key: slot.source_key.clone(),
+    })
 }
 
 pub async fn latest_preview_camera_png(

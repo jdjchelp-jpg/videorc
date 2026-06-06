@@ -18,12 +18,12 @@ use crate::diagnostics::{
 };
 use crate::frame_store::{FrameHandle, FrameStore};
 use crate::preview_camera::{
-    PreviewCameraPixelFormat, preview_camera_latest_frame, preview_camera_latest_frame_info,
-    preview_camera_status,
+    PreviewCameraFrameSource, PreviewCameraPixelFormat, preview_camera_frame_source,
+    preview_camera_latest_frame_info, preview_camera_status,
 };
 use crate::preview_screen::{
-    PreviewScreenPixelFormat, preview_screen_latest_frame, preview_screen_latest_frame_info,
-    preview_screen_status,
+    PreviewScreenFrameSource, PreviewScreenPixelFormat, preview_screen_frame_source,
+    preview_screen_latest_frame_info, preview_screen_status,
 };
 use crate::protocol::{
     CameraFit, CameraShape, CompositorBackend, CompositorSceneSourceFit, CompositorSceneSourceKind,
@@ -35,6 +35,7 @@ use crate::protocol::{
 use crate::state::AppState;
 
 const COMPOSITOR_DIAGNOSTIC_WINDOW: Duration = Duration::from_secs(2);
+const COMPOSITOR_LIVE_SOURCE_REFRESH_INTERVAL: Duration = Duration::from_millis(250);
 
 pub type CompositorSlot = std::sync::Arc<tokio::sync::Mutex<CompositorRuntime>>;
 pub type CompositorFrameStore =
@@ -193,6 +194,92 @@ struct CompositorMetrics {
     frame_age_ms: u64,
     frame_time_p95_ms: f64,
     sources: Vec<CompositorSourceStatus>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct CompositorLiveSources {
+    camera: Option<PreviewCameraFrameSource>,
+    screen: Option<PreviewScreenFrameSource>,
+    last_camera_frame: Option<(FrameHandle<PreviewCameraPixelFormat>, LayoutSettings)>,
+    last_screen_frame: Option<FrameHandle<PreviewScreenPixelFormat>>,
+}
+
+impl CompositorLiveSources {
+    async fn refresh(state: &AppState) -> Self {
+        Self::default().refresh_sources(state).await
+    }
+
+    async fn refresh_sources(mut self, state: &AppState) -> Self {
+        let (camera, screen) = tokio::join!(
+            preview_camera_frame_source(state),
+            preview_screen_frame_source(state)
+        );
+        if !same_camera_source(self.camera.as_ref(), camera.as_ref()) {
+            self.last_camera_frame = None;
+        }
+        if !same_screen_source(self.screen.as_ref(), screen.as_ref()) {
+            self.last_screen_frame = None;
+        }
+        self.camera = camera;
+        self.screen = screen;
+        self
+    }
+
+    fn latest_camera_frame(
+        &mut self,
+    ) -> Option<(FrameHandle<PreviewCameraPixelFormat>, LayoutSettings)> {
+        if self.last_camera_frame.is_none() {
+            if let Some(frame) = self
+                .camera
+                .as_ref()
+                .and_then(PreviewCameraFrameSource::latest_frame_blocking)
+            {
+                self.last_camera_frame = Some(frame);
+            }
+        } else if let Some(frame) = self
+            .camera
+            .as_ref()
+            .and_then(PreviewCameraFrameSource::try_latest_frame)
+        {
+            self.last_camera_frame = Some(frame);
+        }
+        self.last_camera_frame.clone()
+    }
+
+    fn latest_screen_frame(&mut self) -> Option<FrameHandle<PreviewScreenPixelFormat>> {
+        if self.last_screen_frame.is_none() {
+            if let Some(frame) = self
+                .screen
+                .as_ref()
+                .and_then(PreviewScreenFrameSource::latest_frame_blocking)
+            {
+                self.last_screen_frame = Some(frame);
+            }
+        } else if let Some(frame) = self
+            .screen
+            .as_ref()
+            .and_then(PreviewScreenFrameSource::try_latest_frame)
+        {
+            self.last_screen_frame = Some(frame);
+        }
+        self.last_screen_frame.clone()
+    }
+}
+
+fn same_camera_source(
+    previous: Option<&PreviewCameraFrameSource>,
+    next: Option<&PreviewCameraFrameSource>,
+) -> bool {
+    previous.and_then(PreviewCameraFrameSource::source_key)
+        == next.and_then(PreviewCameraFrameSource::source_key)
+}
+
+fn same_screen_source(
+    previous: Option<&PreviewScreenFrameSource>,
+    next: Option<&PreviewScreenFrameSource>,
+) -> bool {
+    previous.and_then(PreviewScreenFrameSource::source_key)
+        == next.and_then(PreviewScreenFrameSource::source_key)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -597,6 +684,8 @@ async fn run_synthetic_compositor_loop(
     // Persisted GPU compositor (Some only on macOS when not disabled and a GPU exists);
     // built once and reused per frame. Held across the loop's awaits (it is Send).
     let mut gpu_compositor = new_gpu_compositor();
+    let mut live_sources = CompositorLiveSources::refresh(&state).await;
+    let mut next_live_source_refresh_at = Instant::now() + COMPOSITOR_LIVE_SOURCE_REFRESH_INTERVAL;
 
     let mut frames_rendered = 0_u64;
     let mut frames_in_window = 0_u64;
@@ -635,6 +724,11 @@ async fn run_synthetic_compositor_loop(
                     }
                 }
                 previous_tick_at = Some(ticked_at);
+                if ticked_at >= next_live_source_refresh_at {
+                    live_sources = live_sources.refresh_sources(&state).await;
+                    next_live_source_refresh_at =
+                        ticked_at + COMPOSITOR_LIVE_SOURCE_REFRESH_INTERVAL;
+                }
 
                 let render_started_at = Instant::now();
                 frames_rendered = frames_rendered.saturating_add(1);
@@ -645,6 +739,7 @@ async fn run_synthetic_compositor_loop(
                         frames_rendered,
                         width,
                         height,
+                        &mut live_sources,
                         gpu_compositor.as_mut(),
                         publish_yuv_frames,
                     )
@@ -1318,6 +1413,7 @@ async fn publish_compositor_frame(
     sequence: u64,
     width: u32,
     height: u32,
+    live_sources: &mut CompositorLiveSources,
     gpu: Option<&mut GpuCompositor>,
     publish_yuv_frame: bool,
 ) -> CompositorPublishResult {
@@ -1338,22 +1434,12 @@ async fn publish_compositor_frame(
         )
     };
     let scene_snapshot_ms = scene_snapshot_started_at.elapsed().as_secs_f64() * 1000.0;
-    let ((camera_frame, camera_frame_fetch_ms), (screen_frame, screen_frame_fetch_ms)) = tokio::join!(
-        async {
-            let started_at = Instant::now();
-            (
-                preview_camera_latest_frame(state).await,
-                started_at.elapsed().as_secs_f64() * 1000.0,
-            )
-        },
-        async {
-            let started_at = Instant::now();
-            (
-                preview_screen_latest_frame(state).await,
-                started_at.elapsed().as_secs_f64() * 1000.0,
-            )
-        }
-    );
+    let camera_fetch_started_at = Instant::now();
+    let camera_frame = live_sources.latest_camera_frame();
+    let camera_frame_fetch_ms = camera_fetch_started_at.elapsed().as_secs_f64() * 1000.0;
+    let screen_fetch_started_at = Instant::now();
+    let screen_frame = live_sources.latest_screen_frame();
+    let screen_frame_fetch_ms = screen_fetch_started_at.elapsed().as_secs_f64() * 1000.0;
     let mut timings = CompositorPublishTimings {
         source_fetch_ms: source_fetch_started_at.elapsed().as_secs_f64() * 1000.0,
         scene_snapshot_ms,
@@ -2701,7 +2787,10 @@ mod tests {
             });
         }
 
-        let result = publish_compositor_frame(&state, 7, 8, 4, Some(&mut gpu), true).await;
+        let mut live_sources = CompositorLiveSources::default();
+        let result =
+            publish_compositor_frame(&state, 7, 8, 4, &mut live_sources, Some(&mut gpu), true)
+                .await;
         if result.compositor_backend != CompositorBackend::Metal {
             eprintln!("skipping: Metal compositor did not render this frame");
             return;
@@ -2756,7 +2845,10 @@ mod tests {
             });
         }
 
-        let result = publish_compositor_frame(&state, 7, 8, 4, Some(&mut gpu), false).await;
+        let mut live_sources = CompositorLiveSources::default();
+        let result =
+            publish_compositor_frame(&state, 7, 8, 4, &mut live_sources, Some(&mut gpu), false)
+                .await;
         if result.compositor_backend != CompositorBackend::Metal {
             eprintln!("skipping: Metal compositor did not render this frame");
             return;
