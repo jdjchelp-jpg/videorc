@@ -149,14 +149,25 @@ pub struct MetalSceneCompositor {
     target: Option<CachedTargetTexture>,
     target_width: usize,
     target_height: usize,
+    source_textures: Vec<Option<CachedSourceTexture>>,
 }
 
 struct CachedTargetTexture(Retained<MetalTexture>);
+
+struct CachedSourceTexture {
+    texture: Retained<MetalTexture>,
+    width: usize,
+    height: usize,
+}
 
 // SAFETY: The cached render target is owned by one compositor instance and is only used
 // sequentially by the compositor loop. Metal resources are valid across threads; this
 // wrapper only allows Tokio to move the owning task between worker threads.
 unsafe impl Send for CachedTargetTexture {}
+
+// SAFETY: Source textures follow the same ownership model as the target texture: each one
+// is owned by a single compositor instance and refreshed sequentially in the render loop.
+unsafe impl Send for CachedSourceTexture {}
 
 impl MetalSceneCompositor {
     /// Build the compositor, or `None` when no Metal device / shader compile is available.
@@ -173,6 +184,7 @@ impl MetalSceneCompositor {
             target: None,
             target_width: 0,
             target_height: 0,
+            source_textures: Vec::new(),
         })
     }
 
@@ -185,16 +197,16 @@ impl MetalSceneCompositor {
         sources: &[GpuSource<'_>],
     ) -> Option<Vec<u8>> {
         self.ensure_target_texture(out_width, out_height)?;
-        let target = self.target.as_ref()?;
         let command_buffer = self.queue.commandBuffer()?;
         let encoder = {
+            let target = self.target.as_ref()?;
             let pass = clear_pass(&target.0, background);
             command_buffer.renderCommandEncoderWithDescriptor(&pass)?
         };
         encoder.setRenderPipelineState(&self.pipeline);
         unsafe { encoder.setFragmentSamplerState_atIndex(Some(&self.sampler), 0) };
-        for source in sources {
-            let texture = upload_texture(&self.device, source)?;
+        self.source_textures.truncate(sources.len());
+        for (source_index, source) in sources.iter().enumerate() {
             let vertices = quad_vertices(source.dest);
             let buffer = unsafe {
                 self.device.newBufferWithBytes_length_options(
@@ -208,9 +220,10 @@ impl MetalSceneCompositor {
                 mirror: f32::from(u8::from(source.mirror)),
                 circle: f32::from(u8::from(source.circle)),
             };
+            let texture = self.ensure_source_texture(source_index, source)?;
             unsafe {
                 encoder.setVertexBuffer_offset_atIndex(Some(&buffer), 0, 0);
-                encoder.setFragmentTexture_atIndex(Some(&texture), 0);
+                encoder.setFragmentTexture_atIndex(Some(texture), 0);
                 encoder.setFragmentBytes_length_atIndex(
                     NonNull::new(std::ptr::addr_of!(params) as *mut c_void)?,
                     std::mem::size_of::<FragParams>(),
@@ -222,6 +235,7 @@ impl MetalSceneCompositor {
         encoder.endEncoding();
         command_buffer.commit();
         command_buffer.waitUntilCompleted();
+        let target = self.target.as_ref()?;
         Some(read_texture_bgra(&target.0, out_width, out_height))
     }
 
@@ -253,11 +267,53 @@ impl MetalSceneCompositor {
         Some(())
     }
 
+    fn ensure_source_texture(
+        &mut self,
+        index: usize,
+        source: &GpuSource<'_>,
+    ) -> Option<&MetalTexture> {
+        if self.source_textures.len() <= index {
+            self.source_textures.resize_with(index + 1, || None);
+        }
+        let needs_texture = match self.source_textures[index].as_ref() {
+            Some(cached) => cached.width != source.width || cached.height != source.height,
+            None => true,
+        };
+        if needs_texture {
+            self.source_textures[index] = Some(CachedSourceTexture {
+                texture: make_texture(
+                    &self.device,
+                    source.width,
+                    source.height,
+                    MTLTextureUsage::ShaderRead,
+                )?,
+                width: source.width,
+                height: source.height,
+            });
+        }
+
+        let cached = self.source_textures[index].as_ref()?;
+        upload_bgra_to_texture(&cached.texture, source)?;
+        Some(&cached.texture)
+    }
+
     #[cfg(test)]
     fn cached_target_size(&self) -> Option<(usize, usize)> {
         self.target
             .as_ref()
             .map(|_| (self.target_width, self.target_height))
+    }
+
+    #[cfg(test)]
+    fn cached_source_texture_sizes(&self) -> Vec<Option<(usize, usize)>> {
+        self.source_textures
+            .iter()
+            .map(|cached| {
+                cached
+                    .as_ref()
+                    .map(|texture| (texture.width, texture.height))
+            })
+            .collect()
     }
 }
 
@@ -472,13 +528,7 @@ fn build_sampler(device: &MetalDevice) -> Option<Retained<ProtocolObject<dyn MTL
     device.newSamplerStateWithDescriptor(&descriptor)
 }
 
-fn upload_texture(device: &MetalDevice, source: &GpuSource<'_>) -> Option<Retained<MetalTexture>> {
-    let texture = make_texture(
-        device,
-        source.width,
-        source.height,
-        MTLTextureUsage::ShaderRead,
-    )?;
+fn upload_bgra_to_texture(texture: &MetalTexture, source: &GpuSource<'_>) -> Option<()> {
     let region = MTLRegion {
         origin: MTLOrigin { x: 0, y: 0, z: 0 },
         size: MTLSize {
@@ -495,7 +545,7 @@ fn upload_texture(device: &MetalDevice, source: &GpuSource<'_>) -> Option<Retain
             source.width * 4,
         );
     }
-    Some(texture)
+    Some(())
 }
 
 /// Two triangles (6 vertices) covering `dest` = (x, y, w, h) in top-left-origin [0,1]
@@ -613,6 +663,31 @@ mod tests {
         assert_eq!(compositor.cached_target_size(), Some((16, 16)));
         compositor.compose_yuv420p(32, 16, &sources).unwrap();
         assert_eq!(compositor.cached_target_size(), Some((32, 16)));
+    }
+
+    #[test]
+    fn metal_scene_compositor_reuses_same_size_source_textures_or_skips() {
+        let Some(mut compositor) = MetalSceneCompositor::new() else {
+            eprintln!("skipping: no Metal device available in this environment");
+            return;
+        };
+        let small = vec![255u8; 8 * 8 * 4];
+        let wide = vec![128u8; 16 * 8 * 4];
+        let sources = [full_frame(&small, 8, 8, false, false, [0.0; 4])];
+
+        compositor.compose_yuv420p(16, 16, &sources).unwrap();
+        assert_eq!(compositor.cached_source_texture_sizes(), vec![Some((8, 8))]);
+        compositor.compose_yuv420p(16, 16, &sources).unwrap();
+        assert_eq!(compositor.cached_source_texture_sizes(), vec![Some((8, 8))]);
+
+        let resized_sources = [full_frame(&wide, 16, 8, false, false, [0.0; 4])];
+        compositor
+            .compose_yuv420p(16, 16, &resized_sources)
+            .unwrap();
+        assert_eq!(
+            compositor.cached_source_texture_sizes(),
+            vec![Some((16, 8))]
+        );
     }
 
     fn full_frame(

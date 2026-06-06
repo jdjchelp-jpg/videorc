@@ -16,7 +16,7 @@ fails a "native" claim — by design.
 - `metal_compositor::composite_sources()` / `MetalSceneCompositor` — GPU composite of
   `GpuSource` layers (BGRA → texture → transformed quad → offscreen BGRA target), readback-
   tested. `MetalSceneCompositor` persists the device/queue/pipeline/sampler and reuses the
-  same-size target texture across frames; it is `Send`.
+  same-size target texture and per-source textures across frames; it is `Send`.
 - `bgra_to_yuv420p()` — full-range BT.601 conversion byte-compatible with the CPU
   compositor, so GPU frames drop straight into the existing encoder pipeline.
 - **The GPU compositor is wired into the live compositor loop** and is default-on on macOS
