@@ -1198,6 +1198,10 @@ export interface DiagnosticStats {
   previewCameraCaptureGapP95Ms?: number
   /** Max interval between AVFoundation camera sample callbacks. */
   previewCameraCaptureGapMaxMs?: number
+  /** P95 interval between AVFoundation camera sample presentation timestamps. */
+  previewCameraSamplePtsGapP95Ms?: number
+  /** Max interval between AVFoundation camera sample presentation timestamps. */
+  previewCameraSamplePtsGapMaxMs?: number
   /** P95 time spent locking the AVFoundation camera CVPixelBuffer base address. */
   previewCameraPixelBufferLockP95Ms?: number
   /** P95 time spent copying BGRA rows out of the AVFoundation camera sample. */

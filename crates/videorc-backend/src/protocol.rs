@@ -977,6 +977,12 @@ pub struct DiagnosticStats {
     /// Max interval between AVFoundation camera sample callbacks.
     #[serde(default)]
     pub preview_camera_capture_gap_max_ms: Option<f64>,
+    /// P95 interval between AVFoundation camera sample presentation timestamps.
+    #[serde(default)]
+    pub preview_camera_sample_pts_gap_p95_ms: Option<f64>,
+    /// Max interval between AVFoundation camera sample presentation timestamps.
+    #[serde(default)]
+    pub preview_camera_sample_pts_gap_max_ms: Option<f64>,
     /// P95 time spent locking the AVFoundation camera CVPixelBuffer base address.
     #[serde(default)]
     pub preview_camera_pixel_buffer_lock_p95_ms: Option<f64>,

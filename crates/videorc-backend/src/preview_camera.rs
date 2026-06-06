@@ -116,7 +116,9 @@ pub struct PreviewCameraShared {
 #[derive(Debug, Default)]
 struct CameraCaptureTimingWindow {
     last_callback_at: Option<Instant>,
+    last_sample_pts_seconds: Option<f64>,
     callback_gap_ms: Vec<f64>,
+    sample_pts_gap_ms: Vec<f64>,
     pixel_buffer_lock_ms: Vec<f64>,
     row_copy_ms: Vec<f64>,
     publish_ms: Vec<f64>,
@@ -130,6 +132,18 @@ impl CameraCaptureTimingWindow {
                 &mut self.callback_gap_ms,
                 now.duration_since(previous).as_secs_f64() * 1000.0,
             );
+        }
+    }
+
+    fn record_sample_pts(&mut self, sample_pts_seconds: Option<f64>) {
+        let Some(sample_pts_seconds) = sample_pts_seconds else {
+            return;
+        };
+        if let Some(previous) = self.last_sample_pts_seconds.replace(sample_pts_seconds) {
+            let gap_ms = (sample_pts_seconds - previous).abs() * 1000.0;
+            if gap_ms.is_finite() {
+                push_timing_sample(&mut self.sample_pts_gap_ms, gap_ms);
+            }
         }
     }
 
@@ -150,6 +164,8 @@ impl CameraCaptureTimingWindow {
         PreviewCameraCaptureTimingStats {
             capture_gap_p95_ms: percentile(&self.callback_gap_ms, 95),
             capture_gap_max_ms: max_sample(&self.callback_gap_ms),
+            sample_pts_gap_p95_ms: percentile(&self.sample_pts_gap_ms, 95),
+            sample_pts_gap_max_ms: max_sample(&self.sample_pts_gap_ms),
             pixel_buffer_lock_p95_ms: percentile(&self.pixel_buffer_lock_ms, 95),
             row_copy_p95_ms: percentile(&self.row_copy_ms, 95),
             publish_p95_ms: percentile(&self.publish_ms, 95),
@@ -1127,6 +1143,8 @@ mod macos {
         shared: &Arc<StdMutex<PreviewCameraShared>>,
     ) {
         let callback_started_at = Instant::now();
+        let sample_pts_seconds =
+            cm_time_seconds(unsafe { sample_buffer.presentation_time_stamp() });
         {
             let mut guard = shared
                 .lock()
@@ -1134,6 +1152,7 @@ mod macos {
             guard
                 .capture_timings
                 .record_callback_at(callback_started_at);
+            guard.capture_timings.record_sample_pts(sample_pts_seconds);
         }
 
         let Some(pixel_buffer) = (unsafe { sample_buffer.image_buffer() }) else {
@@ -1243,6 +1262,11 @@ mod macos {
                 frame_bytes as u64,
             );
         }
+    }
+
+    fn cm_time_seconds(time: CMTime) -> Option<f64> {
+        let seconds = unsafe { time.seconds() };
+        seconds.is_finite().then_some(seconds)
     }
 
     fn native_camera_permission() -> NativeCameraPermission {

@@ -496,6 +496,8 @@ function summarizeDiagnostics(events, snapshots, startedAt, stopRequestedAt) {
     previewCameraFrameAgeMs: maxOf(collect('previewCameraFrameAgeMs')),
     previewCameraCaptureGapP95Ms: maxOf(collect('previewCameraCaptureGapP95Ms')),
     previewCameraCaptureGapMaxMs: maxOf(collect('previewCameraCaptureGapMaxMs')),
+    previewCameraSamplePtsGapP95Ms: maxOf(collect('previewCameraSamplePtsGapP95Ms')),
+    previewCameraSamplePtsGapMaxMs: maxOf(collect('previewCameraSamplePtsGapMaxMs')),
     previewCameraPixelBufferLockP95Ms: maxOf(collect('previewCameraPixelBufferLockP95Ms')),
     previewCameraRowCopyP95Ms: maxOf(collect('previewCameraRowCopyP95Ms')),
     previewCameraPublishP95Ms: maxOf(collect('previewCameraPublishP95Ms')),
@@ -670,6 +672,7 @@ function writeBaselineReport(outputPath, { sources, previewTransport, size, diag
   lines.push(`- Source frame age (max): camera ${fmt(diagnostics.previewCameraFrameAgeMs, 0)}ms | screen ${fmt(diagnostics.previewScreenFrameAgeMs, 0)}ms`)
   lines.push(
     `- Camera capture cadence: callback gap p95 ${fmt(diagnostics.previewCameraCaptureGapP95Ms)}ms / max ${fmt(diagnostics.previewCameraCaptureGapMaxMs)}ms | ` +
+      `sample PTS gap p95 ${fmt(diagnostics.previewCameraSamplePtsGapP95Ms)}ms / max ${fmt(diagnostics.previewCameraSamplePtsGapMaxMs)}ms | ` +
       `lock ${fmt(diagnostics.previewCameraPixelBufferLockP95Ms)}ms | copy ${fmt(diagnostics.previewCameraRowCopyP95Ms)}ms | publish ${fmt(diagnostics.previewCameraPublishP95Ms)}ms | ` +
       `frame ${diagnostics.previewCameraFrameBytes} bytes`
   )
