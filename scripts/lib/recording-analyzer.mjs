@@ -33,6 +33,7 @@ export const DEFAULT_GATES = Object.freeze({
   avSyncTargetMs: 100, // A/V skew target (warn above)
   avSyncHardFailMs: 150, // A/V skew hard fail above
   frameCountTolerance: 0.02, // observed vs expected (duration × fps) frame count
+  maxDurationStretchRatio: 1.1, // container duration must not stretch far past decoded frames at intended FPS
   freezeNoiseDb: -60, // freezedetect near-identical noise floor (matches repair.rs)
   silenceDb: -50, // silencedetect dropout noise floor
   minSilenceGapMs: 20, // silence run that counts as a candidate dropout
@@ -358,6 +359,17 @@ export function evaluateGates(metrics, gates = DEFAULT_GATES) {
       )
     }
   }
+  if (
+    metrics.durationStretchRatio != null &&
+    metrics.durationStretchRatio > gates.maxDurationStretchRatio
+  ) {
+    failures.push(
+      `timestamp/duration stretch: container duration ${metrics.durationSeconds.toFixed(2)}s ` +
+        `vs ${metrics.frameDerivedDurationSeconds.toFixed(2)}s implied by ` +
+        `${metrics.observedFrames} frame(s) at ${metrics.intendedFps}fps ` +
+        `(${metrics.durationStretchRatio.toFixed(1)}x, max ${gates.maxDurationStretchRatio.toFixed(1)}x)`
+    )
+  }
 
   // Audio gaps (only when audio is expected/present).
   if (metrics.hasAudio) {
@@ -591,6 +603,16 @@ export async function analyzeRecording(filePath, options = {}) {
     intendedFps != null && durationForCount != null
       ? Math.round(intendedFps * durationForCount)
       : null
+  const frameDerivedDurationSeconds =
+    intendedFps != null && observedFrames != null && intendedFps > 0
+      ? observedFrames / intendedFps
+      : null
+  const durationStretchRatio =
+    durationForCount != null &&
+    frameDerivedDurationSeconds != null &&
+    frameDerivedDurationSeconds > 0
+      ? durationForCount / frameDerivedDurationSeconds
+      : null
 
   const metrics = {
     fileBytes,
@@ -612,6 +634,8 @@ export async function analyzeRecording(filePath, options = {}) {
     frameJitterMs: pacing.jitterMs,
     observedFrames,
     expectedFrames,
+    frameDerivedDurationSeconds,
+    durationStretchRatio,
     freezeCount: freezes.length,
     longestFreezeMs: hasVideo ? longestFreeze * 1000 : null,
     maxRepeatedFrameRun: hasVideo ? repeated.maxRun : null,
@@ -686,6 +710,9 @@ export function renderMarkdownReport(report) {
     `- FPS: intended ${fmt(m.intendedFps, 2)} | avg ${fmt(m.avgFps, 2)} | nominal ${fmt(m.nominalFps, 2)} | observed ${fmt(m.observedFps, 2)}`
   )
   lines.push(`- Frames: observed ${m.observedFrames ?? 'n/a'} | expected ~${m.expectedFrames ?? 'n/a'}`)
+  lines.push(
+    `- Duration stretch: frame-derived ${fmt(m.frameDerivedDurationSeconds, 2)}s | ratio ${fmt(m.durationStretchRatio, 2)}x`
+  )
   lines.push(
     `- Frame pacing: mean ${fmt(m.meanIntervalMs)}ms | max gap ${fmt(m.maxFrameGapMs)}ms | jitter ${fmt(m.frameJitterMs)}ms`
   )

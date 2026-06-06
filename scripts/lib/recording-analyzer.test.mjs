@@ -209,6 +209,9 @@ describe('evaluateGates', () => {
     longestSilenceMs: 0,
     silenceCount: 0,
     avSkewMs: 10,
+    durationSeconds: 3,
+    frameDerivedDurationSeconds: 3,
+    durationStretchRatio: 1,
   }
 
   it('passes a clean metrics set', () => {
@@ -233,6 +236,21 @@ describe('evaluateGates', () => {
     const v = evaluateGates({ ...clean, observedFrames: 70, expectedFrames: 90 })
     assert.equal(v.pass, false)
     assert.match(v.failures[0], /frame count 70 vs expected ~90/)
+  })
+
+  it('fails timestamp stretch when container duration outruns decoded frames', () => {
+    const observedFrames = 205
+    const frameDerivedDurationSeconds = observedFrames / 30
+    const v = evaluateGates({
+      ...clean,
+      observedFrames,
+      expectedFrames: 1166,
+      durationSeconds: 38.8,
+      frameDerivedDurationSeconds,
+      durationStretchRatio: 38.8 / frameDerivedDurationSeconds,
+    })
+    assert.equal(v.pass, false)
+    assert.ok(v.failures.some((failure) => /timestamp\/duration stretch/.test(failure)))
   })
 
   it('hard-fails A/V skew over 150ms but only warns between 100 and 150', () => {
