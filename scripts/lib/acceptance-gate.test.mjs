@@ -11,6 +11,7 @@ const cleanInput = () => ({
   diagnostics: {
     encoderBridgeRepeatedFrames: 0,
     encoderBridgeSyntheticFrames: 0,
+    encoderBridgeMetalTargetFrames: 120,
     minEncoderSpeed: 1.0,
     micDroppedFrames: 0,
     minMicCaptureCoverage: 1.0,
@@ -75,6 +76,18 @@ describe('evaluateAcceptance', () => {
     assert.equal(v.pass, false)
     assert.match(v.failures.join(' '), /expected Metal backend/)
     assert.match(v.failures.join(' '), /12 CPU fallback frame/)
+  })
+
+  it('fails the strict OBS compositor gate when no Metal target reaches the bridge', () => {
+    const input = cleanInput()
+    input.requireGpuCompositor = true
+    input.diagnostics.compositorBackend = 'metal'
+    input.diagnostics.compositorCpuFallbackFrames = 0
+    input.diagnostics.encoderBridgeMetalTargetFrames = 0
+    const v = evaluateAcceptance(input)
+
+    assert.equal(v.pass, false)
+    assert.match(v.failures.join(' '), /IOSurface-backed Metal target frames/)
   })
 
   it('fails on duplicate frames re-fed to the encoder when final-file proof is unavailable', () => {

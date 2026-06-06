@@ -69,6 +69,11 @@ export function evaluateAcceptance(input, gates = DEFAULT_ACCEPTANCE_GATES) {
   if (input.requireGpuCompositor && (d.compositorCpuFallbackFrames ?? 0) > 0) {
     failures.push(`compositor: ${d.compositorCpuFallbackFrames} CPU fallback frame(s) rendered during session`)
   }
+  if (input.requireGpuCompositor && (d.encoderBridgeMetalTargetFrames ?? 0) <= 0) {
+    failures.push(
+      'recording: expected encoder bridge to observe IOSurface-backed Metal target frames, got none'
+    )
+  }
 
   // 3. Encoder progress speed is useful live telemetry, but VideoToolbox can report
   // cumulative progress stalls while the decoded artifact is clean. Keep it hard only

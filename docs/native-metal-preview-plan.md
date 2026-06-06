@@ -102,6 +102,10 @@ fails a "native" claim — by design.
   IOSurface-backed Metal target available. The recording FIFO bridge still copies YUV
   bytes into FFmpeg, but its diagnostics now count `encoderBridgeMetalTargetFrames`, so
   smokes can prove when a future VideoToolbox zero-copy path had a Metal target to adopt.
+- The real-source acceptance gate now fails GPU-required runs when
+  `encoderBridgeMetalTargetFrames` stays at 0, preventing a session from passing on a
+  generic Metal compositor label while the recording bridge never saw an IOSurface-backed
+  target candidate.
 - While a preview surface is live, the compositor now emits lightweight per-frame progress
   status for the presenter path instead of making proof/native surface presents wait for
   the two-second diagnostics window.
