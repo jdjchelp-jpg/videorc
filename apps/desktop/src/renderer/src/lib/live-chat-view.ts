@@ -95,3 +95,33 @@ export function nextUnreadCount(current: number, paused: boolean, newMessages: n
 export function shouldAutoscroll(paused: boolean): boolean {
   return !paused
 }
+
+/** Max rows rendered in the feed at once (windowed/virtualized tail). */
+export const MAX_RENDERED_LIVE_CHAT_MESSAGES = 200
+
+/**
+ * Apply a batch of incoming messages in a single pass (event batching): dedupe against the
+ * buffer and within the batch, sort + bound once. One state update for many messages.
+ */
+export function applyLiveChatMessages(
+  snapshot: LiveChatSnapshot,
+  incoming: LiveChatMessage[],
+): LiveChatSnapshot {
+  if (incoming.length === 0) return snapshot
+  const seen = new Set(snapshot.messages.map((message) => message.id))
+  const fresh: LiveChatMessage[] = []
+  for (const message of incoming) {
+    if (!seen.has(message.id)) {
+      seen.add(message.id)
+      fresh.push(message)
+    }
+  }
+  if (fresh.length === 0) return snapshot
+  const messages = boundMessages(sortMessagesChronological([...snapshot.messages, ...fresh]))
+  return { ...snapshot, messages, updatedAt: fresh[fresh.length - 1].receivedAt }
+}
+
+/** The most-recent `max` messages — the rendered window for a virtualized list. */
+export function visibleMessages(messages: LiveChatMessage[], max: number): LiveChatMessage[] {
+  return messages.length > max ? messages.slice(messages.length - max) : messages
+}

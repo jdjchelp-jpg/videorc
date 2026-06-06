@@ -13,9 +13,11 @@ import { Button } from '@/components/ui/button'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import {
   LIVE_CHAT_PLATFORMS,
+  MAX_RENDERED_LIVE_CHAT_MESSAGES,
   filterMessagesByPlatform,
   nextUnreadCount,
   shouldAutoscroll,
+  visibleMessages,
 } from '@/lib/live-chat-view'
 import { cn } from '@/lib/utils'
 
@@ -201,7 +203,9 @@ export function LiveChatPanel({
           className="flex h-full max-h-[28rem] min-h-[8rem] flex-col gap-0.5 overflow-y-auto rounded-md border bg-card/40 p-1.5"
         >
           {hasMessages ? (
-            messages.map((message) => <MessageRow key={message.id} message={message} />)
+            visibleMessages(messages, MAX_RENDERED_LIVE_CHAT_MESSAGES).map((message) => (
+              <MessageRow key={message.id} message={message} />
+            ))
           ) : (
             <div className="flex h-full items-center justify-center px-4 text-center text-xs text-muted-foreground">
               {hasProviders

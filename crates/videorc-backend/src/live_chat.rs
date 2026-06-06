@@ -334,6 +334,22 @@ pub enum IngestOutcome {
     Duplicate,
 }
 
+/// Point-in-time diagnostics for the active chat session (slice 9): per-provider connection
+/// state + last error (carried on the provider rows) plus session counters.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveChatDiagnostics {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    pub providers: Vec<LiveChatProviderState>,
+    pub messages_received: u64,
+    pub duplicates_skipped: u64,
+    pub messages_trimmed: u64,
+    pub reconnect_count: u64,
+    pub buffered: u64,
+    pub unread_count: u64,
+}
+
 /// Owns the active chat session's provider rows, a bounded + de-duplicated message buffer,
 /// connector task handles, and lightweight diagnostics counters.
 ///
@@ -353,6 +369,8 @@ pub struct LiveChatCoordinator {
     /// Diagnostics (surfaced in slice 9; counted from the start so the cap is testable now).
     trimmed_count: u64,
     duplicates_skipped: u64,
+    messages_received: u64,
+    reconnect_count: u64,
     /// Running connector tasks, aborted on stop/restart.
     tasks: Vec<JoinHandle<()>>,
 }
@@ -374,6 +392,8 @@ impl LiveChatCoordinator {
             max_messages: max_messages.max(1),
             trimmed_count: 0,
             duplicates_skipped: 0,
+            messages_received: 0,
+            reconnect_count: 0,
             tasks: Vec::new(),
         }
     }
@@ -414,6 +434,8 @@ impl LiveChatCoordinator {
         self.unread_count = 0;
         self.trimmed_count = 0;
         self.duplicates_skipped = 0;
+        self.messages_received = 0;
+        self.reconnect_count = 0;
     }
 
     /// Abort connector tasks and mark every connected provider `ended`. The transcript is
@@ -453,6 +475,7 @@ impl LiveChatCoordinator {
         self.seen.insert(message.id.clone());
         self.messages.push_back(message);
         self.unread_count += 1;
+        self.messages_received += 1;
         while self.messages.len() > self.max_messages {
             match self.messages.pop_front() {
                 Some(trimmed) => {
@@ -473,12 +496,22 @@ impl LiveChatCoordinator {
         message: &str,
         now: &str,
     ) {
+        if connection == LiveChatProviderConnectionState::Reconnecting {
+            self.reconnect_count += 1;
+        }
         if let Some(provider) = self.providers.iter_mut().find(|p| p.platform == platform) {
             provider.state = connection;
             provider.message = message.to_string();
-            if connection == LiveChatProviderConnectionState::Connected {
-                provider.last_connected_at = Some(now.to_string());
-                provider.last_error = None;
+            match connection {
+                LiveChatProviderConnectionState::Connected => {
+                    provider.last_connected_at = Some(now.to_string());
+                    provider.last_error = None;
+                }
+                LiveChatProviderConnectionState::Failed
+                | LiveChatProviderConnectionState::Reconnecting => {
+                    provider.last_error = Some(message.to_string());
+                }
+                _ => {}
             }
         }
     }
@@ -500,6 +533,19 @@ impl LiveChatCoordinator {
             messages: self.messages.iter().cloned().collect(),
             unread_count: self.unread_count,
             updated_at,
+        }
+    }
+
+    pub fn diagnostics(&self) -> LiveChatDiagnostics {
+        LiveChatDiagnostics {
+            session_id: self.session_id.clone(),
+            providers: self.providers.clone(),
+            messages_received: self.messages_received,
+            duplicates_skipped: self.duplicates_skipped,
+            messages_trimmed: self.trimmed_count,
+            reconnect_count: self.reconnect_count,
+            buffered: self.messages.len() as u64,
+            unread_count: self.unread_count,
         }
     }
 }
@@ -637,6 +683,11 @@ pub async fn current_status(state: &AppState) -> LiveChatSnapshot {
     initial_chat_snapshot(&accounts, now)
 }
 
+/// Current live-chat diagnostics for the `liveChat.diagnostics` command.
+pub async fn current_diagnostics(state: &AppState) -> LiveChatDiagnostics {
+    state.live_chat.lock().await.diagnostics()
+}
+
 /// Lock the coordinator, ingest one message, and emit it to the renderer if it was new.
 pub(crate) async fn deliver_message(state: &AppState, message: LiveChatMessage) {
     let outcome = {
@@ -757,6 +808,33 @@ mod tests {
             last_error: None,
             capabilities: Vec::new(),
         }
+    }
+
+    #[test]
+    fn diagnostics_report_counters_and_provider_errors() {
+        let mut coordinator = LiveChatCoordinator::new(10);
+        coordinator.start_session(
+            "s1".to_string(),
+            vec![provider_row(StreamPlatform::Youtube)],
+        );
+        coordinator.ingest(fake_message("s1", StreamPlatform::Youtube, 0));
+        coordinator.ingest(fake_message("s1", StreamPlatform::Youtube, 1));
+        coordinator.ingest(fake_message("s1", StreamPlatform::Youtube, 0)); // duplicate
+        coordinator.set_provider_status(
+            StreamPlatform::Youtube,
+            LiveChatProviderConnectionState::Reconnecting,
+            "Reconnecting…",
+            "now",
+        );
+        let diagnostics = coordinator.diagnostics();
+        assert_eq!(diagnostics.messages_received, 2);
+        assert_eq!(diagnostics.duplicates_skipped, 1);
+        assert_eq!(diagnostics.reconnect_count, 1);
+        assert_eq!(diagnostics.buffered, 2);
+        assert_eq!(
+            diagnostics.providers[0].last_error.as_deref(),
+            Some("Reconnecting…")
+        );
     }
 
     #[test]

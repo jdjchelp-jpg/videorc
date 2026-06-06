@@ -4,12 +4,14 @@ import type { LiveChatMessage, LiveChatProviderState, StreamPlatform } from '@/l
 import {
   applyLiveChatCleared,
   applyLiveChatMessage,
+  applyLiveChatMessages,
   applyLiveChatProviderStatus,
   emptyLiveChatSnapshot,
   filterMessagesByPlatform,
   nextUnreadCount,
   shouldAutoscroll,
   sortMessagesChronological,
+  visibleMessages,
 } from './live-chat-view'
 
 function message(
@@ -98,5 +100,24 @@ describe('live-chat-view', () => {
     expect(nextUnreadCount(2, true, 3)).toBe(5)
     expect(shouldAutoscroll(false)).toBe(true)
     expect(shouldAutoscroll(true)).toBe(false)
+  })
+
+  it('applies a batch of messages in one pass, deduped and ordered', () => {
+    let snapshot = emptyLiveChatSnapshot('now')
+    snapshot = applyLiveChatMessage(snapshot, message('a', 'youtube', '2026-06-06T10:00:02Z'))
+    snapshot = applyLiveChatMessages(snapshot, [
+      message('b', 'twitch', '2026-06-06T10:00:01Z'),
+      message('a', 'youtube', '2026-06-06T10:00:02Z'),
+      message('c', 'twitch', '2026-06-06T10:00:03Z'),
+    ])
+    expect(snapshot.messages.map((m) => m.id)).toEqual(['b', 'a', 'c'])
+  })
+
+  it('windows the rendered tail to the most recent messages', () => {
+    const messages = Array.from({ length: 5 }, (_, index) =>
+      message(`m${index}`, 'youtube', `2026-06-06T10:00:0${index}Z`),
+    )
+    expect(visibleMessages(messages, 2).map((m) => m.id)).toEqual(['m3', 'm4'])
+    expect(visibleMessages(messages, 10)).toHaveLength(5)
   })
 })

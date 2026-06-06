@@ -1552,6 +1552,9 @@ async fn handle_text_message(state: &AppState, text: &str) -> ServerResponse {
             }
         }
         "liveChat.stop" => ServerResponse::ok(command.id, live_chat::stop_live_chat(state).await),
+        "liveChat.diagnostics" => {
+            ServerResponse::ok(command.id, live_chat::current_diagnostics(state).await)
+        }
         "liveChat.clearLocal" => {
             ServerResponse::ok(command.id, live_chat::clear_local_live_chat(state).await)
         }
