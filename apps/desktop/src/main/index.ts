@@ -1194,11 +1194,17 @@ function logBackend(level: BackendLogEvent['level'], message: string): void {
 
 function sendToWindows(channel: string, ...args: unknown[]): void {
   for (const window of BrowserWindow.getAllWindows()) {
+    if (window === nativePreviewSurfaceWindow) {
+      continue
+    }
     if (window.isDestroyed() || window.webContents.isDestroyed()) {
       continue
     }
 
     try {
+      if (window.webContents.mainFrame.isDestroyed()) {
+        continue
+      }
       window.webContents.send(channel, ...args)
     } catch {
       // The renderer can be disposed between the destroyed check and send during app shutdown.

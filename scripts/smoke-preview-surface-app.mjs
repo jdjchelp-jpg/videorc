@@ -7,6 +7,7 @@ import { connectBackend, request } from './smoke-recording-session.mjs'
 
 const repoRoot = resolve(import.meta.dirname, '..')
 const timeoutMs = Number(process.env.VIDEORC_SMOKE_TIMEOUT_MS ?? 100000)
+const launchAttempts = Number(process.env.VIDEORC_PREVIEW_SURFACE_LAUNCH_ATTEMPTS ?? 2)
 const measurementMs = Number(process.env.VIDEORC_PREVIEW_SURFACE_SAMPLE_MS ?? 3000)
 const resizedMeasurementMs = Number(
   process.env.VIDEORC_PREVIEW_SURFACE_RESIZE_SAMPLE_MS ?? Math.min(measurementMs, 3000)
@@ -27,7 +28,7 @@ let appProcess
 let stopping = false
 
 try {
-  const { backend, smoke } = await launchAndReadConnections()
+  const { backend, smoke } = await launchAndReadConnectionsWithRetry()
   await runPreviewSurfaceSmoke(backend, smoke)
 } finally {
   await stopApp()
@@ -337,6 +338,28 @@ function launchAndReadConnections() {
   })
 }
 
+async function launchAndReadConnectionsWithRetry() {
+  let lastError = null
+  const attempts = Math.max(1, Math.floor(launchAttempts))
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await launchAndReadConnections()
+    } catch (error) {
+      lastError = error
+      await stopApp()
+      appProcess = null
+      if (attempt >= attempts) {
+        throw error
+      }
+      console.warn(
+        `Preview surface smoke launch attempt ${attempt}/${attempts} failed before connections were ready: ${error.message}`
+      )
+      await sleep(1000)
+    }
+  }
+  throw lastError ?? new Error('Preview surface smoke failed before launch.')
+}
+
 function handleAppOutput(text, connections, maybeResolve) {
   for (const line of text.split(/\r?\n/)) {
     if (line.trim() && !stopping) {
@@ -363,18 +386,24 @@ function handleAppOutput(text, connections, maybeResolve) {
 function stopApp() {
   return new Promise((resolveStop) => {
     if (!appProcess?.pid || appProcess.killed) {
+      appProcess = null
+      stopping = false
       resolveStop()
       return
     }
 
     const timer = setTimeout(() => {
       killApp('SIGKILL')
+      appProcess = null
+      stopping = false
       resolveStop()
     }, 5000)
 
     stopping = true
     appProcess.once('exit', () => {
       clearTimeout(timer)
+      appProcess = null
+      stopping = false
       resolveStop()
     })
     killApp('SIGTERM')
