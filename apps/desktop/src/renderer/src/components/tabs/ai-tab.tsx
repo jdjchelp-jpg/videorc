@@ -65,20 +65,23 @@ export function AiTab({
 
   if (sessions.length === 0) {
     return (
-      <PanelSection icon={Sparkle} title="AI workflow">
-        <Empty className="py-10">
+      <div className="flex flex-col gap-5">
+        <AiHeader />
+        <Empty className="rounded-xl border py-16">
           <EmptyMedia variant="icon">
             <Brain weight="duotone" />
           </EmptyMedia>
           <EmptyTitle>No sessions to analyze</EmptyTitle>
           <EmptyDescription>Record a session first, then run transcript, summary, and chapters here.</EmptyDescription>
         </Empty>
-      </PanelSection>
+      </div>
     )
   }
 
   return (
-    <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)]">
+    <div className="flex flex-col gap-5">
+      <AiHeader />
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)]">
       <div className="flex flex-col gap-4">
         <PanelSection description="Pick a recording, then run or review its AI artifacts." icon={Sparkle} title="Session">
           <Field>
@@ -132,8 +135,20 @@ export function AiTab({
           </Empty>
         )}
       </PanelSection>
+      </div>
     </div>
   )
+
+function AiHeader(): ReactElement {
+  return (
+    <div className="flex flex-col gap-1">
+      <h1 className="text-xl font-semibold tracking-tight">AI</h1>
+      <p className="max-w-2xl text-sm text-muted-foreground">
+        Turn a recording into a transcript, summary, chapters, and a publish pack.
+      </p>
+    </div>
+  )
+}
 
   function SessionActions({ session }: { session: SessionSummary }): ReactElement {
     const canRunAi = Boolean(session.status === 'completed' && (session.mp4Path || session.outputPath))
