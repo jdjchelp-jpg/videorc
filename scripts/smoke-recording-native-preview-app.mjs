@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 
 import { analyzeRecording } from './lib/recording-analyzer.mjs'
+import { summarizeNativePreviewRecordingDiagnostics } from './lib/native-preview-diagnostics.mjs'
 import { createPreviewSurfaceOutputGuard } from './lib/smoke-output-guards.mjs'
 import { analyzeStartupResolution } from './lib/startup-resolution-analyzer.mjs'
 import { connectBackend, request } from './smoke-recording-session.mjs'
@@ -25,6 +26,13 @@ const minSpeed = Number(process.env.VIDEORC_NATIVE_PREVIEW_MIN_SPEED ?? 0.98)
 const maxSkewMs = Number(process.env.VIDEORC_NATIVE_PREVIEW_MAX_AV_SKEW_MS ?? 250)
 const minPreviewFps = Number(process.env.VIDEORC_NATIVE_PREVIEW_MIN_FPS ?? 55)
 const maxPreviewIntervalP95Ms = Number(process.env.VIDEORC_NATIVE_PREVIEW_MAX_INTERVAL_P95_MS ?? 24)
+const maxPreviewInputToPresentLatencyP95Ms = Number(
+  process.env.VIDEORC_NATIVE_PREVIEW_MAX_INPUT_TO_PRESENT_P95_MS ?? 50
+)
+const maxPreviewInputToPresentLatencyP99Ms = Number(
+  process.env.VIDEORC_NATIVE_PREVIEW_MAX_INPUT_TO_PRESENT_P99_MS ?? 100
+)
+const maxPreviewCompositorFrameLag = Number(process.env.VIDEORC_NATIVE_PREVIEW_MAX_COMPOSITOR_FRAME_LAG ?? 2)
 const layoutStressUpdates = Number(process.env.VIDEORC_NATIVE_PREVIEW_LAYOUT_STRESS_UPDATES ?? 0)
 const layoutStressIntervalMs = Number(process.env.VIDEORC_NATIVE_PREVIEW_LAYOUT_STRESS_INTERVAL_MS ?? 750)
 const expectedSurfaceTransport =
@@ -56,12 +64,15 @@ try {
 async function runNativePreviewRecordingSmoke(connection, smoke) {
   const ws = await connectBackend(connection, timeoutMs)
   const samples = []
+  const previewSurfaceSamples = []
   try {
     ws.addEventListener('message', (event) => {
       try {
         const message = JSON.parse(event.data)
         if (message.event === 'diagnostics.stats') {
           samples.push({ ...message.payload, receivedAt: Date.now() })
+        } else if (message.event === 'preview.surface.status') {
+          previewSurfaceSamples.push({ ...message.payload, receivedAt: Date.now() })
         }
       } catch {
         // Ignore non-JSON websocket messages.
@@ -88,15 +99,23 @@ async function runNativePreviewRecordingSmoke(connection, smoke) {
 
     let previousSurface = surfaceBefore
     for (const scenario of scenarios) {
-      previousSurface = await runNativePreviewRecordingScenario(ws, smoke, samples, scenario, previousSurface)
+      previousSurface = await runNativePreviewRecordingScenario(
+        ws,
+        smoke,
+        samples,
+        previewSurfaceSamples,
+        scenario,
+        previousSurface
+      )
     }
   } finally {
     ws.close()
   }
 }
 
-async function runNativePreviewRecordingScenario(ws, smoke, samples, scenario, previousSurface) {
+async function runNativePreviewRecordingScenario(ws, smoke, samples, previewSurfaceSamples, scenario, previousSurface) {
   samples.length = 0
+  previewSurfaceSamples.length = 0
   const scenarioStartedAt = Date.now()
   const started = await request(ws, timeoutMs, 'session.start', sessionParams(scenario))
   if (started.state !== 'recording') {
@@ -159,7 +178,15 @@ async function runNativePreviewRecordingScenario(ws, smoke, samples, scenario, p
   assertAnalyzerReportHealthy(scenario, 'final-file', recordingReport)
   assertRecordingDurationHealthy(scenario, recordingReport, expectedDurationMs)
 
-  const stats = summarizeDiagnostics(samples, scenario.fps, scenarioStartedAt, stopRequestedAt)
+  const stats = summarizeNativePreviewRecordingDiagnostics(samples, {
+    targetFps: scenario.fps,
+    startedAt: scenarioStartedAt,
+    stopRequestedAt,
+    warmupMs,
+    expectedSurfaceTransport,
+    expectedSurfaceBacking,
+    previewSurfaceSamples
+  })
   assertStatsHealthy(scenario, stats, { startupReport, recordingReport })
   if (stats.nativePreviewSamples === 0) {
     throw new Error(
@@ -176,9 +203,10 @@ async function runNativePreviewRecordingScenario(ws, smoke, samples, scenario, p
   if (skew > maxSkewMs) {
     throw new Error(`[${scenario.label}] Audio/video duration skew ${skew.toFixed(1)}ms exceeded ${maxSkewMs}ms.`)
   }
+  const measuredCompositorLag = measurement.compositorFrameLag ?? stats.maxPreviewCompositorFrameLag
 
   console.log(
-    `Native-preview recording [${scenario.label}] OK: ${outputPath} (${size} bytes), preview ${format(measurement.measuredFps)}fps, p95 ${format(measurement.intervalP95Ms)}ms, startup repeat ${format(startupReport.metrics.maxRepeatedFrameRun, 0)}, final repeat ${format(recordingReport.metrics.maxRepeatedFrameRun, 0)}, min speed ${format(stats.minSpeed)}x, min FPS ${format(stats.minFps)}, A/V skew ${skew.toFixed(1)}ms, layout stress ${layoutStressUpdates} update(s), maintenance samples ${stats.maintenanceSamples}, duplicate samples ${stats.duplicateCaptureSamples}, max RSS ${formatBytes(stats.maxBackendRssBytes)}, max FFmpeg procs ${stats.maxActiveFfmpegProcesses}, max FFprobe procs ${stats.maxActiveFfprobeProcesses}`
+    `Native-preview recording [${scenario.label}] OK: ${outputPath} (${size} bytes), preview ${format(measurement.measuredFps)}fps, p95 ${format(measurement.intervalP95Ms)}ms, present ${format(stats.minPreviewPresentFps)}fps, source-to-present p95 ${format(stats.maxPreviewInputToPresentLatencyP95Ms)}ms/p99 ${format(stats.maxPreviewInputToPresentLatencyP99Ms)}ms, compositor lag ${format(measuredCompositorLag)} frame(s), startup repeat ${format(startupReport.metrics.maxRepeatedFrameRun, 0)}, final repeat ${format(recordingReport.metrics.maxRepeatedFrameRun, 0)}, min speed ${format(stats.minSpeed)}x, min FPS ${format(stats.minFps)}, A/V skew ${skew.toFixed(1)}ms, layout stress ${layoutStressUpdates} update(s), maintenance samples ${stats.maintenanceSamples}, duplicate samples ${stats.duplicateCaptureSamples}, max RSS ${formatBytes(stats.maxBackendRssBytes)}, max FFmpeg procs ${stats.maxActiveFfmpegProcesses}, max FFprobe procs ${stats.maxActiveFfprobeProcesses}`
   )
   return surfaceDuring
 }
@@ -424,55 +452,29 @@ function assertNativeMeasurement(measurement) {
       `Native preview p95 interval ${format(measurement.intervalP95Ms)}ms exceeded ${maxPreviewIntervalP95Ms}ms.`
     )
   }
+  if (
+    measurement.inputToPresentLatencyP95Ms != null &&
+    measurement.inputToPresentLatencyP95Ms > maxPreviewInputToPresentLatencyP95Ms
+  ) {
+    throw new Error(
+      `Native preview source-to-present p95 ${format(measurement.inputToPresentLatencyP95Ms)}ms exceeded ${format(maxPreviewInputToPresentLatencyP95Ms)}ms.`
+    )
+  }
+  if (
+    measurement.inputToPresentLatencyP99Ms != null &&
+    measurement.inputToPresentLatencyP99Ms > maxPreviewInputToPresentLatencyP99Ms
+  ) {
+    throw new Error(
+      `Native preview source-to-present p99 ${format(measurement.inputToPresentLatencyP99Ms)}ms exceeded ${format(maxPreviewInputToPresentLatencyP99Ms)}ms.`
+    )
+  }
+  if (measurement.compositorFrameLag != null && measurement.compositorFrameLag > maxPreviewCompositorFrameLag) {
+    throw new Error(
+      `Native preview compositor lag ${format(measurement.compositorFrameLag)} frame(s) exceeded ${format(maxPreviewCompositorFrameLag)}.`
+    )
+  }
   if ((measurement.blankFrames ?? 0) > 0) {
     throw new Error(`Native preview reported ${measurement.blankFrames} blank frame(s).`)
-  }
-}
-
-function summarizeDiagnostics(samples, targetFps, scenarioStartedAt, stopRequestedAt) {
-  const numeric = (value) => (typeof value === 'number' && Number.isFinite(value) ? value : null)
-  const activeSamples = samples.filter((sample) => {
-    const receivedAt = sample.receivedAt ?? 0
-    return (
-      sample.activeOutputMode === 'record' &&
-      receivedAt >= scenarioStartedAt &&
-      receivedAt <= stopRequestedAt
-    )
-  })
-  const steadySamples = activeSamples.filter((sample) => (sample.receivedAt ?? 0) - scenarioStartedAt >= warmupMs)
-  const measuredSamples = steadySamples.length ? steadySamples : activeSamples
-  const fpsValues = measuredSamples
-    .flatMap((sample) => [numeric(sample.captureFps), numeric(sample.renderFps)])
-    .filter((value) => value !== null)
-  const speedValues = measuredSamples.map((sample) => numeric(sample.encoderSpeed)).filter((value) => value !== null)
-  const backendRssValues = measuredSamples
-    .map((sample) => numeric(sample.backendRssBytes))
-    .filter((value) => value !== null)
-  const ffmpegProcessValues = measuredSamples
-    .map((sample) => numeric(sample.activeFfmpegProcesses))
-    .filter((value) => value !== null)
-  const ffprobeProcessValues = measuredSamples
-    .map((sample) => numeric(sample.activeFfprobeProcesses))
-    .filter((value) => value !== null)
-  return {
-    minFps: fpsValues.length ? Math.min(...fpsValues) : null,
-    minSpeed: speedValues.length ? Math.min(...speedValues) : null,
-    droppedFrames: Math.max(0, ...measuredSamples.map((sample) => sample.droppedFrames ?? 0)),
-    micDroppedFrames: Math.max(0, ...measuredSamples.map((sample) => sample.micDroppedFrames ?? 0)),
-    maintenanceSamples: measuredSamples.filter((sample) => sample.ffmpegMaintenanceRunning).length,
-    duplicateCaptureSamples: measuredSamples.filter(
-      (sample) => Array.isArray(sample.duplicateCaptureSources) && sample.duplicateCaptureSources.length > 0
-    ).length,
-    nativePreviewSamples: measuredSamples.filter(
-      (sample) =>
-        sample.previewTransport === expectedSurfaceTransport &&
-        sample.previewSurfaceBacking === expectedSurfaceBacking
-    ).length,
-    maxBackendRssBytes: backendRssValues.length ? Math.max(...backendRssValues) : null,
-    maxActiveFfmpegProcesses: ffmpegProcessValues.length ? Math.max(...ffmpegProcessValues) : 0,
-    maxActiveFfprobeProcesses: ffprobeProcessValues.length ? Math.max(...ffprobeProcessValues) : 0,
-    steadySamples: steadySamples.length,
-    targetFps
   }
 }
 
@@ -524,6 +526,41 @@ function assertStatsHealthy(scenario, stats, reports = {}) {
     }
     console.warn(
       `[${scenario.label}] Live diagnostics FPS dipped to ${format(stats.minFps)} below ${format(minFps)}, but decoded startup and final-file gates passed.`
+    )
+  }
+  if (stats.minPreviewPresentFps === null) {
+    throw new Error(`[${scenario.label}] No preview-present diagnostics were captured after ${warmupMs}ms warm-up.`)
+  }
+  const minPreviewPresentFps = scenario.fps * 0.9
+  if (stats.minPreviewPresentFps < minPreviewPresentFps) {
+    console.warn(
+      `[${scenario.label}] Preview compositor-present diagnostics dipped to ${format(stats.minPreviewPresentFps)} below ${format(minPreviewPresentFps)}, but direct proof-host measurement passed.`
+    )
+  }
+  if (stats.maxPreviewRenderFrameTimeP95Ms !== null && stats.maxPreviewRenderFrameTimeP95Ms > maxPreviewIntervalP95Ms) {
+    throw new Error(
+      `[${scenario.label}] Preview p95 render interval ${format(stats.maxPreviewRenderFrameTimeP95Ms)}ms exceeded ${format(maxPreviewIntervalP95Ms)}ms.`
+    )
+  }
+  if (stats.maxPreviewInputToPresentLatencyP95Ms === null) {
+    throw new Error(`[${scenario.label}] No preview source-to-present p95 diagnostics were captured after ${warmupMs}ms warm-up.`)
+  }
+  if (stats.maxPreviewInputToPresentLatencyP95Ms > maxPreviewInputToPresentLatencyP95Ms) {
+    throw new Error(
+      `[${scenario.label}] Preview source-to-present p95 ${format(stats.maxPreviewInputToPresentLatencyP95Ms)}ms exceeded ${format(maxPreviewInputToPresentLatencyP95Ms)}ms.`
+    )
+  }
+  if (stats.maxPreviewInputToPresentLatencyP99Ms === null) {
+    throw new Error(`[${scenario.label}] No preview source-to-present p99 diagnostics were captured after ${warmupMs}ms warm-up.`)
+  }
+  if (stats.maxPreviewInputToPresentLatencyP99Ms > maxPreviewInputToPresentLatencyP99Ms) {
+    throw new Error(
+      `[${scenario.label}] Preview source-to-present p99 ${format(stats.maxPreviewInputToPresentLatencyP99Ms)}ms exceeded ${format(maxPreviewInputToPresentLatencyP99Ms)}ms.`
+    )
+  }
+  if (stats.maxPreviewCompositorFrameLag !== null && stats.maxPreviewCompositorFrameLag > maxPreviewCompositorFrameLag) {
+    throw new Error(
+      `[${scenario.label}] Preview compositor lag ${format(stats.maxPreviewCompositorFrameLag)} frame(s) exceeded ${format(maxPreviewCompositorFrameLag)}.`
     )
   }
   if (stats.droppedFrames > 0) {

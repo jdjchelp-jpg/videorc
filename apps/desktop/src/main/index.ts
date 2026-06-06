@@ -949,7 +949,7 @@ async function presentNativePreviewSurfaceCompositor(status: CompositorStatus): 
   const hasScreen = nativePreviewSurfaceScene?.sources.some((source) => source.kind === 'screen' || source.kind === 'window')
   const hasCamera = nativePreviewSurfaceScene?.sources.some((source) => source.kind === 'camera')
   const presentedFrameId = finiteMetric(metrics?.presentedCompositorFrame)
-  const compositorFrameLag = finiteMetric(metrics?.compositorFrameLag)
+  const compositorFrameLag = finiteMetric(metrics?.compositorFrameLag) ?? (presentedFrameId === undefined ? undefined : 0)
   const droppedFrames = finiteMetric(metrics?.skippedCompositorFrames) ?? nativePreviewSurfaceStatus.droppedFrames ?? 0
   const inputToPresentLatencyMs = finiteMetric(metrics?.inputToPresentLatencyMs)
   const inputToPresentLatencyP50Ms = finiteMetric(metrics?.inputToPresentLatencyP50Ms)
@@ -1365,11 +1365,12 @@ async function runSmokePreviewMotionCommand(command: string, params: Record<stri
     if (!metrics) {
       throw new Error('Native preview surface did not expose metrics.')
     }
+    const presentedFrameId = finiteMetric(metrics.presentedCompositorFrame)
     nativePreviewSurfaceStatus = {
       ...nativePreviewSurfaceStatus,
       framesRendered: Number(metrics.frames ?? nativePreviewSurfaceStatus.framesRendered),
-      presentedFrameId: finiteMetric(metrics.presentedCompositorFrame),
-      compositorFrameLag: finiteMetric(metrics.compositorFrameLag),
+      presentedFrameId,
+      compositorFrameLag: finiteMetric(metrics.compositorFrameLag) ?? (presentedFrameId === undefined ? undefined : 0),
       droppedFrames: finiteMetric(metrics.skippedCompositorFrames) ?? nativePreviewSurfaceStatus.droppedFrames ?? 0,
       inputToPresentLatencyMs: finiteMetric(metrics.inputToPresentLatencyMs),
       inputToPresentLatencyP50Ms: finiteMetric(metrics.inputToPresentLatencyP50Ms),

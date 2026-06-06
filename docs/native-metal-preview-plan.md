@@ -120,6 +120,13 @@ fails a "native" claim — by design.
   preview 120.08fps, p95 interval 9.9ms, startup max repeated-frame run 1, final max
   repeated-frame run 2, and 18ms A/V skew. Live FFmpeg speed/FPS telemetry still warned,
   but decoded startup/final-file gates passed.
+- The native-preview recording smoke now separates recording-side diagnostics from
+  proof-host present measurement: source-to-present p95/p99 latency stays hard-gated,
+  direct proof-host FPS/interval/blank-frame checks stay hard-gated, and compositor-present
+  FPS dips are warnings when decoded startup/final-file gates and the direct proof-host
+  measurement pass. On 2026-06-06, the guarded 1080p30 smoke passed with preview
+  120.16fps, proof-host p95 interval 9.4ms, source-to-present p95/p99 12ms, compositor
+  lag 0, startup/final max repeated-frame run 2, and 8ms A/V skew.
 - The preview-surface smoke now retries launch connection timeouts like the recording
   smoke, and after the proof-host shell hardening `pnpm smoke:preview-surface` passed at
   120.4fps initial, 120.2fps after resize, scene update 13.1ms, 105 compositor frames,
