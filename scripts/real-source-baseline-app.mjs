@@ -49,6 +49,7 @@ const config = {
   warmupMs: Number(process.env.VIDEORC_BASELINE_WARMUP_MS ?? 8000),
   ffmpegPath: process.env.VIDEORC_SMOKE_FFMPEG_PATH ?? 'ffmpeg',
   ffprobePath: process.env.VIDEORC_SMOKE_FFPROBE_PATH ?? siblingFfprobe(process.env.VIDEORC_SMOKE_FFMPEG_PATH) ?? 'ffprobe',
+  bridgeVideoOutput: process.env.VIDEORC_ENCODER_BRIDGE_VIDEO_OUTPUT ?? 'raw-yuv420p',
   outputDirectory: resolve(
     process.env.VIDEORC_SMOKE_OUTPUT_DIR ?? join(tmpdir(), `videorc-real-source-baseline-${Date.now()}`)
   ),
@@ -85,6 +86,7 @@ async function main() {
     env: {
       VIDEORC_SMOKE_OUTPUT_DIR: config.outputDirectory,
       VIDEORC_NATIVE_PREVIEW_SURFACE: '1',
+      VIDEORC_ENCODER_BRIDGE_VIDEO_OUTPUT: config.bridgeVideoOutput,
     },
     onLine: (line) => console.log(line),
   })
@@ -354,6 +356,14 @@ function summarizeDiagnostics(events, snapshots, startedAt, stopRequestedAt) {
     encoderBridgeSyntheticFrames: maxOf(measured.map((s) => s.encoderBridgeSyntheticFrames ?? 0)) ?? 0,
     encoderBridgeSourceAgeMs: maxOf(collect('encoderBridgeSourceAgeMs')),
     encoderBridgeMetalTargetFrames: maxOf(measured.map((s) => s.encoderBridgeMetalTargetFrames ?? 0)) ?? 0,
+    encoderBridgeRawVideoCopiedFrames:
+      maxOf(measured.map((s) => s.encoderBridgeRawVideoCopiedFrames ?? 0)) ?? 0,
+    encoderBridgeMetalTargetCopiedFrames:
+      maxOf(measured.map((s) => s.encoderBridgeMetalTargetCopiedFrames ?? 0)) ?? 0,
+    encoderBridgeMetalTargetHandleFrames:
+      maxOf(measured.map((s) => s.encoderBridgeMetalTargetHandleFrames ?? 0)) ?? 0,
+    encoderBridgeZeroCopyFrames:
+      maxOf(measured.map((s) => s.encoderBridgeZeroCopyFrames ?? 0)) ?? 0,
     encoderBridgeVideoToolboxProbeFrames:
       maxOf(measured.map((s) => s.encoderBridgeVideoToolboxProbeFrames ?? 0)) ?? 0,
     encoderBridgeVideoToolboxProbeBytes:
@@ -422,6 +432,7 @@ function writeBaselineReport(outputPath, { sources, previewTransport, size, diag
   lines.push(`- Platform: ${process.platform}`)
   lines.push(`- Recording: \`${outputPath}\` (${(size / (1024 * 1024)).toFixed(1)} MiB)`)
   lines.push(`- Output: ${config.width}×${config.height} @ ${config.fps}fps, ${config.bitrateKbps}kbps, ${(config.recordingMs / 1000).toFixed(0)}s`)
+  lines.push(`- Encoder bridge video output: \`${config.bridgeVideoOutput}\``)
   lines.push('')
   lines.push('## Selected real sources')
   lines.push('')
@@ -498,7 +509,7 @@ function writeBaselineReport(outputPath, { sources, previewTransport, size, diag
       (diagnostics.compositorFallbackReason ? ` | reason: ${diagnostics.compositorFallbackReason}` : '')
   )
   lines.push(`- Encoder: min speed ${fmt(diagnostics.minEncoderSpeed, 2)}x | dropped ${diagnostics.droppedFrames}`)
-  lines.push(`- Recording bridge — repeated-fed ${diagnostics.encoderBridgeRepeatedFrames} | synthetic-filler ${diagnostics.encoderBridgeSyntheticFrames} | source→encode age max ${fmt(diagnostics.encoderBridgeSourceAgeMs, 0)}ms | Metal targets ${diagnostics.encoderBridgeMetalTargetFrames} | VT output ${diagnostics.encoderBridgeVideoToolboxOutputFrames} (${diagnostics.encoderBridgeVideoToolboxOutputBytes} bytes, ${diagnostics.encoderBridgeVideoToolboxOutputEncodeMs}ms max encode) | VT probe ${diagnostics.encoderBridgeVideoToolboxProbeFrames} (${diagnostics.encoderBridgeVideoToolboxProbeBytes} bytes, ${diagnostics.encoderBridgeVideoToolboxProbeErrors} errors)`)
+  lines.push(`- Recording bridge — repeated-fed ${diagnostics.encoderBridgeRepeatedFrames} | synthetic-filler ${diagnostics.encoderBridgeSyntheticFrames} | source→encode age max ${fmt(diagnostics.encoderBridgeSourceAgeMs, 0)}ms | Metal targets ${diagnostics.encoderBridgeMetalTargetFrames} | Metal handles ${diagnostics.encoderBridgeMetalTargetHandleFrames} | raw copied ${diagnostics.encoderBridgeRawVideoCopiedFrames} | Metal copied ${diagnostics.encoderBridgeMetalTargetCopiedFrames} | zero-copy ${diagnostics.encoderBridgeZeroCopyFrames} | VT output ${diagnostics.encoderBridgeVideoToolboxOutputFrames} (${diagnostics.encoderBridgeVideoToolboxOutputBytes} bytes, ${diagnostics.encoderBridgeVideoToolboxOutputEncodeMs}ms max encode) | VT probe ${diagnostics.encoderBridgeVideoToolboxProbeFrames} (${diagnostics.encoderBridgeVideoToolboxProbeBytes} bytes, ${diagnostics.encoderBridgeVideoToolboxProbeErrors} errors)`)
   lines.push(
     `- Startup barrier: ${diagnostics.recordingStartupBarrierState ?? 'unknown'} | wait ${fmt(diagnostics.recordingStartupBarrierWaitMs, 0)}ms | ` +
       `first source ${fmt(diagnostics.firstSourceFrameMs, 0)}ms | full-res compositor ${fmt(diagnostics.firstFullResolutionCompositorFrameMs, 0)}ms | encoding ${fmt(diagnostics.firstEncodedFrameMs, 0)}ms`
@@ -568,6 +579,7 @@ function printSummary(report, startupReport, diagnostics, previewTransport, base
   for (const f of startupReport.verdict.failures) console.log(`  ✗ ${f}`)
   for (const w of startupReport.verdict.warnings) console.log(`  ! ${w}`)
   console.log(`Preview transport: ${previewTransport} (diagnostics saw: ${diagnostics.transports.join(', ') || 'unknown'})`)
+  console.log(`Encoder bridge video output: ${config.bridgeVideoOutput}`)
   console.log(
     `Preview backing: ${diagnostics.previewSurfaceBacking ?? 'unknown'} (saw: ${diagnostics.surfaceBackings.join(', ') || 'unknown'})`
   )
@@ -577,6 +589,9 @@ function printSummary(report, startupReport, diagnostics, previewTransport, base
   console.log(
     `Compositor backend: ${diagnostics.compositorBackend ?? 'unknown'} | CPU fallback frames ${diagnostics.compositorCpuFallbackFrames}` +
       (diagnostics.compositorFallbackReason ? ` | ${diagnostics.compositorFallbackReason}` : '')
+  )
+  console.log(
+    `Recording bridge: Metal targets ${diagnostics.encoderBridgeMetalTargetFrames} | Metal handles ${diagnostics.encoderBridgeMetalTargetHandleFrames} | raw copied ${diagnostics.encoderBridgeRawVideoCopiedFrames} | Metal copied ${diagnostics.encoderBridgeMetalTargetCopiedFrames} | zero-copy ${diagnostics.encoderBridgeZeroCopyFrames} | VT output ${diagnostics.encoderBridgeVideoToolboxOutputFrames}`
   )
   const activeOwners = (ownership ?? []).filter((item) => item.status !== 'pass')
   console.log(

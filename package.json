@@ -19,6 +19,7 @@
     "test:analyzer": "node --test scripts/lib/recording-analyzer.test.mjs",
     "test:scripts": "node --test scripts/lib/*.test.mjs",
     "baseline:real-source": "node scripts/real-source-baseline-app.mjs",
+    "baseline:real-source:videotoolbox-output": "VIDEORC_ENCODER_BRIDGE_VIDEO_OUTPUT=videotoolbox-h264 node scripts/real-source-baseline-app.mjs",
     "measure:av-sync": "node scripts/measure-av-sync.mjs",
     "smoke:dev": "node scripts/smoke-dev-app.mjs",
     "smoke:sources": "node scripts/smoke-source-reconciliation.mjs",

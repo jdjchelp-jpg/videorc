@@ -343,6 +343,12 @@ fails a "native" claim — by design.
 - Real-source baseline ownership and acceptance now compute the native-preview claim from
   both reported transport and `CAMetalLayer` backing, so `native-surface` alone cannot
   make proof/fallback diagnostics look OBS-native. `pnpm test:scripts` covers the helper.
+- The real-source baseline now has a named VideoToolbox-output command,
+  `pnpm baseline:real-source:videotoolbox-output`, and its console/markdown report prints
+  the encoder bridge output mode plus retained-handle, raw-copied, Metal-copied, zero-copy,
+  and VideoToolbox-output frame counts. This makes the next real-source run actionable
+  against the strict zero-copy gate instead of only saying that native preview parity
+  failed.
 
 ## What remains (on-device only)
 
