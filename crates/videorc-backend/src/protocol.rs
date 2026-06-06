@@ -927,6 +927,14 @@ pub struct DiagnosticStats {
     /// store.
     #[serde(default)]
     pub compositor_frame_store_publish_p95_ms: Option<f64>,
+    /// P95 wall-clock interval between compositor ticks. High values mean the render
+    /// task is waking late even if the measured render work is cheap.
+    #[serde(default)]
+    pub compositor_tick_gap_p95_ms: Option<f64>,
+    /// Max wall-clock interval between compositor ticks in the latest diagnostics
+    /// window.
+    #[serde(default)]
+    pub compositor_tick_gap_max_ms: Option<f64>,
     /// P95 wall time spent refreshing cached live source handles outside the measured
     /// render block.
     #[serde(default)]

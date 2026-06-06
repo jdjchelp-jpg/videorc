@@ -826,6 +826,7 @@ async fn run_synthetic_compositor_loop(
     let mut gpu_command_wait_times_ms = Vec::with_capacity(128);
     let mut gpu_total_times_ms = Vec::with_capacity(128);
     let mut frame_store_publish_times_ms = Vec::with_capacity(128);
+    let mut tick_gap_times_ms = Vec::with_capacity(128);
     let mut live_source_refresh_times_ms = Vec::with_capacity(16);
     let mut preview_surface_progress_times_ms = Vec::with_capacity(128);
     let mut compositor_status_progress_times_ms = Vec::with_capacity(128);
@@ -845,9 +846,11 @@ async fn run_synthetic_compositor_loop(
             _ = ticker.tick() => {
                 let ticked_at = Instant::now();
                 if let Some(previous_tick_at) = previous_tick_at {
+                    let tick_gap_ms =
+                        ticked_at.duration_since(previous_tick_at).as_secs_f64() * 1000.0;
+                    tick_gap_times_ms.push(tick_gap_ms);
                     let expected_frames =
-                        (ticked_at.duration_since(previous_tick_at).as_secs_f64() / frame_interval.as_secs_f64())
-                            .floor() as u64;
+                        (tick_gap_ms / (frame_interval.as_secs_f64() * 1000.0)).floor() as u64;
                     if expected_frames > 1 {
                         dropped_frames = dropped_frames.saturating_add(expected_frames - 1);
                     }
@@ -951,6 +954,8 @@ async fn run_synthetic_compositor_loop(
                     let (_, gpu_total_p95, _) = frame_time_percentiles(&gpu_total_times_ms);
                     let (_, frame_store_publish_p95, _) =
                         frame_time_percentiles(&frame_store_publish_times_ms);
+                    let (_, tick_gap_p95, _) = frame_time_percentiles(&tick_gap_times_ms);
+                    let tick_gap_max = frame_time_max(&tick_gap_times_ms);
                     let live_source_refresh_p95 =
                         frame_time_p95(&live_source_refresh_times_ms);
                     let preview_surface_progress_p95 =
@@ -1016,6 +1021,8 @@ async fn run_synthetic_compositor_loop(
                             gpu_command_wait_p95,
                             gpu_total_p95,
                             frame_store_publish_p95,
+                            tick_gap_p95,
+                            tick_gap_max,
                         );
                         let next = apply_compositor_outside_render_timing_stats(
                             next,
@@ -1058,6 +1065,7 @@ async fn run_synthetic_compositor_loop(
                     gpu_command_wait_times_ms.clear();
                     gpu_total_times_ms.clear();
                     frame_store_publish_times_ms.clear();
+                    tick_gap_times_ms.clear();
                     live_source_refresh_times_ms.clear();
                     preview_surface_progress_times_ms.clear();
                     compositor_status_progress_times_ms.clear();
@@ -2564,6 +2572,10 @@ fn frame_time_percentiles(values: &[f64]) -> (f64, f64, f64) {
 
 fn frame_time_p95(values: &[f64]) -> Option<f64> {
     (!values.is_empty()).then(|| frame_time_percentiles(values).1)
+}
+
+fn frame_time_max(values: &[f64]) -> f64 {
+    values.iter().copied().fold(0.0, f64::max)
 }
 
 fn percentile(sorted: &[f64], p: u32) -> f64 {

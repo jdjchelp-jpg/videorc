@@ -570,6 +570,8 @@ function summarizeDiagnostics(events, snapshots, startedAt, stopRequestedAt, opt
     compositorGpuCommandWaitP95Ms: maxOf(collect('compositorGpuCommandWaitP95Ms')),
     compositorGpuTotalP95Ms: maxOf(collect('compositorGpuTotalP95Ms')),
     compositorFrameStorePublishP95Ms: maxOf(collect('compositorFrameStorePublishP95Ms')),
+    compositorTickGapP95Ms: maxOf(collect('compositorTickGapP95Ms')),
+    compositorTickGapMaxMs: maxOf(collect('compositorTickGapMaxMs')),
     compositorLiveSourceRefreshP95Ms: maxOf(collect('compositorLiveSourceRefreshP95Ms')),
     compositorPreviewSurfaceProgressP95Ms: maxOf(collect('compositorPreviewSurfaceProgressP95Ms')),
     compositorStatusProgressP95Ms: maxOf(collect('compositorStatusProgressP95Ms')),
@@ -728,7 +730,11 @@ function writeBaselineReport(outputPath, { sources, previewTransport, size, diag
       `lock ${fmt(diagnostics.previewScreenPixelBufferLockP95Ms)}ms | copy ${fmt(diagnostics.previewScreenRowCopyP95Ms)}ms | publish ${fmt(diagnostics.previewScreenPublishP95Ms)}ms | ` +
       `frame ${diagnostics.previewScreenFrameBytes} bytes | SCK queue depth ${diagnostics.previewScreenCaptureQueueDepth}`
   )
-  lines.push(`- Compositor: repeated ${diagnostics.compositorRepeatedFrames} | dropped ${diagnostics.compositorDroppedFrames} | frame age max ${fmt(diagnostics.compositorFrameAgeMs, 0)}ms | frame time p95 ${fmt(diagnostics.compositorFrameTimeP95Ms)}ms`)
+  lines.push(
+    `- Compositor: repeated ${diagnostics.compositorRepeatedFrames} | dropped ${diagnostics.compositorDroppedFrames} | ` +
+      `frame age max ${fmt(diagnostics.compositorFrameAgeMs, 0)}ms | frame time p95 ${fmt(diagnostics.compositorFrameTimeP95Ms)}ms | ` +
+      `tick gap p95 ${fmt(diagnostics.compositorTickGapP95Ms)}ms / max ${fmt(diagnostics.compositorTickGapMaxMs)}ms`
+  )
   lines.push(
     `- Compositor breakdown p95: source fetch ${fmt(diagnostics.compositorSourceFetchP95Ms)}ms ` +
       `(scene ${fmt(diagnostics.compositorSceneSnapshotP95Ms)}ms, camera ${fmt(diagnostics.compositorCameraFrameFetchP95Ms)}ms, screen ${fmt(diagnostics.compositorScreenFrameFetchP95Ms)}ms) | ` +
@@ -912,7 +918,7 @@ function printSummary(report, startupReport, diagnostics, previewTransport, base
     `Screen capture: gap p95 ${diagnostics.previewScreenCaptureGapP95Ms ?? 'n/a'}ms / max ${diagnostics.previewScreenCaptureGapMaxMs ?? 'n/a'}ms | copy p95 ${diagnostics.previewScreenRowCopyP95Ms ?? 'n/a'}ms | publish p95 ${diagnostics.previewScreenPublishP95Ms ?? 'n/a'}ms`
   )
   console.log(
-    `Compositor outside-render: source refresh p95 ${diagnostics.compositorLiveSourceRefreshP95Ms ?? 'n/a'}ms | surface/status progress p95 ${diagnostics.compositorPreviewSurfaceProgressP95Ms ?? 'n/a'}/${diagnostics.compositorStatusProgressP95Ms ?? 'n/a'}ms`
+    `Compositor outside-render: tick gap p95/max ${diagnostics.compositorTickGapP95Ms ?? 'n/a'}/${diagnostics.compositorTickGapMaxMs ?? 'n/a'}ms | source refresh p95 ${diagnostics.compositorLiveSourceRefreshP95Ms ?? 'n/a'}ms | surface/status progress p95 ${diagnostics.compositorPreviewSurfaceProgressP95Ms ?? 'n/a'}/${diagnostics.compositorStatusProgressP95Ms ?? 'n/a'}ms`
   )
   console.log(
     `Compositor source freshness: camera misses ${diagnostics.compositorCameraSourceTryLockMisses ?? 'n/a'} / refreshes ${diagnostics.compositorCameraSourceBlockingRefreshes ?? 'n/a'} | ` +

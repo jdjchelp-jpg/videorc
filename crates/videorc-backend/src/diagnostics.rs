@@ -129,6 +129,8 @@ pub fn idle_diagnostics() -> DiagnosticStats {
         compositor_gpu_command_wait_p95_ms: None,
         compositor_gpu_total_p95_ms: None,
         compositor_frame_store_publish_p95_ms: None,
+        compositor_tick_gap_p95_ms: None,
+        compositor_tick_gap_max_ms: None,
         compositor_live_source_refresh_p95_ms: None,
         compositor_preview_surface_progress_p95_ms: None,
         compositor_status_progress_p95_ms: None,
@@ -697,6 +699,8 @@ pub fn apply_compositor_timing_stats(
     gpu_command_wait_p95_ms: f64,
     gpu_total_p95_ms: f64,
     frame_store_publish_p95_ms: f64,
+    tick_gap_p95_ms: f64,
+    tick_gap_max_ms: f64,
 ) -> DiagnosticStats {
     stats.compositor_source_fetch_p95_ms = Some(source_fetch_p95_ms);
     stats.compositor_scene_snapshot_p95_ms = Some(scene_snapshot_p95_ms);
@@ -707,6 +711,8 @@ pub fn apply_compositor_timing_stats(
     stats.compositor_gpu_command_wait_p95_ms = Some(gpu_command_wait_p95_ms);
     stats.compositor_gpu_total_p95_ms = Some(gpu_total_p95_ms);
     stats.compositor_frame_store_publish_p95_ms = Some(frame_store_publish_p95_ms);
+    stats.compositor_tick_gap_p95_ms = Some(tick_gap_p95_ms);
+    stats.compositor_tick_gap_max_ms = Some(tick_gap_max_ms);
     stats.updated_at = Utc::now().to_rfc3339();
     stats
 }
@@ -1128,6 +1134,8 @@ mod tests {
             4.9,
             7.2,
             0.1,
+            33.6,
+            72.0,
         );
 
         assert_eq!(stats.compositor_source_fetch_p95_ms, Some(46.8));
@@ -1139,6 +1147,8 @@ mod tests {
         assert_eq!(stats.compositor_gpu_command_wait_p95_ms, Some(4.9));
         assert_eq!(stats.compositor_gpu_total_p95_ms, Some(7.2));
         assert_eq!(stats.compositor_frame_store_publish_p95_ms, Some(0.1));
+        assert_eq!(stats.compositor_tick_gap_p95_ms, Some(33.6));
+        assert_eq!(stats.compositor_tick_gap_max_ms, Some(72.0));
     }
 
     #[test]

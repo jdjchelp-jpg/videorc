@@ -1169,6 +1169,10 @@ export interface DiagnosticStats {
   compositorGpuTotalP95Ms?: number
   /** P95 time spent publishing the completed compositor frame to the shared store. */
   compositorFrameStorePublishP95Ms?: number
+  /** P95 wall-clock interval between compositor ticks. */
+  compositorTickGapP95Ms?: number
+  /** Max wall-clock interval between compositor ticks in the latest diagnostics window. */
+  compositorTickGapMaxMs?: number
   /** P95 time spent refreshing cached live source handles outside the render block. */
   compositorLiveSourceRefreshP95Ms?: number
   /** P95 time spent updating preview-surface progress outside the render block. */
