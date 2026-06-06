@@ -824,6 +824,17 @@ pub struct DiagnosticStats {
     /// Frames submitted to the encoder without a CPU raw-video copy.
     #[serde(default)]
     pub encoder_bridge_zero_copy_frames: u64,
+    /// Retained Metal target frames encoded by the opt-in production-thread
+    /// VideoToolbox probe. This is not counted as zero-copy output until the raw FIFO
+    /// path is removed.
+    #[serde(default)]
+    pub encoder_bridge_video_toolbox_probe_frames: u64,
+    /// Encoded byte count copied from the opt-in VideoToolbox probe.
+    #[serde(default)]
+    pub encoder_bridge_video_toolbox_probe_bytes: u64,
+    /// Failed attempts by the opt-in VideoToolbox probe.
+    #[serde(default)]
+    pub encoder_bridge_video_toolbox_probe_errors: u64,
     pub encoder_bridge_error: Option<String>,
     /// Which encoder the active session actually requested — proves hardware vs software
     /// encode (previously unrecorded).

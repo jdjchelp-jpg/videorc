@@ -354,6 +354,12 @@ function summarizeDiagnostics(events, snapshots, startedAt, stopRequestedAt) {
     encoderBridgeSyntheticFrames: maxOf(measured.map((s) => s.encoderBridgeSyntheticFrames ?? 0)) ?? 0,
     encoderBridgeSourceAgeMs: maxOf(collect('encoderBridgeSourceAgeMs')),
     encoderBridgeMetalTargetFrames: maxOf(measured.map((s) => s.encoderBridgeMetalTargetFrames ?? 0)) ?? 0,
+    encoderBridgeVideoToolboxProbeFrames:
+      maxOf(measured.map((s) => s.encoderBridgeVideoToolboxProbeFrames ?? 0)) ?? 0,
+    encoderBridgeVideoToolboxProbeBytes:
+      maxOf(measured.map((s) => s.encoderBridgeVideoToolboxProbeBytes ?? 0)) ?? 0,
+    encoderBridgeVideoToolboxProbeErrors:
+      maxOf(measured.map((s) => s.encoderBridgeVideoToolboxProbeErrors ?? 0)) ?? 0,
     recordingStartupBarrierState: measured.map((s) => s.recordingStartupBarrierState).filter(Boolean).pop() ?? null,
     recordingStartupBarrierWaitMs: maxOf(collect('recordingStartupBarrierWaitMs')),
     recordingStartupBarrierTimeoutReason: measured.map((s) => s.recordingStartupBarrierTimeoutReason).filter(Boolean).pop() ?? null,
@@ -486,7 +492,7 @@ function writeBaselineReport(outputPath, { sources, previewTransport, size, diag
       (diagnostics.compositorFallbackReason ? ` | reason: ${diagnostics.compositorFallbackReason}` : '')
   )
   lines.push(`- Encoder: min speed ${fmt(diagnostics.minEncoderSpeed, 2)}x | dropped ${diagnostics.droppedFrames}`)
-  lines.push(`- Recording bridge — repeated-fed ${diagnostics.encoderBridgeRepeatedFrames} | synthetic-filler ${diagnostics.encoderBridgeSyntheticFrames} | source→encode age max ${fmt(diagnostics.encoderBridgeSourceAgeMs, 0)}ms | Metal targets ${diagnostics.encoderBridgeMetalTargetFrames}`)
+  lines.push(`- Recording bridge — repeated-fed ${diagnostics.encoderBridgeRepeatedFrames} | synthetic-filler ${diagnostics.encoderBridgeSyntheticFrames} | source→encode age max ${fmt(diagnostics.encoderBridgeSourceAgeMs, 0)}ms | Metal targets ${diagnostics.encoderBridgeMetalTargetFrames} | VT probe ${diagnostics.encoderBridgeVideoToolboxProbeFrames} (${diagnostics.encoderBridgeVideoToolboxProbeBytes} bytes, ${diagnostics.encoderBridgeVideoToolboxProbeErrors} errors)`)
   lines.push(
     `- Startup barrier: ${diagnostics.recordingStartupBarrierState ?? 'unknown'} | wait ${fmt(diagnostics.recordingStartupBarrierWaitMs, 0)}ms | ` +
       `first source ${fmt(diagnostics.firstSourceFrameMs, 0)}ms | full-res compositor ${fmt(diagnostics.firstFullResolutionCompositorFrameMs, 0)}ms | encoding ${fmt(diagnostics.firstEncodedFrameMs, 0)}ms`

@@ -47,7 +47,9 @@ pub struct CompositorFrameExportHandle {
 
 impl CompositorFrameExportHandle {
     #[cfg(target_os = "macos")]
-    fn metal_target(target: crate::metal_compositor::MetalCompositorTargetPixelBuffer) -> Self {
+    pub(crate) fn metal_target(
+        target: crate::metal_compositor::MetalCompositorTargetPixelBuffer,
+    ) -> Self {
         Self {
             metal_target: Some(Arc::new(target)),
         }

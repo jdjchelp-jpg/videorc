@@ -63,6 +63,12 @@ export function summarizeNativePreviewRecordingDiagnostics(
     maxEncoderBridgeMetalTargetCopiedFrames: maxOf(collectCounts('encoderBridgeMetalTargetCopiedFrames')) ?? 0,
     maxEncoderBridgeMetalTargetHandleFrames: maxOf(collectCounts('encoderBridgeMetalTargetHandleFrames')) ?? 0,
     maxEncoderBridgeZeroCopyFrames: maxOf(collectCounts('encoderBridgeZeroCopyFrames')) ?? 0,
+    maxEncoderBridgeVideoToolboxProbeFrames:
+      maxOf(collectCounts('encoderBridgeVideoToolboxProbeFrames')) ?? 0,
+    maxEncoderBridgeVideoToolboxProbeBytes:
+      maxOf(collectCounts('encoderBridgeVideoToolboxProbeBytes')) ?? 0,
+    maxEncoderBridgeVideoToolboxProbeErrors:
+      maxOf(collectCounts('encoderBridgeVideoToolboxProbeErrors')) ?? 0,
     maxCompositorCpuFallbackFrames: maxOf(collectCounts('compositorCpuFallbackFrames')) ?? 0,
     lastCompositorFallbackReason: lastString('compositorFallbackReason'),
     nativePreviewSamples: nativeDiagnosticsSamples + nativeSurfaceSamples,

@@ -134,6 +134,14 @@ fails a "native" claim — by design.
   payload bytes to Rust through a realtime H.264 session; the production recording bridge
   still needs to replace the raw-YUV FIFO copy before
   `encoderBridgeZeroCopyFrames` can grow.
+- The production recording bridge now retains the actual Metal target handle on each fed
+  compositor frame and has an opt-in sidecar VideoToolbox probe, enabled with
+  `VIDEORC_ENCODER_BRIDGE_VIDEOTOOLBOX_PROBE=1`. The sidecar encodes retained targets on
+  the bridge writer thread with CFR frame timing and reports
+  `encoderBridgeVideoToolboxProbeFrames`, `encoderBridgeVideoToolboxProbeBytes`, and
+  `encoderBridgeVideoToolboxProbeErrors` separately from
+  `encoderBridgeZeroCopyFrames`, so probe success cannot be mistaken for final zero-copy
+  output while the raw FIFO path is still active.
 - The real-source acceptance gate now fails GPU-required runs when
   `encoderBridgeMetalTargetFrames` stays at 0, preventing a session from passing on a
   generic Metal compositor label while the recording bridge never saw an IOSurface-backed
@@ -288,7 +296,8 @@ fails a "native" claim — by design.
    prefers IOSurface-backed storage and exposes a retained target `CVPixelBuffer`; feed
    that handle to the production VideoToolbox recording path, avoiding the YUV420P CPU
    readback the FIFO bridge does today. A focused probe already verifies VideoToolbox can
-   accept the retained IOSurface target; until bridge adoption lands,
+   accept the retained IOSurface target, and an opt-in bridge-side probe can encode that
+   handle on the production writer thread; until bridge adoption lands,
    `encoderBridgeMetalTargetFrames` separates "Metal target was available" from the
    current "YUV bytes were still copied into the FIFO" behavior.
 5. **Done gate:** 1080p30 and 1440p30 real screen+camera composition under the

@@ -596,7 +596,7 @@ function formatBridgeCopySummary(stats) {
     stats.maxCompositorCpuFallbackFrames > 0
       ? `${stats.maxCompositorCpuFallbackFrames}${stats.lastCompositorFallbackReason ? ` (${stats.lastCompositorFallbackReason})` : ''}`
       : '0'
-  return `Metal targets ${stats.maxEncoderBridgeMetalTargetFrames}, Metal handles ${stats.maxEncoderBridgeMetalTargetHandleFrames}, raw copied ${stats.maxEncoderBridgeRawVideoCopiedFrames}, Metal copied ${stats.maxEncoderBridgeMetalTargetCopiedFrames}, zero-copy ${stats.maxEncoderBridgeZeroCopyFrames}, CPU fallback frames ${fallbackSummary}, min speed ${format(stats.minSpeed)}x, min FPS ${format(stats.minFps)}`
+  return `Metal targets ${stats.maxEncoderBridgeMetalTargetFrames}, Metal handles ${stats.maxEncoderBridgeMetalTargetHandleFrames}, raw copied ${stats.maxEncoderBridgeRawVideoCopiedFrames}, Metal copied ${stats.maxEncoderBridgeMetalTargetCopiedFrames}, zero-copy ${stats.maxEncoderBridgeZeroCopyFrames}, VT probe ${stats.maxEncoderBridgeVideoToolboxProbeFrames} (${stats.maxEncoderBridgeVideoToolboxProbeBytes} bytes, ${stats.maxEncoderBridgeVideoToolboxProbeErrors} errors), CPU fallback frames ${fallbackSummary}, min speed ${format(stats.minSpeed)}x, min FPS ${format(stats.minFps)}`
 }
 
 function assertAnalyzerReportHealthy(scenario, name, report, context = {}) {

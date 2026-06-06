@@ -1084,6 +1084,18 @@ export interface DiagnosticStats {
   encoderBridgeSourceAgeMs?: number
   /** FIFO ticks whose copied compositor frame also exposed an IOSurface-backed Metal target. */
   encoderBridgeMetalTargetFrames: number
+  /** FIFO frames still written through raw-video FFmpeg stdin. */
+  encoderBridgeRawVideoCopiedFrames: number
+  /** Raw-video writes where the source frame had an IOSurface-backed Metal target. */
+  encoderBridgeMetalTargetCopiedFrames: number
+  /** Raw-video writes where the bridge received the retained CoreVideo handle. */
+  encoderBridgeMetalTargetHandleFrames: number
+  /** Frames submitted to the encoder without a CPU raw-video copy. */
+  encoderBridgeZeroCopyFrames: number
+  /** Opt-in production-thread VideoToolbox probe frames; not final zero-copy output. */
+  encoderBridgeVideoToolboxProbeFrames: number
+  encoderBridgeVideoToolboxProbeBytes: number
+  encoderBridgeVideoToolboxProbeErrors: number
   encoderBridgeError?: string
   /** Which encoder the active session requested — proves hardware vs software encode. */
   encodeBackend?: EncodeBackend

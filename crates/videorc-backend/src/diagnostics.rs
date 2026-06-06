@@ -90,6 +90,9 @@ pub fn idle_diagnostics() -> DiagnosticStats {
         encoder_bridge_metal_target_copied_frames: 0,
         encoder_bridge_metal_target_handle_frames: 0,
         encoder_bridge_zero_copy_frames: 0,
+        encoder_bridge_video_toolbox_probe_frames: 0,
+        encoder_bridge_video_toolbox_probe_bytes: 0,
+        encoder_bridge_video_toolbox_probe_errors: 0,
         encoder_bridge_error: None,
         encode_backend: None,
         compositor_backend: None,
@@ -345,6 +348,9 @@ pub struct EncoderBridgeDiagnosticSnapshot {
     pub metal_target_copied_frames: u64,
     pub metal_target_handle_frames: u64,
     pub zero_copy_frames: u64,
+    pub video_toolbox_probe_frames: u64,
+    pub video_toolbox_probe_bytes: u64,
+    pub video_toolbox_probe_errors: u64,
     pub error: Option<String>,
 }
 
@@ -364,6 +370,9 @@ pub fn apply_encoder_bridge_stats(
     stats.encoder_bridge_metal_target_copied_frames = bridge.metal_target_copied_frames;
     stats.encoder_bridge_metal_target_handle_frames = bridge.metal_target_handle_frames;
     stats.encoder_bridge_zero_copy_frames = bridge.zero_copy_frames;
+    stats.encoder_bridge_video_toolbox_probe_frames = bridge.video_toolbox_probe_frames;
+    stats.encoder_bridge_video_toolbox_probe_bytes = bridge.video_toolbox_probe_bytes;
+    stats.encoder_bridge_video_toolbox_probe_errors = bridge.video_toolbox_probe_errors;
     stats.encoder_bridge_error = bridge.error;
     stats.capture_fps = stats.encoder_bridge_input_fps;
     stats.dropped_frames = bridge.dropped_frames;
@@ -848,6 +857,9 @@ mod tests {
         assert_eq!(stats.encoder_bridge_metal_target_copied_frames, 0);
         assert_eq!(stats.encoder_bridge_metal_target_handle_frames, 0);
         assert_eq!(stats.encoder_bridge_zero_copy_frames, 0);
+        assert_eq!(stats.encoder_bridge_video_toolbox_probe_frames, 0);
+        assert_eq!(stats.encoder_bridge_video_toolbox_probe_bytes, 0);
+        assert_eq!(stats.encoder_bridge_video_toolbox_probe_errors, 0);
         assert_eq!(stats.encoder_bridge_error, None);
         assert_eq!(stats.compositor_backend, None);
         assert_eq!(stats.compositor_fallback_reason, None);
@@ -984,6 +996,9 @@ mod tests {
                 metal_target_copied_frames: 0,
                 metal_target_handle_frames: 0,
                 zero_copy_frames: 0,
+                video_toolbox_probe_frames: 0,
+                video_toolbox_probe_bytes: 0,
+                video_toolbox_probe_errors: 0,
                 error: None,
             },
             30,
@@ -1010,6 +1025,9 @@ mod tests {
                 metal_target_copied_frames: 24,
                 metal_target_handle_frames: 24,
                 zero_copy_frames: 0,
+                video_toolbox_probe_frames: 12,
+                video_toolbox_probe_bytes: 4096,
+                video_toolbox_probe_errors: 1,
                 error: None,
             },
             30,
@@ -1024,6 +1042,9 @@ mod tests {
         assert_eq!(lagging.encoder_bridge_metal_target_copied_frames, 24);
         assert_eq!(lagging.encoder_bridge_metal_target_handle_frames, 24);
         assert_eq!(lagging.encoder_bridge_zero_copy_frames, 0);
+        assert_eq!(lagging.encoder_bridge_video_toolbox_probe_frames, 12);
+        assert_eq!(lagging.encoder_bridge_video_toolbox_probe_bytes, 4096);
+        assert_eq!(lagging.encoder_bridge_video_toolbox_probe_errors, 1);
         assert_eq!(lagging.bottleneck, DiagnosticBottleneck::Encoder);
     }
 }
