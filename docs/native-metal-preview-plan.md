@@ -49,8 +49,9 @@ fails a "native" claim — by design.
   future live `CAMetalLayer` host can report `native-surface` / `cametal-layer` without
   being overwritten by the backend's Electron proof-surface startup status.
 - Rust preview-surface create/update/destroy now records native-host lifecycle intent through
-  a dedicated host seam. The seam returns no activation yet, so the app still reports the
-  Electron proof backing until the main-thread presenter runner is wired.
+  a dedicated host seam and returns typed host command payloads with AppKit-converted
+  bounds. The seam returns no activation yet, so the app still reports the Electron proof
+  backing until the main-thread presenter runner presents real pixels.
 - `MetalSceneCompositor` can now hand its latest cached target texture directly to the
   preview presenter, so the native runtime can present the compositor output without first
   exposing raw Metal texture types across modules or reading pixels back for preview.

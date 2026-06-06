@@ -47,6 +47,12 @@ pub enum NativePreviewHostCommandKind {
     Destroy,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NativePreviewHostCommand {
+    pub kind: NativePreviewHostCommandKind,
+    pub bounds: Option<NativePreviewHostBounds>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct NativePreviewHostActivation {
     pub transport: PreviewTransport,
@@ -56,6 +62,7 @@ pub struct NativePreviewHostActivation {
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct NativePreviewHostLifecycleUpdate {
+    pub command: Option<NativePreviewHostCommand>,
     pub activation: Option<NativePreviewHostActivation>,
 }
 
@@ -68,8 +75,15 @@ pub struct NativePreviewHostLifecycle {
 impl NativePreviewHostLifecycle {
     pub fn create(&mut self, bounds: &PreviewSurfaceBounds) -> NativePreviewHostLifecycleUpdate {
         self.last_command = Some(NativePreviewHostCommandKind::Create);
-        self.bounds = Some(NativePreviewHostBounds::from_surface_bounds(bounds));
-        NativePreviewHostLifecycleUpdate::default()
+        let bounds = NativePreviewHostBounds::from_surface_bounds(bounds);
+        self.bounds = Some(bounds);
+        NativePreviewHostLifecycleUpdate {
+            command: Some(NativePreviewHostCommand {
+                kind: NativePreviewHostCommandKind::Create,
+                bounds: Some(bounds),
+            }),
+            activation: None,
+        }
     }
 
     pub fn update_bounds(
@@ -77,14 +91,27 @@ impl NativePreviewHostLifecycle {
         bounds: &PreviewSurfaceBounds,
     ) -> NativePreviewHostLifecycleUpdate {
         self.last_command = Some(NativePreviewHostCommandKind::UpdateBounds);
-        self.bounds = Some(NativePreviewHostBounds::from_surface_bounds(bounds));
-        NativePreviewHostLifecycleUpdate::default()
+        let bounds = NativePreviewHostBounds::from_surface_bounds(bounds);
+        self.bounds = Some(bounds);
+        NativePreviewHostLifecycleUpdate {
+            command: Some(NativePreviewHostCommand {
+                kind: NativePreviewHostCommandKind::UpdateBounds,
+                bounds: Some(bounds),
+            }),
+            activation: None,
+        }
     }
 
     pub fn destroy(&mut self) -> NativePreviewHostLifecycleUpdate {
         self.last_command = Some(NativePreviewHostCommandKind::Destroy);
         self.bounds = None;
-        NativePreviewHostLifecycleUpdate::default()
+        NativePreviewHostLifecycleUpdate {
+            command: Some(NativePreviewHostCommand {
+                kind: NativePreviewHostCommandKind::Destroy,
+                bounds: None,
+            }),
+            activation: None,
+        }
     }
 
     #[cfg(test)]
@@ -290,6 +317,20 @@ mod tests {
 
         assert_eq!(create_update.activation, None);
         assert_eq!(
+            create_update.command,
+            Some(NativePreviewHostCommand {
+                kind: NativePreviewHostCommandKind::Create,
+                bounds: Some(NativePreviewHostBounds {
+                    screen_x: 10.0,
+                    screen_y: 20.0,
+                    width: 640.0,
+                    height: 360.0,
+                    scale_factor: 2.0,
+                    screen_height: Some(1000.0),
+                }),
+            })
+        );
+        assert_eq!(
             lifecycle.last_command_kind(),
             Some(NativePreviewHostCommandKind::Create)
         );
@@ -310,6 +351,20 @@ mod tests {
 
         assert_eq!(bounds_update.activation, None);
         assert_eq!(
+            bounds_update.command,
+            Some(NativePreviewHostCommand {
+                kind: NativePreviewHostCommandKind::UpdateBounds,
+                bounds: Some(NativePreviewHostBounds {
+                    screen_x: 10.0,
+                    screen_y: 20.0,
+                    width: 800.0,
+                    height: 450.0,
+                    scale_factor: 2.0,
+                    screen_height: Some(1000.0),
+                }),
+            })
+        );
+        assert_eq!(
             lifecycle.last_command_kind(),
             Some(NativePreviewHostCommandKind::UpdateBounds)
         );
@@ -323,6 +378,13 @@ mod tests {
         let destroy_update = lifecycle.destroy();
 
         assert_eq!(destroy_update.activation, None);
+        assert_eq!(
+            destroy_update.command,
+            Some(NativePreviewHostCommand {
+                kind: NativePreviewHostCommandKind::Destroy,
+                bounds: None,
+            })
+        );
         assert_eq!(
             lifecycle.last_command_kind(),
             Some(NativePreviewHostCommandKind::Destroy)
