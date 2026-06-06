@@ -108,13 +108,18 @@ function idleNativePreviewSurfaceStatus(message = 'Native preview surface is not
   }
 }
 
-function backendPreviewFrameUrl(path: '/preview/camera/live.png' | '/preview/screen/live.png'): string | undefined {
+function backendPreviewFrameUrl(
+  path: '/preview/camera/live.png' | '/preview/screen/live.png',
+  maxWidth?: number
+): string | undefined {
   if (!nativePreviewFramePollingEnabled || !backendConnection) {
     return undefined
   }
-  return `http://${backendConnection.host}:${backendConnection.port}${path}?token=${encodeURIComponent(
-    backendConnection.token
-  )}`
+  const params = new URLSearchParams({ token: backendConnection.token })
+  if (typeof maxWidth === 'number' && Number.isFinite(maxWidth) && maxWidth > 0) {
+    params.set('maxWidth', String(Math.max(1, Math.round(maxWidth))))
+  }
+  return `http://${backendConnection.host}:${backendConnection.port}${path}?${params.toString()}`
 }
 
 function fileUrlFromPath(path: string): string {
@@ -148,12 +153,35 @@ function previewLayerShape(source: SceneSource, layout: LayoutSettings): CameraS
   return layout.layoutPreset === 'screen-camera' && layout.cameraShape === 'circle' ? 'circle' : 'rectangle'
 }
 
+function previewDrawableWidth(): number | undefined {
+  const bounds = nativePreviewSurfaceStatus.bounds
+  const width = bounds?.width ?? nativePreviewSurfaceStatus.width
+  const scaleFactor = bounds?.scaleFactor ?? 1
+  if (typeof width !== 'number' || !Number.isFinite(width) || width <= 0) {
+    return undefined
+  }
+  return width * Math.max(1, scaleFactor)
+}
+
+function previewLayerSnapshotWidth(transform: SceneTransform, sourceWidth?: number): number | undefined {
+  const drawableWidth = previewDrawableWidth()
+  if (!drawableWidth) {
+    return undefined
+  }
+  const layerWidth = Math.max(0.01, Number(transform.width || 1))
+  const requestedWidth = Math.ceil(drawableWidth * layerWidth)
+  return typeof sourceWidth === 'number' && Number.isFinite(sourceWidth)
+    ? Math.min(sourceWidth, requestedWidth)
+    : requestedWidth
+}
+
 function previewLayerFrameUrl(source: SceneSource): string | undefined {
+  const maxWidth = previewLayerSnapshotWidth(source.transform)
   if (source.kind === 'camera') {
-    return backendPreviewFrameUrl('/preview/camera/live.png')
+    return backendPreviewFrameUrl('/preview/camera/live.png', maxWidth)
   }
   if (source.kind === 'screen' || source.kind === 'window') {
-    return backendPreviewFrameUrl('/preview/screen/live.png')
+    return backendPreviewFrameUrl('/preview/screen/live.png', maxWidth)
   }
   return undefined
 }
@@ -205,7 +233,7 @@ function buildPreviewSurfaceSceneFromCompositorStatus(status: CompositorStatus):
     kind: source.kind,
     transform: source.transform,
     visible: source.visible,
-    frameUrl: compositorLayerFrameUrl(source.kind),
+    frameUrl: compositorLayerFrameUrl(source),
     imageUrl:
       source.kind === 'screen-image' && source.state !== 'source-missing' && source.imagePath
         ? fileUrlFromPath(source.imagePath)
@@ -225,12 +253,13 @@ function buildPreviewSurfaceSceneFromCompositorStatus(status: CompositorStatus):
   }
 }
 
-function compositorLayerFrameUrl(kind: PreviewSurfaceSceneLayer['kind']): string | undefined {
-  if (kind === 'camera') {
-    return backendPreviewFrameUrl('/preview/camera/live.png')
+function compositorLayerFrameUrl(source: CompositorStatus['sceneSources'][number]): string | undefined {
+  const maxWidth = previewLayerSnapshotWidth(source.transform, source.width)
+  if (source.kind === 'camera') {
+    return backendPreviewFrameUrl('/preview/camera/live.png', maxWidth)
   }
-  if (kind === 'screen' || kind === 'window') {
-    return backendPreviewFrameUrl('/preview/screen/live.png')
+  if (source.kind === 'screen' || source.kind === 'window') {
+    return backendPreviewFrameUrl('/preview/screen/live.png', maxWidth)
   }
   return undefined
 }

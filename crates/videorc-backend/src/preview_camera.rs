@@ -22,7 +22,8 @@ use crate::source_registry::{SourceConsumerReason, SourceKey};
 use crate::source_status::SourceLifecycleStatus;
 use crate::state::AppState;
 
-const PREVIEW_CAMERA_MAX_PNG_WIDTH: u32 = 640;
+const PREVIEW_CAMERA_DEFAULT_PNG_WIDTH: u32 = 640;
+const PREVIEW_CAMERA_MAX_PNG_WIDTH: u32 = 1920;
 
 pub type PreviewCameraSlot = Arc<tokio::sync::Mutex<PreviewCameraRuntime>>;
 
@@ -364,7 +365,10 @@ pub async fn preview_camera_latest_frame(
     Some((frame, active.layout.clone()))
 }
 
-pub async fn latest_preview_camera_png(state: &AppState) -> Option<Vec<u8>> {
+pub async fn latest_preview_camera_png(
+    state: &AppState,
+    requested_max_width: Option<u32>,
+) -> Option<Vec<u8>> {
     let (frame, layout) = {
         let slot = state.preview_camera.lock().await;
         let active = slot.active.as_ref()?;
@@ -386,7 +390,7 @@ pub async fn latest_preview_camera_png(state: &AppState) -> Option<Vec<u8>> {
         rgba,
         frame.width,
         frame.height,
-        PREVIEW_CAMERA_MAX_PNG_WIDTH,
+        preview_camera_png_max_width(requested_max_width),
     );
 
     let mut png = Vec::new();
@@ -395,6 +399,12 @@ pub async fn latest_preview_camera_png(state: &AppState) -> Option<Vec<u8>> {
         .write_image(&rgba, width, height, image::ExtendedColorType::Rgba8)
         .ok()?;
     Some(png)
+}
+
+fn preview_camera_png_max_width(requested_max_width: Option<u32>) -> u32 {
+    requested_max_width
+        .unwrap_or(PREVIEW_CAMERA_DEFAULT_PNG_WIDTH)
+        .clamp(1, PREVIEW_CAMERA_MAX_PNG_WIDTH)
 }
 
 async fn set_camera_status(state: &AppState, status: PreviewCameraStatus) {
@@ -1212,6 +1222,14 @@ mod tests {
         assert_eq!(width, 4);
         assert_eq!(height, 2);
         assert_eq!(scaled.len(), 4 * 2 * 4);
+    }
+
+    #[test]
+    fn camera_png_width_defaults_and_clamps_requested_quality() {
+        assert_eq!(preview_camera_png_max_width(None), 640);
+        assert_eq!(preview_camera_png_max_width(Some(0)), 1);
+        assert_eq!(preview_camera_png_max_width(Some(1280)), 1280);
+        assert_eq!(preview_camera_png_max_width(Some(4096)), 1920);
     }
 
     #[test]

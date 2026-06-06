@@ -33,6 +33,9 @@ fails a "native" claim — by design.
 - Preview present diagnostics now carry source-to-present p50/p95/p99 latency and the
   latest presented compositor frame lag, and the acceptance gate fails native previews
   above the OBS-parity latency/currentness budget.
+- Fallback/proof PNG source snapshots now keep their low default caps but accept bounded
+  `maxWidth` requests; the Electron proof surface requests layer-sized snapshots to
+  reduce avoidable blur while the real CAMetalLayer host is still pending.
 - `make_preview_layer()` / `MetalPreviewPresenter` / `present_texture_to_layer()` — the
   GPU-side preview present (CAMetalLayer + render-scaled texture present), compile-and-run
   tested headlessly.

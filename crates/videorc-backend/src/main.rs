@@ -198,8 +198,11 @@ async fn shutdown_signal(state: AppState) {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct WsQuery {
     token: String,
+    #[serde(default)]
+    max_width: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -286,7 +289,7 @@ async fn live_camera_frame_handler(
     }
 
     diagnostics::PREVIEW_POLL_COUNTS.record_camera_png();
-    match latest_preview_camera_png(&state).await {
+    match latest_preview_camera_png(&state, query.max_width).await {
         Some(bytes) => (
             [
                 (header::CONTENT_TYPE, "image/png"),
@@ -308,7 +311,7 @@ async fn live_screen_frame_handler(
     }
 
     diagnostics::PREVIEW_POLL_COUNTS.record_screen_png();
-    match latest_preview_screen_png(&state).await {
+    match latest_preview_screen_png(&state, query.max_width).await {
         Some(bytes) => (
             [
                 (header::CONTENT_TYPE, "image/png"),
