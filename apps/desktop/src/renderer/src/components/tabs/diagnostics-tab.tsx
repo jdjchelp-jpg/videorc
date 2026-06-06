@@ -161,6 +161,11 @@ export function DiagnosticsTab(): ReactElement {
               label="VT probe"
               value={`${diagnosticStats.encoderBridgeVideoToolboxProbeFrames} / ${formatBytes(diagnosticStats.encoderBridgeVideoToolboxProbeBytes)}`}
             />
+            <DiagnosticMetric
+              label="VT output"
+              value={`${diagnosticStats.encoderBridgeVideoToolboxOutputFrames} / ${formatBytes(diagnosticStats.encoderBridgeVideoToolboxOutputBytes)}`}
+            />
+            <DiagnosticMetric label="VT encode max" value={formatMs(diagnosticStats.encoderBridgeVideoToolboxOutputEncodeMs)} />
             <DiagnosticMetric label="Image polls" value={formatImagePolls(diagnosticStats.previewImagePollCounts)} />
             <DiagnosticMetric label="Device state" value={diagnosticStats.deviceDisconnected ? 'Disconnected' : 'Connected'} />
             <DiagnosticMetric label="FFmpeg work" value={formatFfmpegWork(diagnosticStats)} />

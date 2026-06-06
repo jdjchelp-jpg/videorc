@@ -835,6 +835,15 @@ pub struct DiagnosticStats {
     /// Failed attempts by the opt-in VideoToolbox probe.
     #[serde(default)]
     pub encoder_bridge_video_toolbox_probe_errors: u64,
+    /// Retained Metal target frames written to the production VideoToolbox H.264 output.
+    #[serde(default)]
+    pub encoder_bridge_video_toolbox_output_frames: u64,
+    /// Encoded byte count written to the production VideoToolbox H.264 output.
+    #[serde(default)]
+    pub encoder_bridge_video_toolbox_output_bytes: u64,
+    /// Max inline VideoToolbox encode latency observed by the bridge writer.
+    #[serde(default)]
+    pub encoder_bridge_video_toolbox_output_encode_ms: Option<u64>,
     pub encoder_bridge_error: Option<String>,
     /// Which encoder the active session actually requested — proves hardware vs software
     /// encode (previously unrecorded).

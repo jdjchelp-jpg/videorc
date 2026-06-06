@@ -97,6 +97,12 @@ struct EncoderBridgeRuntimeStats {
     video_toolbox_probe_bytes: u64,
     /// Failed attempts by the opt-in VideoToolbox sidecar probe.
     video_toolbox_probe_errors: u64,
+    /// Retained Metal target frames written through the VideoToolbox H.264 output path.
+    video_toolbox_output_frames: u64,
+    /// Encoded bytes written through the VideoToolbox H.264 output path.
+    video_toolbox_output_bytes: u64,
+    /// Max inline VideoToolbox encode latency observed by the bridge writer.
+    video_toolbox_output_encode_ms: Option<u64>,
 }
 
 /// A compositor frame fed into the encoder FIFO on one tick.
@@ -629,6 +635,9 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
     let mut video_toolbox_probe_frames = 0_u64;
     let mut video_toolbox_probe_bytes = 0_u64;
     let mut video_toolbox_probe_errors = 0_u64;
+    let mut video_toolbox_output_frames = 0_u64;
+    let mut video_toolbox_output_bytes = 0_u64;
+    let mut max_video_toolbox_output_encode_ms: Option<u64> = None;
     #[cfg(target_os = "macos")]
     let mut video_toolbox_probe = EncoderBridgeVideoToolboxProbe::new(
         video_output.uses_video_toolbox() || encoder_bridge_video_toolbox_probe_enabled(),
@@ -692,6 +701,9 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
                             video_toolbox_probe_frames,
                             video_toolbox_probe_bytes,
                             video_toolbox_probe_errors,
+                            video_toolbox_output_frames,
+                            video_toolbox_output_bytes,
+                            video_toolbox_output_encode_ms: max_video_toolbox_output_encode_ms,
                         },
                         Some(
                             "VideoToolbox encoder bridge had no compositor frame to encode"
@@ -756,33 +768,47 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
                 #[cfg(target_os = "macos")]
                 {
                     match fed.as_ref() {
-                        Some(frame) => match video_toolbox_probe
-                            .encode_frame(frame, sequence.saturating_sub(1))
-                        {
-                            VideoToolboxProbeOutcome::Encoded { frame } => {
-                                fifo.write_all(&frame.bytes).map(|()| {
-                                    if wrote_metal_target_frame {
-                                        metal_target_frames = metal_target_frames.saturating_add(1);
-                                    }
-                                    if wrote_metal_target_handle {
-                                        metal_target_handle_frames =
-                                            metal_target_handle_frames.saturating_add(1);
-                                    }
-                                    zero_copy_frames = zero_copy_frames.saturating_add(1);
-                                })
+                        Some(frame) => {
+                            let encode_started_at = Instant::now();
+                            match video_toolbox_probe
+                                .encode_frame(frame, sequence.saturating_sub(1))
+                            {
+                                VideoToolboxProbeOutcome::Encoded { frame } => {
+                                    let encode_ms = encode_started_at.elapsed().as_millis() as u64;
+                                    max_video_toolbox_output_encode_ms = Some(
+                                        max_video_toolbox_output_encode_ms
+                                            .map_or(encode_ms, |current| current.max(encode_ms)),
+                                    );
+                                    let encoded_bytes = frame.bytes.len() as u64;
+                                    fifo.write_all(&frame.bytes).map(|()| {
+                                        if wrote_metal_target_frame {
+                                            metal_target_frames =
+                                                metal_target_frames.saturating_add(1);
+                                        }
+                                        if wrote_metal_target_handle {
+                                            metal_target_handle_frames =
+                                                metal_target_handle_frames.saturating_add(1);
+                                        }
+                                        zero_copy_frames = zero_copy_frames.saturating_add(1);
+                                        video_toolbox_output_frames =
+                                            video_toolbox_output_frames.saturating_add(1);
+                                        video_toolbox_output_bytes = video_toolbox_output_bytes
+                                            .saturating_add(encoded_bytes);
+                                    })
+                                }
+                                VideoToolboxProbeOutcome::Failed => {
+                                    video_toolbox_probe_errors =
+                                        video_toolbox_probe_errors.saturating_add(1);
+                                    Err(io::Error::other(
+                                        "VideoToolbox encoder bridge failed to encode retained target",
+                                    ))
+                                }
+                                VideoToolboxProbeOutcome::Disabled
+                                | VideoToolboxProbeOutcome::NoTarget => Err(io::Error::other(
+                                    "VideoToolbox encoder bridge had no retained target",
+                                )),
                             }
-                            VideoToolboxProbeOutcome::Failed => {
-                                video_toolbox_probe_errors =
-                                    video_toolbox_probe_errors.saturating_add(1);
-                                Err(io::Error::other(
-                                    "VideoToolbox encoder bridge failed to encode retained target",
-                                ))
-                            }
-                            VideoToolboxProbeOutcome::Disabled
-                            | VideoToolboxProbeOutcome::NoTarget => Err(io::Error::other(
-                                "VideoToolbox encoder bridge had no retained target",
-                            )),
-                        },
+                        }
                         None => Err(io::Error::other(
                             "VideoToolbox encoder bridge had no compositor frame",
                         )),
@@ -817,6 +843,9 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
                     video_toolbox_probe_frames,
                     video_toolbox_probe_bytes,
                     video_toolbox_probe_errors,
+                    video_toolbox_output_frames,
+                    video_toolbox_output_bytes,
+                    video_toolbox_output_encode_ms: max_video_toolbox_output_encode_ms,
                 },
                 Some(format!(
                     "Could not write compositor frame into recording FFmpeg: {error}"
@@ -848,6 +877,9 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
                     video_toolbox_probe_frames,
                     video_toolbox_probe_bytes,
                     video_toolbox_probe_errors,
+                    video_toolbox_output_frames,
+                    video_toolbox_output_bytes,
+                    video_toolbox_output_encode_ms: max_video_toolbox_output_encode_ms,
                 },
                 None,
             );
@@ -878,6 +910,9 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
             video_toolbox_probe_frames,
             video_toolbox_probe_bytes,
             video_toolbox_probe_errors,
+            video_toolbox_output_frames,
+            video_toolbox_output_bytes,
+            video_toolbox_output_encode_ms: max_video_toolbox_output_encode_ms,
         },
         None,
     );
@@ -1236,6 +1271,9 @@ async fn emit_encoder_bridge_diagnostics(
                 video_toolbox_probe_frames: runtime.video_toolbox_probe_frames,
                 video_toolbox_probe_bytes: runtime.video_toolbox_probe_bytes,
                 video_toolbox_probe_errors: runtime.video_toolbox_probe_errors,
+                video_toolbox_output_frames: runtime.video_toolbox_output_frames,
+                video_toolbox_output_bytes: runtime.video_toolbox_output_bytes,
+                video_toolbox_output_encode_ms: runtime.video_toolbox_output_encode_ms,
                 error,
             },
             target_fps,

@@ -1096,6 +1096,11 @@ export interface DiagnosticStats {
   encoderBridgeVideoToolboxProbeFrames: number
   encoderBridgeVideoToolboxProbeBytes: number
   encoderBridgeVideoToolboxProbeErrors: number
+  /** Retained Metal target frames written through the production VideoToolbox H.264 output. */
+  encoderBridgeVideoToolboxOutputFrames: number
+  encoderBridgeVideoToolboxOutputBytes: number
+  /** Max inline VideoToolbox encode latency observed by the bridge writer. */
+  encoderBridgeVideoToolboxOutputEncodeMs?: number
   encoderBridgeError?: string
   /** Which encoder the active session requested — proves hardware vs software encode. */
   encodeBackend?: EncodeBackend

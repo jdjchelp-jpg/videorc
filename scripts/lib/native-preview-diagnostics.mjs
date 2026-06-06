@@ -69,6 +69,12 @@ export function summarizeNativePreviewRecordingDiagnostics(
       maxOf(collectCounts('encoderBridgeVideoToolboxProbeBytes')) ?? 0,
     maxEncoderBridgeVideoToolboxProbeErrors:
       maxOf(collectCounts('encoderBridgeVideoToolboxProbeErrors')) ?? 0,
+    maxEncoderBridgeVideoToolboxOutputFrames:
+      maxOf(collectCounts('encoderBridgeVideoToolboxOutputFrames')) ?? 0,
+    maxEncoderBridgeVideoToolboxOutputBytes:
+      maxOf(collectCounts('encoderBridgeVideoToolboxOutputBytes')) ?? 0,
+    maxEncoderBridgeVideoToolboxOutputEncodeMs:
+      maxOf(collectCounts('encoderBridgeVideoToolboxOutputEncodeMs')) ?? 0,
     maxCompositorCpuFallbackFrames: maxOf(collectCounts('compositorCpuFallbackFrames')) ?? 0,
     lastCompositorFallbackReason: lastString('compositorFallbackReason'),
     nativePreviewSamples: nativeDiagnosticsSamples + nativeSurfaceSamples,

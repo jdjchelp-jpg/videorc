@@ -161,11 +161,11 @@ fails a "native" claim — by design.
   stream keeps recording-duration timing. On 2026-06-06,
   `VIDEORC_ENCODER_BRIDGE_VIDEO_OUTPUT=videotoolbox-h264 pnpm
   probe:recording-native-preview:videotoolbox` completed in report-only mode with `raw
-  copied 0`, `Metal copied 0`, `zero-copy 35`, `Metal handles 35`, duration 6.06s, min
-  encoder speed 2.23x, and 7ms A/V skew. The remaining failure is now explicit:
-  VideoToolbox output only delivered about 7.85fps / 51 final frames for the 1080p30
-  source-complete scene, so the next slice is encoder cadence/off-thread throughput
-  rather than raw FIFO copying.
+  copied 0`, `Metal copied 0`, `zero-copy 35`, `Metal handles 35`, `VT output 35
+  (15653 bytes, 77ms max encode)`, duration 6.11s, min encoder speed 2.25x, and 11ms
+  A/V skew. The remaining failure is now explicit: VideoToolbox output only delivered
+  about 7.72fps / 51 final frames for the 1080p30 source-complete scene, so the next
+  slice is encoder cadence/off-thread throughput rather than raw FIFO copying.
 - The real-source acceptance gate now fails GPU-required runs when
   `encoderBridgeMetalTargetFrames` stays at 0, preventing a session from passing on a
   generic Metal compositor label while the recording bridge never saw an IOSurface-backed

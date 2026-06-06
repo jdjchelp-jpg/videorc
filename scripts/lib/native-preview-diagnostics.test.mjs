@@ -51,6 +51,9 @@ test('native preview diagnostics summarize only steady active recording samples 
         encoderBridgeVideoToolboxProbeFrames: 42,
         encoderBridgeVideoToolboxProbeBytes: 12345,
         encoderBridgeVideoToolboxProbeErrors: 1,
+        encoderBridgeVideoToolboxOutputFrames: 40,
+        encoderBridgeVideoToolboxOutputBytes: 67890,
+        encoderBridgeVideoToolboxOutputEncodeMs: 43,
         compositorCpuFallbackFrames: 0,
         compositorFallbackReason: '',
         activeFfmpegProcesses: 1
@@ -96,6 +99,9 @@ test('native preview diagnostics summarize only steady active recording samples 
   assert.equal(summary.maxEncoderBridgeVideoToolboxProbeFrames, 42)
   assert.equal(summary.maxEncoderBridgeVideoToolboxProbeBytes, 12345)
   assert.equal(summary.maxEncoderBridgeVideoToolboxProbeErrors, 1)
+  assert.equal(summary.maxEncoderBridgeVideoToolboxOutputFrames, 40)
+  assert.equal(summary.maxEncoderBridgeVideoToolboxOutputBytes, 67890)
+  assert.equal(summary.maxEncoderBridgeVideoToolboxOutputEncodeMs, 43)
   assert.equal(summary.maxCompositorCpuFallbackFrames, 0)
   assert.equal(summary.lastCompositorFallbackReason, null)
   assert.equal(summary.steadySamples, 1)
@@ -149,6 +155,9 @@ test('native preview diagnostics fall back to active samples when warmup hides t
   assert.equal(summary.maxEncoderBridgeVideoToolboxProbeFrames, 0)
   assert.equal(summary.maxEncoderBridgeVideoToolboxProbeBytes, 0)
   assert.equal(summary.maxEncoderBridgeVideoToolboxProbeErrors, 0)
+  assert.equal(summary.maxEncoderBridgeVideoToolboxOutputFrames, 0)
+  assert.equal(summary.maxEncoderBridgeVideoToolboxOutputBytes, 0)
+  assert.equal(summary.maxEncoderBridgeVideoToolboxOutputEncodeMs, 0)
   assert.equal(summary.maxCompositorCpuFallbackFrames, 4)
   assert.equal(summary.lastCompositorFallbackReason, 'camera frame unavailable')
   assert.equal(summary.steadySamples, 0)
@@ -204,6 +213,9 @@ test('native preview diagnostics can use surface status samples for host-present
   assert.equal(summary.maxEncoderBridgeVideoToolboxProbeFrames, 0)
   assert.equal(summary.maxEncoderBridgeVideoToolboxProbeBytes, 0)
   assert.equal(summary.maxEncoderBridgeVideoToolboxProbeErrors, 0)
+  assert.equal(summary.maxEncoderBridgeVideoToolboxOutputFrames, 0)
+  assert.equal(summary.maxEncoderBridgeVideoToolboxOutputBytes, 0)
+  assert.equal(summary.maxEncoderBridgeVideoToolboxOutputEncodeMs, 0)
   assert.equal(summary.maxCompositorCpuFallbackFrames, 8)
   assert.equal(summary.lastCompositorFallbackReason, 'screen frame unavailable')
 })
