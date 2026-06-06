@@ -92,6 +92,12 @@ fails a "native" claim — by design.
   falls back to an ordinary `MTLTexture` only when the platform cannot create the shared
   target. This keeps current readback behavior intact while giving VideoToolbox a retained
   CoreVideo buffer to adopt in the encoder-export slice.
+- `MetalSceneCompositor::latest_target_pixel_buffer()` now exposes that retained
+  IOSurface-backed `CVPixelBuffer` and target dimensions after a compose, giving the
+  encoder-export slice a concrete CoreVideo handle to adopt instead of reaching through
+  private compositor texture state. The regression
+  `metal_scene_compositor_exports_retained_target_pixel_buffer_or_skips` passed on
+  2026-06-06.
 - While a preview surface is live, the compositor now emits lightweight per-frame progress
   status for the presenter path instead of making proof/native surface presents wait for
   the two-second diagnostics window.
@@ -182,9 +188,9 @@ fails a "native" claim — by design.
    the existing compositor loop (`compositor.rs`), default-on on macOS with
    `VIDEORC_METAL_COMPOSITOR=0|false|off|no` as the CPU fallback escape hatch.
 4. **Export to the encoder with the lowest copy available.** The compositor target now
-   prefers IOSurface-backed storage; feed that retained `CVPixelBuffer` to
-   `h264_videotoolbox` (the bridge already uses VideoToolbox — Phase 4), avoiding the
-   YUV420P CPU readback the FIFO bridge does today.
+   prefers IOSurface-backed storage and exposes a retained target `CVPixelBuffer`; feed
+   that handle to `h264_videotoolbox` (the bridge already uses VideoToolbox — Phase 4),
+   avoiding the YUV420P CPU readback the FIFO bridge does today.
 5. **Done gate:** 1080p30 and 1440p30 real screen+camera composition under the
    compositor frame-time budget (p95 < 16ms @ 60fps preview / < 30ms @ 30fps output);
    final recording shows no repeated frames from a late compositor.

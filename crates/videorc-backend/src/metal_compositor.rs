@@ -169,6 +169,38 @@ struct CachedSourceTexture {
     height: usize,
 }
 
+/// Retained CoreVideo handle for the compositor's latest IOSurface-backed render target.
+///
+/// VideoToolbox can adopt this buffer in the encoder-export slice, avoiding the current
+/// BGRA readback + CPU YUV420P conversion when the platform provides a shared target.
+pub struct MetalCompositorTargetPixelBuffer {
+    pixel_buffer: CFRetained<CVPixelBuffer>,
+    width: usize,
+    height: usize,
+}
+
+impl MetalCompositorTargetPixelBuffer {
+    pub fn pixel_buffer(&self) -> &CVPixelBuffer {
+        &self.pixel_buffer
+    }
+
+    pub fn into_pixel_buffer(self) -> CFRetained<CVPixelBuffer> {
+        self.pixel_buffer
+    }
+
+    pub fn width(&self) -> usize {
+        self.width
+    }
+
+    pub fn height(&self) -> usize {
+        self.height
+    }
+
+    pub fn has_iosurface(&self) -> bool {
+        CVPixelBufferGetIOSurface(Some(self.pixel_buffer.as_ref())).is_some()
+    }
+}
+
 // SAFETY: The cached render target is owned by one compositor instance and is only used
 // sequentially by the compositor loop. Metal resources are valid across threads; this
 // wrapper only allows Tokio to move the owning task between worker threads.
@@ -280,6 +312,20 @@ impl MetalSceneCompositor {
     /// device types across module boundaries.
     pub fn make_preview_presenter(&self) -> Option<MetalPreviewPresenter> {
         MetalPreviewPresenter::new(self.device.clone())
+    }
+
+    /// Export the retained IOSurface-backed target from the latest composed frame.
+    ///
+    /// This returns `None` before the first compose call or on platforms where the
+    /// compositor had to fall back to a plain `MTLTexture`. The existing readback path
+    /// remains available in both cases.
+    pub fn latest_target_pixel_buffer(&self) -> Option<MetalCompositorTargetPixelBuffer> {
+        let target = self.target.as_ref()?;
+        Some(MetalCompositorTargetPixelBuffer {
+            pixel_buffer: target.pixel_buffer.as_ref()?.clone(),
+            width: self.target_width,
+            height: self.target_height,
+        })
     }
 
     fn ensure_target_texture(&mut self, width: usize, height: usize) -> Option<()> {
@@ -809,6 +855,7 @@ fn read_texture_bgra(texture: &MetalTexture, width: usize, height: usize) -> Vec
 #[cfg(test)]
 mod tests {
     use super::*;
+    use objc2_core_video::{CVPixelBufferGetHeight, CVPixelBufferGetWidth};
 
     fn pixel(buf: &[u8], width: usize, x: usize, y: usize) -> [u8; 4] {
         let i = (y * width + x) * 4;
@@ -911,6 +958,33 @@ mod tests {
                 eprintln!("skipping: IOSurface-backed render target unavailable on this device");
             }
         }
+    }
+
+    #[test]
+    fn metal_scene_compositor_exports_retained_target_pixel_buffer_or_skips() {
+        let Some(mut compositor) = MetalSceneCompositor::new() else {
+            eprintln!("skipping: no Metal device available in this environment");
+            return;
+        };
+        let red = [0u8, 0, 255, 255];
+        let sources = [full_frame(&red, 1, 1, false, false, [0.0; 4])];
+
+        assert!(compositor.latest_target_pixel_buffer().is_none());
+        compositor
+            .compose_bgra(8, 4, [0.0, 0.0, 0.0, 1.0], &sources)
+            .expect("compose into cached target");
+        let Some(target) = compositor.latest_target_pixel_buffer() else {
+            eprintln!("skipping: IOSurface-backed render target unavailable on this device");
+            return;
+        };
+
+        assert_eq!(target.width(), 8);
+        assert_eq!(target.height(), 4);
+        assert!(target.has_iosurface(), "target should retain its IOSurface");
+        let pixel_buffer = target.into_pixel_buffer();
+        assert_eq!(CVPixelBufferGetWidth(&pixel_buffer), 8);
+        assert_eq!(CVPixelBufferGetHeight(&pixel_buffer), 4);
+        assert!(CVPixelBufferGetIOSurface(Some(&pixel_buffer)).is_some());
     }
 
     #[test]
