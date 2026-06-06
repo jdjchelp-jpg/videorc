@@ -44,6 +44,9 @@ fails a "native" claim — by design.
 - The renderer now merges backend preview-surface status with the actual host status so a
   future live `CAMetalLayer` host can report `native-surface` / `cametal-layer` without
   being overwritten by the backend's Electron proof-surface startup status.
+- Rust preview-surface create/update/destroy now records native-host lifecycle intent through
+  a dedicated host seam. The seam returns no activation yet, so the app still reports the
+  Electron proof backing until the main-thread presenter runner is wired.
 - `make_preview_layer()` / `MetalPreviewPresenter` / `present_texture_to_layer()` — the
   GPU-side preview present (CAMetalLayer + render-scaled texture present), compile-and-run
   tested headlessly.

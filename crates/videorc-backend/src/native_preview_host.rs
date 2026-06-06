@@ -1,4 +1,4 @@
-use crate::protocol::PreviewSurfaceBounds;
+use crate::protocol::{PreviewSurfaceBacking, PreviewSurfaceBounds, PreviewTransport};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NativePreviewHostBounds {
@@ -40,11 +40,69 @@ impl NativePreviewHostBounds {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativePreviewHostCommandKind {
+    Create,
+    UpdateBounds,
+    Destroy,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NativePreviewHostActivation {
+    pub transport: PreviewTransport,
+    pub backing: PreviewSurfaceBacking,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct NativePreviewHostLifecycleUpdate {
+    pub activation: Option<NativePreviewHostActivation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct NativePreviewHostLifecycle {
+    last_command: Option<NativePreviewHostCommandKind>,
+    bounds: Option<NativePreviewHostBounds>,
+}
+
+impl NativePreviewHostLifecycle {
+    pub fn create(&mut self, bounds: &PreviewSurfaceBounds) -> NativePreviewHostLifecycleUpdate {
+        self.last_command = Some(NativePreviewHostCommandKind::Create);
+        self.bounds = Some(NativePreviewHostBounds::from_surface_bounds(bounds));
+        NativePreviewHostLifecycleUpdate::default()
+    }
+
+    pub fn update_bounds(
+        &mut self,
+        bounds: &PreviewSurfaceBounds,
+    ) -> NativePreviewHostLifecycleUpdate {
+        self.last_command = Some(NativePreviewHostCommandKind::UpdateBounds);
+        self.bounds = Some(NativePreviewHostBounds::from_surface_bounds(bounds));
+        NativePreviewHostLifecycleUpdate::default()
+    }
+
+    pub fn destroy(&mut self) -> NativePreviewHostLifecycleUpdate {
+        self.last_command = Some(NativePreviewHostCommandKind::Destroy);
+        self.bounds = None;
+        NativePreviewHostLifecycleUpdate::default()
+    }
+
+    #[cfg(test)]
+    pub fn last_command_kind(&self) -> Option<NativePreviewHostCommandKind> {
+        self.last_command
+    }
+
+    #[cfg(test)]
+    pub fn bounds(&self) -> Option<NativePreviewHostBounds> {
+        self.bounds
+    }
+}
+
 #[cfg(target_os = "macos")]
 #[allow(dead_code)]
 mod macos {
-    use objc2::{ClassType, MainThreadMarker, MainThreadOnly};
     use objc2::rc::Retained;
+    use objc2::{ClassType, MainThreadMarker, MainThreadOnly};
     use objc2_app_kit::{
         NSBackingStoreType, NSColor, NSFloatingWindowLevel, NSView, NSWindow, NSWindowStyleMask,
     };
@@ -52,7 +110,7 @@ mod macos {
     use objc2_quartz_core::{CALayer, CAMetalLayer};
 
     use super::NativePreviewHostBounds;
-    use crate::metal_compositor::{make_preview_layer, MetalPreviewPresenter};
+    use crate::metal_compositor::{MetalPreviewPresenter, make_preview_layer};
 
     #[derive(Debug)]
     pub struct NativePreviewLayerHost {
@@ -214,5 +272,61 @@ mod tests {
         };
 
         assert_eq!(host_bounds.appkit_frame(), (10.0, 20.0, 640.0, 360.0));
+    }
+
+    #[test]
+    fn lifecycle_records_create_update_destroy_commands() {
+        let mut lifecycle = NativePreviewHostLifecycle::default();
+        let create_bounds = PreviewSurfaceBounds {
+            screen_x: 10.0,
+            screen_y: 20.0,
+            width: 640.0,
+            height: 360.0,
+            scale_factor: 2.0,
+            screen_height: Some(1000.0),
+        };
+
+        let create_update = lifecycle.create(&create_bounds);
+
+        assert_eq!(create_update.activation, None);
+        assert_eq!(
+            lifecycle.last_command_kind(),
+            Some(NativePreviewHostCommandKind::Create)
+        );
+        assert_eq!(
+            lifecycle
+                .bounds()
+                .map(NativePreviewHostBounds::appkit_frame),
+            Some((10.0, 620.0, 640.0, 360.0))
+        );
+
+        let update_bounds = PreviewSurfaceBounds {
+            width: 800.0,
+            height: 450.0,
+            ..create_bounds
+        };
+
+        let bounds_update = lifecycle.update_bounds(&update_bounds);
+
+        assert_eq!(bounds_update.activation, None);
+        assert_eq!(
+            lifecycle.last_command_kind(),
+            Some(NativePreviewHostCommandKind::UpdateBounds)
+        );
+        assert_eq!(
+            lifecycle
+                .bounds()
+                .map(NativePreviewHostBounds::drawable_size),
+            Some((1600.0, 900.0))
+        );
+
+        let destroy_update = lifecycle.destroy();
+
+        assert_eq!(destroy_update.activation, None);
+        assert_eq!(
+            lifecycle.last_command_kind(),
+            Some(NativePreviewHostCommandKind::Destroy)
+        );
+        assert_eq!(lifecycle.bounds(), None);
     }
 }

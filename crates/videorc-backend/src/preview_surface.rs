@@ -6,6 +6,9 @@ use crate::compositor::{
     update_compositor_surface_size,
 };
 use crate::diagnostics::{apply_preview_surface_resize, apply_runtime_diagnostics_snapshot};
+use crate::native_preview_host::{
+    NativePreviewHostActivation, NativePreviewHostLifecycle, NativePreviewHostLifecycleUpdate,
+};
 use crate::protocol::{
     PreviewSurfaceBacking, PreviewSurfaceBoundsParams, PreviewSurfaceCreateParams,
     PreviewSurfacePresentParams, PreviewSurfaceSource, PreviewSurfaceState, PreviewSurfaceStatus,
@@ -19,12 +22,14 @@ pub type PreviewSurfaceSlot = std::sync::Arc<tokio::sync::Mutex<PreviewSurfaceRu
 pub struct PreviewSurfaceRuntime {
     pub status: PreviewSurfaceStatus,
     run_id: Option<String>,
+    native_host: NativePreviewHostLifecycle,
 }
 
 pub fn initial_preview_surface_state() -> PreviewSurfaceRuntime {
     PreviewSurfaceRuntime {
         status: unavailable_status(Some("Native preview surface is not running.".to_string())),
         run_id: None,
+        native_host: NativePreviewHostLifecycle::default(),
     }
 }
 
@@ -35,22 +40,24 @@ pub async fn create_preview_surface(
     stop_current_surface(&state).await;
 
     let run_id = Uuid::new_v4().to_string();
+    let bounds = params.bounds;
+    let source = params.source;
     let target_fps = params.target_fps.clamp(30, 120);
     let now = Utc::now().to_rfc3339();
-    let message = match params.source {
+    let message = match &source {
         PreviewSurfaceSource::Camera => "Electron proof camera preview surface running.",
         PreviewSurfaceSource::Screen => "Electron proof screen preview surface running.",
         PreviewSurfaceSource::Window => "Electron proof window preview surface running.",
         PreviewSurfaceSource::Synthetic => "Synthetic Electron proof preview surface running.",
     };
-    let status = PreviewSurfaceStatus {
+    let mut status = PreviewSurfaceStatus {
         state: PreviewSurfaceState::Live,
-        source: params.source,
+        source,
         transport: PreviewTransport::ElectronProofSurface,
         backing: PreviewSurfaceBacking::ElectronBrowserWindow,
         target_fps,
-        width: surface_dimension(params.bounds.width),
-        height: surface_dimension(params.bounds.height),
+        width: surface_dimension(bounds.width),
+        height: surface_dimension(bounds.height),
         frames_rendered: 0,
         presented_frame_id: None,
         compositor_frame_lag: None,
@@ -62,13 +69,15 @@ pub async fn create_preview_surface(
         present_fps: None,
         interval_p95_ms: None,
         interval_p99_ms: None,
-        bounds: Some(params.bounds),
+        bounds: Some(bounds.clone()),
         started_at: Some(now.clone()),
         updated_at: now,
         message: Some(message.to_string()),
     };
     {
         let mut slot = state.preview_surface.lock().await;
+        let host_update = slot.native_host.create(&bounds);
+        apply_native_host_activation(&mut status, host_update);
         slot.status = status.clone();
         slot.run_id = Some(run_id);
     }
@@ -95,13 +104,16 @@ pub async fn update_preview_surface_bounds(
         let mut next = slot.status.clone();
         next.width = surface_dimension(params.bounds.width);
         next.height = surface_dimension(params.bounds.height);
-        next.bounds = Some(params.bounds);
+        next.bounds = Some(params.bounds.clone());
         next.updated_at = Utc::now().to_rfc3339();
         if next.state == PreviewSurfaceState::Unavailable
             || next.state == PreviewSurfaceState::Stopped
         {
             next.message =
                 Some("Native preview surface bounds saved; surface is not live.".to_string());
+        } else {
+            let host_update = slot.native_host.update_bounds(&params.bounds);
+            apply_native_host_activation(&mut next, host_update);
         }
         slot.status = next.clone();
         next
@@ -225,7 +237,28 @@ async fn stop_current_surface(state: &AppState) {
     stop_compositor(state).await;
     {
         let mut slot = state.preview_surface.lock().await;
+        let _ = slot.native_host.destroy();
         slot.run_id = None;
+    }
+}
+
+fn apply_native_host_activation(
+    status: &mut PreviewSurfaceStatus,
+    update: NativePreviewHostLifecycleUpdate,
+) {
+    let Some(NativePreviewHostActivation {
+        transport,
+        backing,
+        message,
+    }) = update.activation
+    else {
+        return;
+    };
+
+    status.transport = transport;
+    status.backing = backing;
+    if let Some(message) = message {
+        status.message = Some(message);
     }
 }
 
@@ -263,6 +296,7 @@ fn unavailable_status(message: Option<String>) -> PreviewSurfaceStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::native_preview_host::NativePreviewHostCommandKind;
     use crate::protocol::PreviewSurfaceBounds;
     use crate::storage::Database;
     use tokio::sync::broadcast;
@@ -292,7 +326,7 @@ mod tests {
     async fn create_surface_starts_synthetic_native_status() {
         let state = test_state();
         let status = create_preview_surface(
-            state,
+            state.clone(),
             PreviewSurfaceCreateParams {
                 bounds: bounds(800.0, 450.0),
                 target_fps: 60,
@@ -307,6 +341,18 @@ mod tests {
         assert_eq!(status.target_fps, 60);
         assert_eq!(status.width, 800);
         assert_eq!(status.height, 450);
+        let surface = state.preview_surface.lock().await;
+        assert_eq!(
+            surface.native_host.last_command_kind(),
+            Some(NativePreviewHostCommandKind::Create)
+        );
+        assert_eq!(
+            surface
+                .native_host
+                .bounds()
+                .map(|bounds| bounds.drawable_size()),
+            Some((1600.0, 900.0))
+        );
     }
 
     #[tokio::test]
@@ -336,6 +382,18 @@ mod tests {
         assert_eq!(
             state.diagnostics.lock().await.preview_surface_resize_count,
             1
+        );
+        let surface = state.preview_surface.lock().await;
+        assert_eq!(
+            surface.native_host.last_command_kind(),
+            Some(NativePreviewHostCommandKind::UpdateBounds)
+        );
+        assert_eq!(
+            surface
+                .native_host
+                .bounds()
+                .map(|bounds| bounds.drawable_size()),
+            Some((1280.0, 720.0))
         );
     }
 
@@ -426,5 +484,11 @@ mod tests {
         assert_eq!(status.transport, PreviewTransport::Unavailable);
         assert_eq!(status.backing, PreviewSurfaceBacking::None);
         assert_eq!(status.started_at, None);
+        let surface = state.preview_surface.lock().await;
+        assert_eq!(
+            surface.native_host.last_command_kind(),
+            Some(NativePreviewHostCommandKind::Destroy)
+        );
+        assert_eq!(surface.native_host.bounds(), None);
     }
 }
