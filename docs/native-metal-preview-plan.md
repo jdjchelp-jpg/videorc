@@ -127,6 +127,15 @@ fails a "native" claim — by design.
   measurement pass. On 2026-06-06, the guarded 1080p30 smoke passed with preview
   120.16fps, proof-host p95 interval 9.4ms, source-to-present p95/p99 12ms, compositor
   lag 0, startup/final max repeated-frame run 2, and 8ms A/V skew.
+- The 60s endurance smoke (`pnpm smoke:recording-native-preview:endurance`) also passed
+  after one launch retry. The 1440p30 scenario with 12 layout updates produced preview
+  120.13fps, p95 interval 9.4ms, source-to-present p95/p99 20ms, compositor lag 0,
+  startup max repeated-frame run 1, final max repeated-frame run 2, and 4ms A/V skew.
+  The follow-up 1080p30 scenario produced preview 120.00fps, p95 interval 9.3ms,
+  source-to-present p95/p99 21ms, compositor lag 0, startup max repeated-frame run 1,
+  final max repeated-frame run 2, and 11ms A/V skew. FFmpeg progress speed/FPS telemetry
+  still warned in both scenarios, but decoded startup/final-file gates and the direct
+  proof-host measurement passed.
 - The preview-surface smoke now retries launch connection timeouts like the recording
   smoke, and after the proof-host shell hardening `pnpm smoke:preview-surface` passed at
   120.4fps initial, 120.2fps after resize, scene update 13.1ms, 105 compositor frames,
