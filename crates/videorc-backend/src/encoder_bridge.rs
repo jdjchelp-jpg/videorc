@@ -683,6 +683,27 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
     );
     #[cfg(target_os = "macos")]
     let mut h264_pipe_writer = VideoToolboxH264PipeWriter::for_output(video_output);
+    #[cfg(target_os = "macos")]
+    if video_output.uses_video_toolbox()
+        && let Err(error) = video_toolbox_probe.prepare_session()
+    {
+        emit_encoder_bridge_diagnostics_from_thread(
+            &diagnostics_tx,
+            session_id.clone(),
+            target_fps,
+            EncoderBridgeRuntimeStats {
+                queue_depth: 0,
+                input_fps: None,
+                dropped_frames: 0,
+                encoder_speed: None,
+                ..Default::default()
+            },
+            Some(format!(
+                "Could not prepare VideoToolbox encoder bridge output: {error}"
+            )),
+        );
+        return;
+    }
     let mut last_fed_sequence: Option<u64> = None;
     let mut consecutive_repeated_frames = 0_u64;
 
