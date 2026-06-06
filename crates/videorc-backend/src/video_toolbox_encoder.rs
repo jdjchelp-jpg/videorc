@@ -105,9 +105,18 @@ pub struct VideoToolboxH264ProbeResult {
     pub h264_parameter_set_error_status: Option<OSStatus>,
     pub annex_b_sample_bytes: usize,
     pub annex_b_sample_prefix: Vec<u8>,
+    pub annex_b_sample: Vec<u8>,
     pub sample_copy_error_status: Option<OSStatus>,
     pub frame_dropped: bool,
     pub iosurface_backed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VideoToolboxH264AnnexBFrame {
+    pub timing: VideoToolboxFrameTiming,
+    pub bytes: Vec<u8>,
+    pub nal_types: Vec<u8>,
+    pub is_idr: bool,
 }
 
 impl VideoToolboxH264ProbeResult {
@@ -149,10 +158,25 @@ impl VideoToolboxH264ProbeResult {
             h264_parameter_set_error_status: None,
             annex_b_sample_bytes: 0,
             annex_b_sample_prefix: Vec::new(),
+            annex_b_sample: Vec::new(),
             sample_copy_error_status: None,
             frame_dropped: false,
             iosurface_backed: false,
         }
+    }
+
+    pub fn annex_b_frame(&self) -> Option<VideoToolboxH264AnnexBFrame> {
+        let timing = self.frame_timing?;
+        if self.annex_b_sample.is_empty() {
+            return None;
+        }
+        let nal_types = annex_b_nal_types(&self.annex_b_sample);
+        Some(VideoToolboxH264AnnexBFrame {
+            timing,
+            bytes: self.annex_b_sample.clone(),
+            is_idr: nal_types.contains(&5),
+            nal_types,
+        })
     }
 }
 
@@ -465,11 +489,22 @@ impl VideoToolboxH264Session {
             h264_parameter_set_error_status: state.h264_parameter_set_error_status,
             annex_b_sample_bytes: annex_b_sample.len(),
             annex_b_sample_prefix: annex_b_sample[..annex_b_prefix_len].to_vec(),
+            annex_b_sample,
             sample_copy_error_status: state.sample_copy_error_status,
             frame_dropped: state.frame_dropped
                 || encode_info_flags.contains(VTEncodeInfoFlags::FrameDropped),
             iosurface_backed,
         })
+    }
+
+    pub fn encode_retained_target_annex_b_with_timing(
+        &self,
+        target: &MetalCompositorTargetPixelBuffer,
+        timing: VideoToolboxFrameTiming,
+    ) -> Result<VideoToolboxH264AnnexBFrame> {
+        self.encode_retained_target_with_timing(target, timing)?
+            .annex_b_frame()
+            .context("VideoToolbox retained-target encode returned no Annex B frame")
     }
 
     fn configure_realtime_low_latency(
@@ -717,6 +752,28 @@ fn append_annex_b_nal(output: &mut Vec<u8>, nal: &[u8]) {
     output.extend_from_slice(nal);
 }
 
+fn annex_b_nal_types(bytes: &[u8]) -> Vec<u8> {
+    let mut nal_types = Vec::new();
+    let mut offset = 0usize;
+    while let Some(start_code_offset) = find_annex_b_start_code(bytes, offset) {
+        let nal_start = start_code_offset + 4;
+        let nal_end = find_annex_b_start_code(bytes, nal_start).unwrap_or(bytes.len());
+        if nal_start < nal_end {
+            nal_types.push(bytes[nal_start] & 0x1f);
+        }
+        offset = nal_end;
+    }
+    nal_types
+}
+
+fn find_annex_b_start_code(bytes: &[u8], from: usize) -> Option<usize> {
+    bytes
+        .get(from..)?
+        .windows(4)
+        .position(|window| window == [0, 0, 0, 1])
+        .map(|position| from + position)
+}
+
 impl Drop for VideoToolboxH264Session {
     fn drop(&mut self) {
         unsafe { self.session.invalidate() };
@@ -956,9 +1013,67 @@ mod tests {
                 0, 1, 0x41,
             ]
         );
+        assert_eq!(annex_b_nal_types(&annex_b), [7, 8, 5, 1]);
         assert!(
             h264_avcc_sample_to_annex_b(&parameter_sets, &sample[..sample.len() - 1], 4, true)
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn video_toolbox_returns_annex_b_frame_for_retained_target_or_skips() {
+        let Some(mut compositor) = MetalSceneCompositor::new() else {
+            eprintln!("skipping: no Metal device available in this environment");
+            return;
+        };
+        let blue = [255u8, 0, 0, 255];
+        let sources = [GpuSource {
+            bgra: &blue,
+            width: 1,
+            height: 1,
+            dest: [0.0, 0.0, 1.0, 1.0],
+            crop: [0.0; 4],
+            mirror: false,
+            circle: false,
+        }];
+        compositor
+            .compose_bgra(64, 64, [0.0, 0.0, 0.0, 1.0], &sources)
+            .expect("compose retained Metal target");
+        let Some(target) = compositor.latest_target_pixel_buffer() else {
+            eprintln!("skipping: IOSurface-backed Metal target unavailable");
+            return;
+        };
+        let session = match VideoToolboxH264Session::new_realtime(64, 64, 30, 60) {
+            Ok(session) => session,
+            Err(error) => {
+                eprintln!("skipping: VideoToolbox H.264 session unavailable: {error:#}");
+                return;
+            }
+        };
+        if let Err(error) = session.prepare() {
+            eprintln!("skipping: VideoToolbox H.264 session could not prepare: {error:#}");
+            return;
+        }
+        let timing = VideoToolboxFrameTiming::frame_index(0, 30).expect("valid timing");
+        let frame = match session.encode_retained_target_annex_b_with_timing(&target, timing) {
+            Ok(frame) => frame,
+            Err(error) => {
+                eprintln!("skipping: VideoToolbox could not return Annex B frame: {error:#}");
+                return;
+            }
+        };
+
+        assert_eq!(frame.timing, timing);
+        assert!(frame.bytes.starts_with(&[0, 0, 0, 1]));
+        assert!(frame.nal_types.contains(&7), "missing SPS: {frame:?}");
+        assert!(frame.nal_types.contains(&8), "missing PPS: {frame:?}");
+        assert_eq!(frame.is_idr, frame.nal_types.contains(&5));
+        assert!(
+            frame
+                .nal_types
+                .iter()
+                .any(|nal_type| *nal_type == 5 || *nal_type == 1),
+            "missing coded slice: {frame:?}"
         );
     }
 
@@ -1018,6 +1133,21 @@ mod tests {
         assert!(
             result.annex_b_sample_prefix.starts_with(&[0, 0, 0, 1]),
             "VideoToolbox Annex B sample did not start with a start code: {result:?}"
+        );
+        assert!(
+            !result.annex_b_sample.is_empty(),
+            "VideoToolbox did not retain Annex B sample bytes: {result:?}"
+        );
+        let annex_b_frame = result.annex_b_frame().expect("Annex B frame");
+        assert_eq!(annex_b_frame.bytes.len(), result.annex_b_sample_bytes);
+        assert_eq!(annex_b_frame.is_idr, annex_b_frame.nal_types.contains(&5));
+        assert!(
+            annex_b_frame.nal_types.contains(&7),
+            "VideoToolbox Annex B frame did not include SPS: {result:?}"
+        );
+        assert!(
+            annex_b_frame.nal_types.contains(&8),
+            "VideoToolbox Annex B frame did not include PPS: {result:?}"
         );
     }
 }

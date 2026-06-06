@@ -134,8 +134,10 @@ fails a "native" claim — by design.
   bytes to Rust, copy SPS/PPS H.264 parameter sets from the sample format description,
   parse copied sample bytes as AVCC length-prefixed NAL units, and convert the copied
   parameter sets plus sample payload into Annex B start-code-prefixed bytes through a
-  realtime H.264 session; the production recording bridge still needs to replace the
-  raw-YUV FIFO copy before
+  realtime H.264 session. The retained-target encode path now exposes a reusable
+  `VideoToolboxH264AnnexBFrame` with the Annex B bytes, frame timing, NAL types, and IDR
+  evidence for the bridge to consume next; the production recording bridge still needs to
+  replace the raw-YUV FIFO copy before
   `encoderBridgeZeroCopyFrames` can grow.
 - The production recording bridge now retains the actual Metal target handle on each fed
   compositor frame and has an opt-in sidecar VideoToolbox probe, enabled with
