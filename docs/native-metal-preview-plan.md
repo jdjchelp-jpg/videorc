@@ -54,6 +54,10 @@ fails a "native" claim — by design.
   a dedicated host seam and returns typed host command payloads with AppKit-converted
   bounds. The seam returns no activation yet, so the app still reports the Electron proof
   backing until the main-thread presenter runner presents real pixels.
+- A `NativePreviewPresenterRunner` now owns the AppKit overlay and a same-device Metal
+  presenter on the main thread. It can apply host create/update/destroy commands and only
+  returns native `CAMetalLayer` activation after `present_latest()` succeeds against the
+  compositor target.
 - `MetalSceneCompositor` can now hand its latest cached target texture directly to the
   preview presenter, so the native runtime can present the compositor output without first
   exposing raw Metal texture types across modules or reading pixels back for preview.

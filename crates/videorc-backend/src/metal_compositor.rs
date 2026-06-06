@@ -268,6 +268,13 @@ impl MetalSceneCompositor {
         presenter.present_texture_to_layer(layer, &target.0)
     }
 
+    /// Build a presenter that shares this compositor's Metal device. The native preview
+    /// host uses this to present the cached target texture without exposing raw Metal
+    /// device types across module boundaries.
+    pub fn make_preview_presenter(&self) -> Option<MetalPreviewPresenter> {
+        MetalPreviewPresenter::new(self.device.clone())
+    }
+
     fn ensure_target_texture(&mut self, width: usize, height: usize) -> Option<()> {
         if self.target.is_some() && self.target_width == width && self.target_height == height {
             return Some(());
@@ -388,6 +395,7 @@ pub fn make_preview_layer(device: &MetalDevice, width: f64, height: f64) -> Reta
 /// edges. Preview presentation is a separate surface concern: it uses linear sampling so
 /// the full-resolution compositor texture can be downsampled to the window's drawable
 /// size without the hard pixel stair-steps of a blit copy.
+#[derive(Debug)]
 pub struct MetalPreviewPresenter {
     device: Retained<MetalDevice>,
     queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
@@ -1043,7 +1051,7 @@ mod tests {
             eprintln!("skipping: no Metal device available in this environment");
             return;
         };
-        let Some(presenter) = MetalPreviewPresenter::new(compositor.device.clone()) else {
+        let Some(presenter) = compositor.make_preview_presenter() else {
             return;
         };
         let layer = make_preview_layer(presenter.device(), 4.0, 4.0);

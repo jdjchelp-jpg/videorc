@@ -136,8 +136,14 @@ mod macos {
     use objc2_foundation::{NSPoint, NSRect, NSSize};
     use objc2_quartz_core::{CALayer, CAMetalLayer};
 
-    use super::NativePreviewHostBounds;
-    use crate::metal_compositor::{MetalPreviewPresenter, make_preview_layer};
+    use super::{
+        NativePreviewHostActivation, NativePreviewHostBounds, NativePreviewHostCommand,
+        NativePreviewHostCommandKind,
+    };
+    use crate::metal_compositor::{
+        MetalPreviewPresenter, MetalSceneCompositor, make_preview_layer,
+    };
+    use crate::protocol::{PreviewSurfaceBacking, PreviewTransport};
 
     #[derive(Debug)]
     pub struct NativePreviewLayerHost {
@@ -247,6 +253,76 @@ mod macos {
         }
     }
 
+    /// Main-thread presenter runtime for the real native preview path.
+    ///
+    /// This owns AppKit objects and therefore must only be driven from code that holds a
+    /// `MainThreadMarker`. Creating/updating the overlay is not enough to claim OBS-native
+    /// preview; activation is returned only after the compositor target is actually
+    /// presented into the `CAMetalLayer`.
+    #[derive(Debug)]
+    pub struct NativePreviewPresenterRunner {
+        presenter: MetalPreviewPresenter,
+        overlay: Option<NativePreviewOverlayHost>,
+    }
+
+    impl NativePreviewPresenterRunner {
+        pub fn new(compositor: &MetalSceneCompositor) -> Option<Self> {
+            Some(Self {
+                presenter: compositor.make_preview_presenter()?,
+                overlay: None,
+            })
+        }
+
+        pub fn apply_command(&mut self, command: NativePreviewHostCommand, mtm: MainThreadMarker) {
+            match command.kind {
+                NativePreviewHostCommandKind::Create
+                | NativePreviewHostCommandKind::UpdateBounds => {
+                    let Some(bounds) = command.bounds else {
+                        return;
+                    };
+                    match self.overlay.as_mut() {
+                        Some(overlay) => {
+                            overlay.set_bounds(bounds);
+                            overlay.show();
+                        }
+                        None => {
+                            let overlay =
+                                NativePreviewOverlayHost::new(&self.presenter, bounds, mtm);
+                            overlay.show();
+                            self.overlay = Some(overlay);
+                        }
+                    }
+                }
+                NativePreviewHostCommandKind::Destroy => {
+                    if let Some(overlay) = self.overlay.take() {
+                        overlay.hide();
+                    }
+                }
+            }
+        }
+
+        pub fn present_latest(
+            &self,
+            compositor: &MetalSceneCompositor,
+        ) -> Option<NativePreviewHostActivation> {
+            let overlay = self.overlay.as_ref()?;
+            compositor
+                .present_latest_to_layer(&self.presenter, overlay.layer())
+                .then(|| NativePreviewHostActivation {
+                    transport: PreviewTransport::NativeSurface,
+                    backing: PreviewSurfaceBacking::CaMetalLayer,
+                    message: Some(
+                        "Native CAMetalLayer preview surface is presenting compositor output."
+                            .to_string(),
+                    ),
+                })
+        }
+
+        pub fn has_overlay(&self) -> bool {
+            self.overlay.is_some()
+        }
+    }
+
     fn view_frame(bounds: NativePreviewHostBounds) -> NSRect {
         NSRect::new(
             NSPoint::new(0.0, 0.0),
@@ -262,7 +338,7 @@ mod macos {
 
 #[cfg(target_os = "macos")]
 #[allow(unused_imports)]
-pub use macos::{NativePreviewLayerHost, NativePreviewOverlayHost};
+pub use macos::{NativePreviewLayerHost, NativePreviewOverlayHost, NativePreviewPresenterRunner};
 
 #[cfg(test)]
 mod tests {
