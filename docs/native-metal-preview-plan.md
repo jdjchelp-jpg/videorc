@@ -28,8 +28,11 @@ fails a "native" claim — by design.
   sources, so enabling it never changes a frame it cannot reproduce.
 - Recording startup now waits for consecutive target-resolution compositor frames that
   include every visible non-test source required by the scene, preventing a screen-only or
-  camera-only early frame from satisfying a screen+camera recording barrier. The encoder
-  bridge also has a regression guard that its first tick consumes an already-ready
+  camera-only early frame from satisfying a screen+camera recording barrier. Recording
+  startup also requires those frames to come from the just-installed recording scene
+  revision, so stale pre-recording layout frames cannot satisfy the barrier after
+  `compositor.scene.update`. The encoder bridge also has a regression guard that its
+  first tick consumes an already-ready
   compositor frame as fresh target-resolution input instead of synthetic startup filler,
   and the live bridge now waits briefly for a newer compositor sequence before admitting a
   repeat so startup and late-run duplicate bursts stay inside the final-file gate.

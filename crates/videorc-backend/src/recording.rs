@@ -520,6 +520,7 @@ pub async fn start_session(
             &session_id,
             params.output.video.width,
             params.output.video.height,
+            Some(revision),
             startup_source_requirements,
         )
         .await
@@ -2765,6 +2766,7 @@ async fn await_recording_startup_barrier(
     session_id: &str,
     width: u32,
     height: u32,
+    required_scene_revision: Option<u64>,
     requirements: CompositorStartupSourceRequirements,
 ) -> Result<CompositorStartupBarrierResult> {
     publish_recording_startup_barrier_diagnostics(
@@ -2787,6 +2789,7 @@ async fn await_recording_startup_barrier(
         CompositorStartupBarrierParams {
             width,
             height,
+            required_scene_revision,
             min_consecutive_frames: RECORDING_STARTUP_BARRIER_MIN_FRAMES,
             timeout: RECORDING_STARTUP_BARRIER_TIMEOUT,
             requirements,

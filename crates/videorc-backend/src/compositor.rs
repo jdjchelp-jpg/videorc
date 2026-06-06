@@ -92,6 +92,7 @@ pub struct CompositorStartParams {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CompositorFrameEvidence {
     pub sequence: u64,
+    pub scene_revision: Option<u64>,
     pub width: u32,
     pub height: u32,
     pub has_real_source: bool,
@@ -105,6 +106,7 @@ pub struct CompositorFrameEvidence {
 pub struct CompositorStartupBarrierParams {
     pub width: u32,
     pub height: u32,
+    pub required_scene_revision: Option<u64>,
     pub min_consecutive_frames: u32,
     pub timeout: Duration,
     pub requirements: CompositorStartupSourceRequirements,
@@ -349,6 +351,15 @@ fn startup_frame_block_reason(
         return Some(format!(
             "latest compositor frame is {}x{}, expected {}x{}",
             evidence.width, evidence.height, params.width, params.height
+        ));
+    }
+
+    if let Some(required_revision) = params.required_scene_revision
+        && evidence.scene_revision != Some(required_revision)
+    {
+        return Some(format!(
+            "latest compositor frame is scene revision {:?}, expected {required_revision}",
+            evidence.scene_revision
         ));
     }
 
@@ -1066,6 +1077,7 @@ async fn publish_compositor_frame(
     }
     let evidence = CompositorFrameEvidence {
         sequence,
+        scene_revision: snapshot.as_ref().map(|snapshot| snapshot.revision),
         width,
         height,
         has_real_source: fingerprint.has_real_source() || has_image_source,
@@ -2287,9 +2299,33 @@ mod tests {
         screen_sequence: Option<u64>,
         has_image_source: bool,
     ) {
+        set_latest_frame_evidence_for_scene(
+            state,
+            sequence,
+            Some(1),
+            width,
+            height,
+            camera_sequence,
+            screen_sequence,
+            has_image_source,
+        )
+        .await;
+    }
+
+    async fn set_latest_frame_evidence_for_scene(
+        state: &AppState,
+        sequence: u64,
+        scene_revision: Option<u64>,
+        width: u32,
+        height: u32,
+        camera_sequence: Option<u64>,
+        screen_sequence: Option<u64>,
+        has_image_source: bool,
+    ) {
         let mut compositor = state.compositor.lock().await;
         compositor.latest_frame_evidence = Some(CompositorFrameEvidence {
             sequence,
+            scene_revision,
             width,
             height,
             has_real_source: camera_sequence.is_some()
@@ -2356,6 +2392,7 @@ mod tests {
             CompositorStartupBarrierParams {
                 width: 1920,
                 height: 1080,
+                required_scene_revision: Some(1),
                 min_consecutive_frames: 2,
                 timeout: Duration::from_millis(250),
                 requirements: any_real_source_requirements(),
@@ -2380,6 +2417,7 @@ mod tests {
             CompositorStartupBarrierParams {
                 width: 1920,
                 height: 1080,
+                required_scene_revision: Some(1),
                 min_consecutive_frames: 1,
                 timeout: Duration::from_millis(20),
                 requirements: any_real_source_requirements(),
@@ -2400,6 +2438,7 @@ mod tests {
             CompositorStartupBarrierParams {
                 width: 1920,
                 height: 1080,
+                required_scene_revision: Some(1),
                 min_consecutive_frames: 1,
                 timeout: Duration::from_millis(20),
                 requirements: any_real_source_requirements(),
@@ -2416,6 +2455,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn startup_barrier_times_out_on_stale_scene_revision() {
+        let state = test_state();
+        set_latest_frame_evidence_for_scene(&state, 1, Some(1), 1920, 1080, Some(1), None, false)
+            .await;
+
+        let stale_scene = wait_for_compositor_startup_frames(
+            &state,
+            CompositorStartupBarrierParams {
+                width: 1920,
+                height: 1080,
+                required_scene_revision: Some(2),
+                min_consecutive_frames: 1,
+                timeout: Duration::from_millis(20),
+                requirements: any_real_source_requirements(),
+            },
+        )
+        .await;
+
+        assert!(!stale_scene.ready);
+        assert!(
+            stale_scene
+                .timeout_reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("expected 2"))
+        );
+
+        set_latest_frame_evidence_for_scene(&state, 2, Some(2), 1920, 1080, Some(2), None, false)
+            .await;
+        let ready = wait_for_compositor_startup_frames(
+            &state,
+            CompositorStartupBarrierParams {
+                width: 1920,
+                height: 1080,
+                required_scene_revision: Some(2),
+                min_consecutive_frames: 1,
+                timeout: Duration::from_millis(20),
+                requirements: any_real_source_requirements(),
+            },
+        )
+        .await;
+
+        assert!(ready.ready, "{ready:?}");
+    }
+
+    #[tokio::test]
     async fn startup_barrier_requires_every_requested_source() {
         let state = test_state();
         set_latest_frame_evidence(&state, 1, 1920, 1080, Some(1), None, false).await;
@@ -2425,6 +2509,7 @@ mod tests {
             CompositorStartupBarrierParams {
                 width: 1920,
                 height: 1080,
+                required_scene_revision: Some(1),
                 min_consecutive_frames: 1,
                 timeout: Duration::from_millis(20),
                 requirements: CompositorStartupSourceRequirements {
@@ -2449,6 +2534,7 @@ mod tests {
             CompositorStartupBarrierParams {
                 width: 1920,
                 height: 1080,
+                required_scene_revision: Some(1),
                 min_consecutive_frames: 1,
                 timeout: Duration::from_millis(20),
                 requirements: CompositorStartupSourceRequirements {
