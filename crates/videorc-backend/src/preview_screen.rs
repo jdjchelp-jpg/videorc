@@ -916,8 +916,9 @@ mod macos {
     use objc2_core_media::{CMSampleBuffer, CMTime};
     use objc2_core_video::{
         CVPixelBufferGetBaseAddress, CVPixelBufferGetBytesPerRow, CVPixelBufferGetHeight,
-        CVPixelBufferGetPixelFormatType, CVPixelBufferGetWidth, CVPixelBufferLockBaseAddress,
-        CVPixelBufferLockFlags, CVPixelBufferUnlockBaseAddress, kCVPixelFormatType_32BGRA,
+        CVPixelBufferGetIOSurface, CVPixelBufferGetPixelFormatType, CVPixelBufferGetWidth,
+        CVPixelBufferLockBaseAddress, CVPixelBufferLockFlags, CVPixelBufferUnlockBaseAddress,
+        kCVPixelFormatType_32BGRA,
     };
     use objc2_foundation::{NSArray, NSError, NSObject, NSObjectProtocol, NSString};
     use objc2_screen_capture_kit::{
@@ -1389,13 +1390,23 @@ mod macos {
                 guard.window_started_at = Some(now);
             }
             let sequence = guard.frames_captured;
-            guard.frame_store.publish(
+            // Zero-copy: retain the capture IOSurface so the compositor can import it as a Metal
+            // texture instead of re-uploading these bytes. Opt-in until validated on-device; the
+            // BGRA `bytes` above remain the fallback and the encoder/source-readiness path.
+            let source_iosurface = if crate::metal_compositor::source_zerocopy_enabled() {
+                CVPixelBufferGetIOSurface(Some(&pixel_buffer))
+                    .map(crate::frame_store::RetainedIoSurface::new)
+            } else {
+                None
+            };
+            guard.frame_store.publish_with_iosurface(
                 sequence,
                 width,
                 height,
                 PreviewScreenPixelFormat::Bgra8,
                 now,
                 bytes,
+                source_iosurface,
             );
             let publish_ms = publish_started_at.elapsed().as_secs_f64() * 1000.0;
             guard.capture_timings.record_valid_frame(

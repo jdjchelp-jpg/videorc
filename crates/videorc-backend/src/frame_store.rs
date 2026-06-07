@@ -1,6 +1,49 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+#[cfg(target_os = "macos")]
+mod source_iosurface {
+    use objc2_core_foundation::CFRetained;
+    use objc2_io_surface::IOSurfaceRef;
+
+    /// A retained capture-source IOSurface, kept alive so the GPU compositor can import it
+    /// zero-copy (no BGRA byte re-upload). Mirrors the retained-target wrapper in
+    /// `metal_compositor.rs`: the capture and compositor run in the same process, so the surface
+    /// reference is handed straight to Metal without a global IOSurface lookup.
+    #[derive(Clone)]
+    pub struct RetainedIoSurface(CFRetained<IOSurfaceRef>);
+
+    impl RetainedIoSurface {
+        pub fn new(surface: CFRetained<IOSurfaceRef>) -> Self {
+            Self(surface)
+        }
+
+        pub fn surface(&self) -> &IOSurfaceRef {
+            self.0.as_ref()
+        }
+    }
+
+    impl std::fmt::Debug for RetainedIoSurface {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("RetainedIoSurface(..)")
+        }
+    }
+
+    // SAFETY: IOSurface is a kernel-backed object that is safe to retain/release and reference
+    // across threads; the wrapper only exposes shared references for GPU texture import. This
+    // matches the existing `unsafe impl Send` retained-CoreVideo wrappers in this crate.
+    unsafe impl Send for RetainedIoSurface {}
+    unsafe impl Sync for RetainedIoSurface {}
+}
+
+#[cfg(target_os = "macos")]
+pub use source_iosurface::RetainedIoSurface;
+
+/// Off-macOS stub so `StoredFrame` stays portable; never constructed.
+#[cfg(not(target_os = "macos"))]
+#[derive(Debug, Clone)]
+pub struct RetainedIoSurface;
+
 #[derive(Debug, Clone)]
 pub struct StoredFrame<P, M = ()> {
     pub sequence: u64,
@@ -10,6 +53,9 @@ pub struct StoredFrame<P, M = ()> {
     #[allow(dead_code)]
     pub metadata: M,
     pub bytes: Vec<u8>,
+    /// Zero-copy capture-source surface, when retained (see `RetainedIoSurface`). `None` keeps
+    /// the existing BGRA `bytes` upload path.
+    pub source_iosurface: Option<RetainedIoSurface>,
     pub captured_at: Instant,
 }
 
@@ -113,6 +159,57 @@ impl<P, M> FrameStore<P, M> {
         captured_at: Instant,
         bytes: Vec<u8>,
     ) -> FrameHandle<P, M> {
+        self.publish_full(
+            sequence,
+            width,
+            height,
+            pixel_format,
+            metadata,
+            captured_at,
+            bytes,
+            None,
+        )
+    }
+
+    /// Publish a frame that also retains its capture-source IOSurface for zero-copy GPU import.
+    #[allow(clippy::too_many_arguments)]
+    pub fn publish_with_iosurface(
+        &mut self,
+        sequence: u64,
+        width: u32,
+        height: u32,
+        pixel_format: P,
+        captured_at: Instant,
+        bytes: Vec<u8>,
+        source_iosurface: Option<RetainedIoSurface>,
+    ) -> FrameHandle<P, M>
+    where
+        M: Default,
+    {
+        self.publish_full(
+            sequence,
+            width,
+            height,
+            pixel_format,
+            M::default(),
+            captured_at,
+            bytes,
+            source_iosurface,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn publish_full(
+        &mut self,
+        sequence: u64,
+        width: u32,
+        height: u32,
+        pixel_format: P,
+        metadata: M,
+        captured_at: Instant,
+        bytes: Vec<u8>,
+        source_iosurface: Option<RetainedIoSurface>,
+    ) -> FrameHandle<P, M> {
         if let Some(previous) = self.latest.take() {
             self.frames_replaced = self.frames_replaced.saturating_add(1);
             if let Ok(previous) = Arc::try_unwrap(previous) {
@@ -127,6 +224,7 @@ impl<P, M> FrameStore<P, M> {
             pixel_format,
             metadata,
             bytes,
+            source_iosurface,
             captured_at,
         });
         self.latest = Some(Arc::clone(&frame));

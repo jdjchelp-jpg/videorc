@@ -1057,6 +1057,7 @@ mod tests {
         let red = [0u8, 0, 255, 255];
         let sources = [GpuSource {
             bgra: &red,
+            iosurface: None,
             width: 1,
             height: 1,
             dest: [0.0, 0.0, 1.0, 1.0],
@@ -1152,6 +1153,7 @@ mod tests {
         for (frame_index, color) in colors.iter().enumerate() {
             let sources = [GpuSource {
                 bgra: color,
+                iosurface: None,
                 width: 1,
                 height: 1,
                 dest: [0.0, 0.0, 1.0, 1.0],
@@ -1247,6 +1249,7 @@ mod tests {
         let blue = [255u8, 0, 0, 255];
         let sources = [GpuSource {
             bgra: &blue,
+            iosurface: None,
             width: 1,
             height: 1,
             dest: [0.0, 0.0, 1.0, 1.0],

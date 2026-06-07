@@ -1304,6 +1304,7 @@ impl<'a> PreparedGpuSourcePixels<'a> {
 #[cfg(target_os = "macos")]
 struct PreparedGpuSource<'a> {
     pixels: PreparedGpuSourcePixels<'a>,
+    iosurface: Option<&'a crate::frame_store::RetainedIoSurface>,
     width: usize,
     height: usize,
     dest: [f32; 4],
@@ -1317,6 +1318,7 @@ impl<'a> PreparedGpuSource<'a> {
     fn as_gpu_source(&'a self) -> crate::metal_compositor::GpuSource<'a> {
         crate::metal_compositor::GpuSource {
             bgra: self.pixels.as_slice(),
+            iosurface: self.iosurface.map(|retained| retained.surface()),
             width: self.width,
             height: self.height,
             dest: self.dest,
@@ -1416,6 +1418,7 @@ fn try_gpu_compose(
         let bgra = rgba_to_bgra_bytes(rgba);
         let sources = [crate::metal_compositor::GpuSource {
             bgra: &bgra,
+            iosurface: None,
             width: image_width as usize,
             height: image_height as usize,
             dest: [0.0, 0.0, 1.0, 1.0],
@@ -1465,6 +1468,7 @@ fn try_gpu_compose(
                 .ok_or("camera source placement failed")?;
                 prepared_sources.push(PreparedGpuSource {
                     pixels: PreparedGpuSourcePixels::Borrowed(&frame.bytes),
+                    iosurface: frame.source_iosurface.as_ref(),
                     width: frame.width as usize,
                     height: frame.height as usize,
                     dest,
@@ -1489,6 +1493,7 @@ fn try_gpu_compose(
                 .ok_or("screen source placement failed")?;
                 prepared_sources.push(PreparedGpuSource {
                     pixels: PreparedGpuSourcePixels::Borrowed(&frame.bytes),
+                    iosurface: frame.source_iosurface.as_ref(),
                     width: frame.width as usize,
                     height: frame.height as usize,
                     dest,
@@ -1511,6 +1516,7 @@ fn try_gpu_compose(
                 .ok_or("test-pattern source placement failed")?;
                 prepared_sources.push(PreparedGpuSource {
                     pixels: PreparedGpuSourcePixels::Owned(pattern.bytes),
+                    iosurface: None,
                     width: pattern.width,
                     height: pattern.height,
                     dest,
@@ -2910,6 +2916,7 @@ mod tests {
             pixel_format: PreviewScreenPixelFormat::Bgra8,
             metadata: (),
             bytes: vec![0, 0, 0, 255],
+            source_iosurface: None,
             captured_at: Instant::now(),
         });
         assert!(!should_blocking_refresh_live_source(1, Some(&fresh_frame)));
@@ -2925,6 +2932,7 @@ mod tests {
             pixel_format: PreviewScreenPixelFormat::Bgra8,
             metadata: (),
             bytes: vec![0, 0, 0, 255],
+            source_iosurface: None,
             captured_at: Instant::now()
                 - COMPOSITOR_LIVE_SOURCE_CONTENDED_RECOVERY_AFTER
                 - Duration::from_millis(1),
@@ -2945,6 +2953,7 @@ mod tests {
             pixel_format: PreviewScreenPixelFormat::Bgra8,
             metadata: (),
             bytes: vec![0, 0, 0, 255],
+            source_iosurface: None,
             captured_at: Instant::now()
                 - COMPOSITOR_LIVE_SOURCE_STALE_RECOVERY_AFTER
                 - Duration::from_millis(1),
@@ -4227,6 +4236,7 @@ mod tests {
             pixel_format: PreviewCameraPixelFormat::Bgra8,
             metadata: (),
             bytes: [0, 0, 255, 255].repeat(16),
+            source_iosurface: None,
             captured_at: Instant::now(),
         });
         let mut bytes = vec![0; raw_yuv420p_len(4, 4)];

@@ -296,6 +296,7 @@ mod macos {
         let red = [0u8, 0, 255, 255];
         let source = GpuSource {
             bgra: &red,
+            iosurface: None,
             width: 1,
             height: 1,
             dest: [0.0, 0.0, 1.0, 1.0],
@@ -372,6 +373,7 @@ mod macos {
         let red = [0u8, 0, 255, 255];
         let source = GpuSource {
             bgra: &red,
+            iosurface: None,
             width: 1,
             height: 1,
             dest: [0.0, 0.0, 1.0, 1.0],

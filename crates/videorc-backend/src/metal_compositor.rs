@@ -91,6 +91,10 @@ struct FragParams {
 /// origin at the top-left (the convention the scene model uses).
 pub struct GpuSource<'a> {
     pub bgra: &'a [u8],
+    /// Zero-copy capture-source surface. When present (and `VIDEORC_ZEROCOPY_SOURCES` is on) the
+    /// compositor imports it as a Metal texture instead of uploading `bgra` via `replaceRegion`.
+    /// The caller keeps the backing surface retained for the duration of the compose.
+    pub iosurface: Option<&'a IOSurfaceRef>,
     pub width: usize,
     pub height: usize,
     /// Destination rect (x, y, w, h) in normalized [0,1] coords, top-left origin.
@@ -467,6 +471,23 @@ impl MetalSceneCompositor {
         if self.source_textures.len() <= index {
             self.source_textures.resize_with(index + 1, || None);
         }
+        // Zero-copy fast path: import the capture-source IOSurface directly as a Metal texture,
+        // skipping the per-frame BGRA upload. A fresh texture view is created each frame because
+        // the source surface changes; on any failure we fall through to the byte-upload path.
+        if source_zerocopy_enabled()
+            && let Some(surface) = source.iosurface
+            && let Some(texture) =
+                import_source_iosurface_texture(&self.device, surface, source.width, source.height)
+        {
+            self.source_textures[index] = Some(CachedSourceTexture {
+                texture,
+                width: source.width,
+                height: source.height,
+            });
+            let cached = self.source_textures[index].as_ref()?;
+            return Some(&cached.texture);
+        }
+
         let needs_texture = match self.source_textures[index].as_ref() {
             Some(cached) => cached.width != source.width || cached.height != source.height,
             None => true,
@@ -804,6 +825,45 @@ pub fn import_pixel_buffer_texture(
 /// This is the native-preview bridge primitive for a helper process or Electron native
 /// host: the backend can publish an IOSurface id with a compositor frame, and the host
 /// can import that shared storage without a PNG/JPEG readback path.
+/// Whether live capture sources should be imported zero-copy via their IOSurface. Opt-in while
+/// the path is validated on-device; defaults off so the proven `replaceRegion` upload is used.
+pub fn source_zerocopy_enabled() -> bool {
+    use std::sync::OnceLock;
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("VIDEORC_ZEROCOPY_SOURCES")
+            .ok()
+            .map(|value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "on" | "yes"
+                )
+            })
+            .unwrap_or(false)
+    })
+}
+
+/// Import an already-retained capture-source IOSurface as a BGRA Metal texture with no CPU copy.
+/// Same primitive as `import_iosurface_texture`, but takes the in-process surface reference
+/// directly instead of a global IOSurface id lookup (capture surfaces are not global).
+fn import_source_iosurface_texture(
+    device: &MetalDevice,
+    surface: &IOSurfaceRef,
+    width: usize,
+    height: usize,
+) -> Option<Retained<MetalTexture>> {
+    let descriptor = unsafe {
+        MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
+            MTLPixelFormat::BGRA8Unorm,
+            width,
+            height,
+            false,
+        )
+    };
+    descriptor.setUsage(MTLTextureUsage::ShaderRead);
+    device.newTextureWithDescriptor_iosurface_plane(&descriptor, surface, 0)
+}
+
 pub fn import_iosurface_texture(
     device: &MetalDevice,
     iosurface_id: u32,
@@ -1121,6 +1181,7 @@ mod tests {
         let red = [0u8, 0, 255, 255].repeat(4);
         let sources = [GpuSource {
             bgra: &red,
+            iosurface: None,
             width: 2,
             height: 2,
             dest: [0.0, 0.0, 1.0, 1.0],
@@ -1240,6 +1301,7 @@ mod tests {
     ) -> GpuSource<'_> {
         GpuSource {
             bgra,
+            iosurface: None,
             width: w,
             height: h,
             dest: [0.0, 0.0, 1.0, 1.0],
@@ -1329,6 +1391,7 @@ mod tests {
         let sources = [
             GpuSource {
                 bgra: &screen,
+                iosurface: None,
                 width: 1920,
                 height: 1080,
                 dest: [0.0, 0.0, 1.0, 1.0],
@@ -1338,6 +1401,7 @@ mod tests {
             },
             GpuSource {
                 bgra: &camera,
+                iosurface: None,
                 width: 320,
                 height: 180,
                 dest: [0.7, 0.7, 0.28, 0.28],
@@ -1532,6 +1596,7 @@ mod tests {
         let green = vec![0u8, 255, 0, 255].repeat(2 * 2); // BGRA green, 2×2
         let sources = [GpuSource {
             bgra: &green,
+            iosurface: None,
             width: 2,
             height: 2,
             dest: [0.5, 0.0, 0.5, 1.0],
