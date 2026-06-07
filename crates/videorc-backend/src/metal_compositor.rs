@@ -565,7 +565,9 @@ pub fn make_preview_layer(device: &MetalDevice, width: f64, height: f64) -> Reta
     layer.setMaximumDrawableCount(3);
     layer.setPresentsWithTransaction(false);
     layer.setAllowsNextDrawableTimeout(true);
-    layer.setDisplaySyncEnabled(false);
+    // Keep display sync ON: presents pace to the display refresh so motion stays smooth.
+    // Disabling it (dd78b25) won latency metrics but caused visible preview judder.
+    layer.setDisplaySyncEnabled(true);
     layer.setDrawableSize(CGSize { width, height });
     layer
 }
@@ -1395,6 +1397,21 @@ mod tests {
         // Headless: no drawable is attached, so this returns false — but it must exercise
         // the present entry point (layer config, nextDrawable) without panicking.
         let _presented = present_texture_to_layer(&queue, &layer, &texture);
+    }
+
+    #[test]
+    fn preview_layer_keeps_display_sync_enabled_or_skips_without_a_gpu() {
+        let Some(device) = MTLCreateSystemDefaultDevice() else {
+            eprintln!("skipping: no Metal device available in this environment");
+            return;
+        };
+        let layer = make_preview_layer(&device, 16.0, 16.0);
+        // Regression guard: display sync MUST stay on so preview presents pace to the
+        // display refresh. Disabling it (dd78b25) caused visible preview judder.
+        assert!(
+            layer.displaySyncEnabled(),
+            "preview layer must keep display sync enabled for smooth, vsynced presentation"
+        );
     }
 
     #[test]
