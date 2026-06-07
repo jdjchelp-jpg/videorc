@@ -24,6 +24,9 @@
 //   VIDEORC_BASELINE_FALLBACK_LIVE_PREVIEW=1   deliberately launch the legacy FFmpeg MJPEG preview
 //   VIDEORC_BASELINE_NO_PREVIEW_SURFACE=1      warm sources, but do not create the proof/native preview surface
 //   VIDEORC_BASELINE_REQUIRE_MOTION=1          keep freezedetect as a hard gate for controlled-motion captures
+//   VIDEORC_BASELINE_SCREEN_MOTION_STIMULUS=1  launch a visible animated browser window and require motion
+//   VIDEORC_BASELINE_AV_SYNC_STIMULUS=1        launch a visible flash+click browser window for lip-sync measurement
+//   VIDEORC_BASELINE_MIC_SYNC_OFFSET_MS        microphone sync offset to pass through to the recording session
 //   VIDEORC_SMOKE_OUTPUT_DIR        where recordings + reports land
 //   VIDEORC_BASELINE_SCREEN_ID / _CAMERA_ID / _MIC_ID   force a specific device id
 //   VIDEORC_BASELINE_NO_SCREEN / _NO_CAMERA / _NO_MIC   omit that source
@@ -35,10 +38,12 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 
 import { launchDevApp, stopProcess } from './lib/app-launcher.mjs'
+import { launchAvSyncStimulus, stopAvSyncStimulus } from './lib/av-sync-stimulus.mjs'
+import { launchScreenMotionStimulus, stopScreenMotionStimulus } from './lib/screen-motion-stimulus.mjs'
 import { connectBackend, request } from './smoke-recording-session.mjs'
 import { analyzeRecording, writeReports } from './lib/recording-analyzer.mjs'
 import { analyzeStartupResolution, writeStartupReports } from './lib/startup-resolution-analyzer.mjs'
-import { evaluateAcceptance } from './lib/acceptance-gate.mjs'
+import { DEFAULT_ACCEPTANCE_GATES, evaluateAcceptance } from './lib/acceptance-gate.mjs'
 import { classifyObsParityEvidence } from './lib/obs-parity-evidence.mjs'
 import {
   claimsNativePreview,
@@ -57,12 +62,18 @@ const config = {
   timeoutMs: Number(process.env.VIDEORC_SMOKE_TIMEOUT_MS ?? 180000),
   sampleIntervalMs: Number(process.env.VIDEORC_BASELINE_SAMPLE_MS ?? 2000),
   warmupMs: Number(process.env.VIDEORC_BASELINE_WARMUP_MS ?? 8000),
+  previewMeasurementMs: Number(process.env.VIDEORC_BASELINE_PREVIEW_MEASUREMENT_MS ?? 5000),
   ffmpegPath: process.env.VIDEORC_SMOKE_FFMPEG_PATH ?? 'ffmpeg',
   ffprobePath: process.env.VIDEORC_SMOKE_FFPROBE_PATH ?? siblingFfprobe(process.env.VIDEORC_SMOKE_FFMPEG_PATH) ?? 'ffprobe',
   bridgeVideoOutput: process.env.VIDEORC_ENCODER_BRIDGE_VIDEO_OUTPUT ?? 'videotoolbox-h264-mpegts',
   fallbackLivePreview: process.env.VIDEORC_BASELINE_FALLBACK_LIVE_PREVIEW === '1',
   noPreviewSurface: process.env.VIDEORC_BASELINE_NO_PREVIEW_SURFACE === '1',
-  requireMotion: process.env.VIDEORC_BASELINE_REQUIRE_MOTION === '1',
+  screenMotionStimulus: process.env.VIDEORC_BASELINE_SCREEN_MOTION_STIMULUS === '1',
+  avSyncStimulus: process.env.VIDEORC_BASELINE_AV_SYNC_STIMULUS === '1',
+  microphoneSyncOffsetMs: Number(process.env.VIDEORC_BASELINE_MIC_SYNC_OFFSET_MS ?? 0),
+  requireMotion:
+    process.env.VIDEORC_BASELINE_REQUIRE_MOTION === '1' ||
+    process.env.VIDEORC_BASELINE_SCREEN_MOTION_STIMULUS === '1',
   outputDirectory: resolve(
     process.env.VIDEORC_SMOKE_OUTPUT_DIR ?? join(tmpdir(), `videorc-real-source-baseline-${Date.now()}`)
   ),
@@ -76,6 +87,8 @@ const NATIVE_PREFIX = {
 }
 
 let launched
+let motionStimulus
+let avSyncStimulus
 const previewSurfaceOutputGuard = createPreviewSurfaceOutputGuard()
 mkdirSync(config.outputDirectory, { recursive: true })
 
@@ -87,22 +100,29 @@ try {
   console.error(`real-source baseline failed: ${error?.message ?? error}`)
   exitCode = 2
 } finally {
+  if (motionStimulus) await stopScreenMotionStimulus(motionStimulus)
+  if (avSyncStimulus) await stopAvSyncStimulus(avSyncStimulus)
   if (launched) await stopProcess(launched.process)
 }
 process.exit(exitCode)
 
 async function main() {
   console.log('Launching dev app for real-source baseline (no preview-motion synthetic mode)…')
+  const requiresPreviewHostCommandServer = !config.noPreviewSurface && !config.fallbackLivePreview
   launched = await launchDevApp({
     timeoutMs: config.timeoutMs,
-    requiredMarkers: ['backend-ready'],
+    requiredMarkers: requiresPreviewHostCommandServer
+      ? ['backend-ready', 'preview-motion-ready']
+      : ['backend-ready'],
     // Real sources must flow: do NOT set VIDEORC_SMOKE_PREVIEW_MOTION (that forces
-    // synthetic procedural preview). In no-preview mode, also disable the renderer's
-    // automatic preview refresh so this remains a recording-only baseline.
+    // synthetic procedural preview). The harness owns preview setup explicitly so the
+    // renderer cannot race it with automatic source/surface refreshes.
     env: {
       VIDEORC_SMOKE_OUTPUT_DIR: config.outputDirectory,
       VIDEORC_NATIVE_PREVIEW_SURFACE: config.noPreviewSurface ? '0' : '1',
-      VIDEORC_DISABLE_AUTO_PREVIEW: config.noPreviewSurface ? '1' : '0',
+      VIDEORC_DISABLE_AUTO_PREVIEW: '1',
+      VIDEORC_SMOKE_COMMAND_SERVER: requiresPreviewHostCommandServer ? '1' : '0',
+      VIDEORC_SMOKE_NATIVE_PREVIEW_SUSPENDED: requiresPreviewHostCommandServer ? '1' : '0',
       VIDEORC_ENCODER_BRIDGE_VIDEO_OUTPUT: config.bridgeVideoOutput,
     },
     onLine: (line) => {
@@ -138,6 +158,12 @@ async function main() {
     const sources = selectSources(devices.devices ?? [])
     reportSelection(sources, devices.warnings ?? [])
     assertRequiredSourcesAvailable(sources)
+    if (config.screenMotionStimulus && !sources.screen) {
+      throw new Error('Screen motion stimulus requires a selected real screen source.')
+    }
+    if (config.avSyncStimulus && !sources.screen) {
+      throw new Error('A/V sync stimulus requires a selected real screen source.')
+    }
     if (!sources.screen && !sources.camera) {
       throw new Error('No real screen or camera available/selected — cannot run a real-source baseline.')
     }
@@ -182,14 +208,24 @@ async function main() {
       await tryStep('preview.live.stop', async () => {
         await request(ws, config.timeoutMs, 'preview.live.stop')
       })
-      await tryStep('preview.surface.create', async () => {
+      await requiredStep('preview.surface.create', async () => {
         const status = await request(ws, config.timeoutMs, 'preview.surface.create', {
           bounds: previewSurfaceBounds(),
           targetFps: 60,
           source: previewSurfaceSource(sourceSelection),
         })
-        previewTransport = status?.transport ?? previewTransport
+        const hostStatus = await applyPendingNativePreviewHostCommands(ws)
+        previewTransport = hostStatus?.transport ?? status?.transport ?? previewTransport
       })
+    }
+
+    if (config.screenMotionStimulus) {
+      console.log('Launching visible screen motion stimulus for hard motion gates.')
+      motionStimulus = await launchScreenMotionStimulus()
+    }
+    if (config.avSyncStimulus) {
+      console.log('Launching visible flash+click A/V sync stimulus.')
+      avSyncStimulus = await launchAvSyncStimulus()
     }
 
     await waitForPreviewSourceReadiness(ws, sources)
@@ -229,7 +265,12 @@ async function main() {
     }
     console.log(`Recording real sources for ${(config.recordingMs / 1000).toFixed(0)}s -> ${started.outputPath ?? '(pending)'}`)
 
+    const previewMeasurementPromise = measureNativePreviewDuringRecording()
     const snapshots = await sampleDuringRecording(ws, config.recordingMs)
+    const previewMeasurement = await previewMeasurementPromise
+    if (previewMeasurement?.error) {
+      console.log(`Native preview direct measurement failed: ${previewMeasurement.error}`)
+    }
     const stopRequestedAt = Date.now()
     const stopped = await request(ws, config.timeoutMs, 'session.stop')
     const outputPath = stopped.outputPath ?? started.outputPath
@@ -249,7 +290,9 @@ async function main() {
         requireMotion: config.requireMotion,
       },
     })
-    const diagnostics = summarizeDiagnostics(diagnosticsEvents, snapshots, scenarioStartedAt, stopRequestedAt)
+    const diagnostics = summarizeDiagnostics(diagnosticsEvents, snapshots, scenarioStartedAt, stopRequestedAt, {
+      previewMeasurement,
+    })
     writeReports(report)
     const startupReport = await analyzeStartupResolution(outputPath, {
       ffmpegPath: config.ffmpegPath,
@@ -258,6 +301,9 @@ async function main() {
       expectedHeight: config.height,
       intendedFps: config.fps,
       syntheticEvidence: diagnostics.encoderBridgeSyntheticFrames,
+      gates: {
+        requireMotion: config.requireMotion,
+      },
     })
     const startupPaths = await writeStartupReports(startupReport, {
       ffmpegPath: config.ffmpegPath,
@@ -288,15 +334,18 @@ async function main() {
     // The Electron proof surface reports metrics, but only native-surface plus a real
     // CAMetalLayer backing is an OBS-native claim.
     const acceptance = appendPreviewSurfaceOutputFailures(
-      evaluateAcceptance({
-        analyzerVerdict: report.verdict,
-        startupVerdict: startupReport.verdict,
-        diagnostics,
-        claimsNative,
-        requireObsNativePreview: !config.noPreviewSurface,
-        requireGpuCompositor: true,
-        expectAudio: Boolean(sources.microphone),
-      }),
+      evaluateAcceptance(
+        {
+          analyzerVerdict: report.verdict,
+          startupVerdict: startupReport.verdict,
+          diagnostics,
+          claimsNative,
+          requireObsNativePreview: !config.noPreviewSurface,
+          requireGpuCompositor: true,
+          expectAudio: Boolean(sources.microphone),
+        },
+        acceptanceGates()
+      ),
       previewSurfaceOutputFailures
     )
     printSummary(report, startupReport, diagnostics, previewTransport, baselinePath, acceptance, ownership)
@@ -394,7 +443,7 @@ async function waitForPreviewSourceReadiness(ws, sources) {
       sources.camera ? requestSafe(ws, 'preview.camera.status') : Promise.resolve(null),
       sources.screen ? requestSafe(ws, 'preview.screen.status') : Promise.resolve(null),
     ])
-    if (previewSourceReady(lastCamera) && previewSourceReady(lastScreen)) {
+    if (previewCameraReady(lastCamera) && previewScreenReady(lastScreen)) {
       console.log(
         `Preview sources ready: camera ${describePreviewReadiness(lastCamera)}, screen ${describePreviewReadiness(lastScreen)}`
       )
@@ -407,9 +456,14 @@ async function waitForPreviewSourceReadiness(ws, sources) {
   )
 }
 
-function previewSourceReady(status) {
+function previewCameraReady(status) {
   if (!status) return true
   return status.state === 'live' && (status.framesCaptured ?? 0) > 0 && (status.frameAgeMs ?? Infinity) <= 2_000
+}
+
+function previewScreenReady(status) {
+  if (!status) return true
+  return status.state === 'live' && (status.framesCaptured ?? 0) > 0
 }
 
 function describePreviewReadiness(status) {
@@ -418,6 +472,23 @@ function describePreviewReadiness(status) {
 }
 
 // --- Diagnostics sampling ---------------------------------------------------
+
+async function measureNativePreviewDuringRecording() {
+  if (config.noPreviewSurface || config.fallbackLivePreview) {
+    return null
+  }
+  const smoke = launched?.connections?.['preview-motion-ready']
+  if (!smoke) {
+    return { error: 'preview host command server was not available' }
+  }
+  const durationMs = Math.max(1000, Math.min(config.previewMeasurementMs, config.recordingMs))
+  try {
+    const measurement = await smokeCommand(smoke, 'measure-native-preview-surface', { durationMs })
+    return { measurement }
+  } catch (error) {
+    return { error: error?.message ?? String(error) }
+  }
+}
 
 async function sampleDuringRecording(ws, durationMs) {
   const snapshots = []
@@ -460,8 +531,15 @@ function summarizeDiagnostics(events, snapshots, startedAt, stopRequestedAt, opt
   const ffmpegProcs = collect('activeFfmpegProcesses')
   const ffprobeProcs = collect('activeFfprobeProcesses')
 
+  const previewMeasurement = options.previewMeasurement?.measurement ?? null
+  const previewMeasurementStatus = previewMeasurement?.status ?? null
+  const previewMeasurementError = options.previewMeasurement?.error ?? null
   const compositorSamples = snapshots.map((s) => s.compositor).filter(Boolean)
-  const surfaceSamples = snapshots.map((s) => s.surface).filter(Boolean)
+  const surfaceSamples = [
+    ...snapshots.map((s) => s.surface).filter(Boolean),
+    ...(previewMeasurementStatus ? [previewMeasurementStatus] : []),
+  ]
+  const surfaceMetric = (key) => surfaceSamples.map((s) => num(s[key])).filter((v) => v !== null)
   const transportSamples = measured.map((s) => s.previewTransport).filter(Boolean)
   const backingSamples = measured.map((s) => s.previewSurfaceBacking).filter(Boolean)
   const transports = new Set(transportSamples)
@@ -504,6 +582,52 @@ function summarizeDiagnostics(events, snapshots, startedAt, stopRequestedAt, opt
     }
     return null
   }
+  const previewDirectMeasuredFps = num(previewMeasurement?.measuredFps ?? previewMeasurementStatus?.presentFps)
+  const previewDirectIntervalP95Ms = num(previewMeasurement?.intervalP95Ms ?? previewMeasurementStatus?.intervalP95Ms)
+  const previewDirectInputToPresentP95Ms =
+    num(previewMeasurement?.inputToPresentLatencyP95Ms ?? previewMeasurementStatus?.inputToPresentLatencyP95Ms)
+  const previewDirectInputToPresentP99Ms =
+    num(previewMeasurement?.inputToPresentLatencyP99Ms ?? previewMeasurementStatus?.inputToPresentLatencyP99Ms)
+  const previewDirectCompositorFrameLag =
+    num(previewMeasurement?.compositorFrameLag ?? previewMeasurementStatus?.compositorFrameLag)
+  const passivePreviewPresentFps = minOf(collect('previewPresentFps'))
+  const passivePreviewIntervalP95Ms = maxOf(collect('previewRenderFrameTimeP95Ms'))
+  const previewInputToPresentLatencyMs =
+    maxOf([...collect('previewInputToPresentLatencyMs'), ...surfaceMetric('inputToPresentLatencyMs')])
+  const previewInputToPresentLatencyP95Ms =
+    previewDirectInputToPresentP95Ms ??
+    maxOf([...collect('previewInputToPresentLatencyP95Ms'), ...surfaceMetric('inputToPresentLatencyP95Ms')])
+  const previewInputToPresentLatencyP99Ms =
+    previewDirectInputToPresentP99Ms ??
+    maxOf([...collect('previewInputToPresentLatencyP99Ms'), ...surfaceMetric('inputToPresentLatencyP99Ms')])
+  const nativePreviewRendererPollIntervalP95Ms =
+    maxOf(surfaceMetric('nativePreviewRendererPollIntervalP95Ms'))
+  const nativePreviewRendererPollRoundTripP95Ms =
+    maxOf(surfaceMetric('nativePreviewRendererPollRoundTripP95Ms'))
+  const nativePreviewRendererPresentRoundTripP95Ms =
+    maxOf(surfaceMetric('nativePreviewRendererPresentRoundTripP95Ms'))
+  const nativePreviewRendererPollInFlightSkips =
+    maxOf(surfaceSamples.map((s) => s.nativePreviewRendererPollInFlightSkips ?? 0)) ?? 0
+  const nativePreviewMainQueueWaitP95Ms =
+    maxOf(surfaceMetric('nativePreviewMainQueueWaitP95Ms'))
+  const nativePreviewMainPresentP95Ms =
+    maxOf(surfaceMetric('nativePreviewMainPresentP95Ms'))
+  const nativePreviewMainQueuedBehindCount =
+    maxOf(surfaceSamples.map((s) => s.nativePreviewMainQueuedBehindCount ?? 0)) ?? 0
+  const nativePreviewHelperRoundTripP95Ms =
+    maxOf(surfaceMetric('nativePreviewHelperRoundTripP95Ms'))
+  const nativePreviewMainStatusFetchP95Ms =
+    maxOf(surfaceMetric('nativePreviewMainStatusFetchP95Ms'))
+  const nativePreviewMainStatusFetchFailures =
+    maxOf(surfaceSamples.map((s) => s.nativePreviewMainStatusFetchFailures ?? 0)) ?? 0
+  const nativePreviewMainStatusFetchSuccesses =
+    maxOf(surfaceSamples.map((s) => s.nativePreviewMainStatusFetchSuccesses ?? 0)) ?? 0
+  const nativePreviewMainPresentedStatusAgeMs =
+    maxOf(surfaceMetric('nativePreviewMainPresentedStatusAgeMs'))
+  const nativePreviewMainPresentedStatusAgeP95Ms =
+    maxOf(surfaceMetric('nativePreviewMainPresentedStatusAgeP95Ms'))
+  const nativePreviewMainPresentedFrameAgeP95Ms =
+    maxOf(surfaceMetric('nativePreviewMainPresentedFrameAgeP95Ms'))
 
   return {
     sampleCount: measured.length,
@@ -526,11 +650,19 @@ function summarizeDiagnostics(events, snapshots, startedAt, stopRequestedAt, opt
       ...measured.map((s) => s.previewSourcePixelsPresent),
       ...surfaceSamples.map((s) => s.sourcePixelsPresent),
     ]),
+    previewPendingHostCommandCount:
+      maxOf(surfaceSamples.map((s) => s.pendingHostCommandCount ?? 0)) ?? 0,
     encoderBridgeRepeatedFrames: maxOf(measured.map((s) => s.encoderBridgeRepeatedFrames ?? 0)) ?? 0,
     encoderBridgeRepeatedFrameBursts: maxOf(measured.map((s) => s.encoderBridgeRepeatedFrameBursts ?? 0)) ?? 0,
     encoderBridgeMaxRepeatedFrameRun: maxOf(measured.map((s) => s.encoderBridgeMaxRepeatedFrameRun ?? 0)) ?? 0,
     encoderBridgeSyntheticFrames: maxOf(measured.map((s) => s.encoderBridgeSyntheticFrames ?? 0)) ?? 0,
     encoderBridgeSourceAgeMs: maxOf(collect('encoderBridgeSourceAgeMs')),
+    encoderBridgeSourceAgeP95Ms:
+      maxOf(collect('encoderBridgeSourceAgeP95Ms')) ?? null,
+    encoderBridgeRepeatedFrameAgeP95Ms:
+      maxOf(collect('encoderBridgeRepeatedFrameAgeP95Ms')) ?? null,
+    encoderBridgeRepeatedFrameAgeMaxMs:
+      maxOf(collect('encoderBridgeRepeatedFrameAgeMaxMs')) ?? null,
     encoderBridgeMetalTargetFrames: maxOf(measured.map((s) => s.encoderBridgeMetalTargetFrames ?? 0)) ?? 0,
     encoderBridgeRawVideoCopiedFrames:
       maxOf(measured.map((s) => s.encoderBridgeRawVideoCopiedFrames ?? 0)) ?? 0,
@@ -560,6 +692,16 @@ function summarizeDiagnostics(events, snapshots, startedAt, stopRequestedAt, opt
       maxOf(collect('encoderBridgeVideoToolboxFifoWriteP95Ms')) ?? null,
     encoderBridgeWriterLoopP95Ms:
       maxOf(collect('encoderBridgeWriterLoopP95Ms')) ?? null,
+    encoderBridgeWriterSleepP95Ms:
+      maxOf(collect('encoderBridgeWriterSleepP95Ms')) ?? null,
+    encoderBridgeWriterActiveP95Ms:
+      maxOf(collect('encoderBridgeWriterActiveP95Ms')) ?? null,
+    encoderBridgeDeadlineLagP95Ms:
+      maxOf(collect('encoderBridgeDeadlineLagP95Ms')) ?? null,
+    encoderBridgeDeadlineLagMaxMs:
+      maxOf(collect('encoderBridgeDeadlineLagMaxMs')) ?? null,
+    encoderBridgeLateDeadlineTicks:
+      maxOf(measured.map((s) => s.encoderBridgeLateDeadlineTicks ?? 0)) ?? 0,
     recordingStartupBarrierState: measured.map((s) => s.recordingStartupBarrierState).filter(Boolean).pop() ?? null,
     recordingStartupBarrierWaitMs: maxOf(collect('recordingStartupBarrierWaitMs')),
     recordingStartupBarrierTimeoutReason: measured.map((s) => s.recordingStartupBarrierTimeoutReason).filter(Boolean).pop() ?? null,
@@ -570,12 +712,37 @@ function summarizeDiagnostics(events, snapshots, startedAt, stopRequestedAt, opt
     micDroppedFrames: maxOf(measured.map((s) => s.micDroppedFrames ?? 0)) ?? 0,
     minMicCaptureCoverage: minOf(collect('micCaptureCoverage')),
     previewRepeatedFrames: maxOf(measured.map((s) => s.previewRepeatedFrames ?? 0)) ?? 0,
-    previewDroppedFrames: maxOf(measured.map((s) => s.previewDroppedFrames ?? 0)) ?? 0,
-    minPreviewPresentFps: minOf(collect('previewPresentFps')),
-    previewInputToPresentLatencyMs: maxOf(collect('previewInputToPresentLatencyMs')),
-    previewInputToPresentLatencyP95Ms: maxOf(collect('previewInputToPresentLatencyP95Ms')),
-    previewInputToPresentLatencyP99Ms: maxOf(collect('previewInputToPresentLatencyP99Ms')),
-    previewIntervalP95Ms: maxOf(collect('previewRenderFrameTimeP95Ms')),
+    previewDroppedFrames:
+      maxOf([
+        ...measured.map((s) => s.previewDroppedFrames ?? 0),
+        ...surfaceSamples.map((s) => s.droppedFrames ?? 0),
+      ]) ?? 0,
+    minPreviewPresentFps: previewDirectMeasuredFps ?? passivePreviewPresentFps,
+    previewInputToPresentLatencyMs,
+    previewInputToPresentLatencyP95Ms,
+    previewInputToPresentLatencyP99Ms,
+    previewIntervalP95Ms: previewDirectIntervalP95Ms ?? passivePreviewIntervalP95Ms,
+    previewDirectMeasuredFps,
+    previewDirectIntervalP95Ms,
+    previewDirectInputToPresentP95Ms,
+    previewDirectInputToPresentP99Ms,
+    previewDirectCompositorFrameLag,
+    previewDirectBlankFrames: num(previewMeasurement?.blankFrames) ?? 0,
+    nativePreviewRendererPollIntervalP95Ms,
+    nativePreviewRendererPollRoundTripP95Ms,
+    nativePreviewRendererPresentRoundTripP95Ms,
+    nativePreviewRendererPollInFlightSkips,
+    nativePreviewMainQueueWaitP95Ms,
+    nativePreviewMainPresentP95Ms,
+    nativePreviewMainQueuedBehindCount,
+    nativePreviewHelperRoundTripP95Ms,
+    nativePreviewMainStatusFetchP95Ms,
+    nativePreviewMainStatusFetchFailures,
+    nativePreviewMainStatusFetchSuccesses,
+    nativePreviewMainPresentedStatusAgeMs,
+    nativePreviewMainPresentedStatusAgeP95Ms,
+    nativePreviewMainPresentedFrameAgeP95Ms,
+    previewMeasurementError,
     previewCompositorFrameLag: maxOf([
       ...collect('previewCompositorFrameLag'),
       ...surfaceSamples.map((s) => num(s.compositorFrameLag)).filter((v) => v !== null),
@@ -661,6 +828,7 @@ function writeBaselineReport(
   const reportPath = join(dirname(outputPath), `${base}.baseline.md`)
   const m = report.metrics
   const fmt = (v, d = 1) => (typeof v === 'number' && Number.isFinite(v) ? v.toFixed(d) : 'n/a')
+  const fmtMs = (v, d = 1) => (typeof v === 'number' && Number.isFinite(v) ? `${v.toFixed(d)}ms` : 'n/a')
   const mib = (v) => (typeof v === 'number' ? `${(v / (1024 * 1024)).toFixed(1)} MiB` : 'n/a')
 
   const lines = []
@@ -671,6 +839,11 @@ function writeBaselineReport(
   lines.push(`- Recording: \`${outputPath}\` (${(size / (1024 * 1024)).toFixed(1)} MiB)`)
   lines.push(`- Output: ${config.width}×${config.height} @ ${config.fps}fps, ${config.bitrateKbps}kbps, ${(config.recordingMs / 1000).toFixed(0)}s`)
   lines.push(`- Encoder bridge video output: \`${config.bridgeVideoOutput}\``)
+  lines.push(`- Motion required: ${config.requireMotion ? 'yes' : 'no'}${config.screenMotionStimulus ? ' (screen stimulus)' : ''}`)
+  lines.push(`- Microphone sync offset: ${config.microphoneSyncOffsetMs}ms`)
+  if (config.avSyncStimulus) {
+    lines.push('- A/V sync stimulus: preview cadence FPS/interval gates relaxed; use the motion stimulus gate for preview smoothness.')
+  }
   lines.push('')
   lines.push('## Selected real sources')
   lines.push('')
@@ -678,6 +851,12 @@ function writeBaselineReport(
   lines.push(`- Camera: ${sources.camera ? `${sources.camera.name} \`${sources.camera.id}\`` : 'none'}`)
   lines.push(`- Microphone: ${sources.microphone ? `${sources.microphone.name} \`${sources.microphone.id}\`` : 'none'}`)
   lines.push(`- testPattern: false (real capture)`)
+  if (config.screenMotionStimulus) {
+    lines.push(`- screenMotionStimulus: true (${motionStimulus?.browserPath ?? 'browser'})`)
+  }
+  if (config.avSyncStimulus) {
+    lines.push(`- avSyncStimulus: true (${avSyncStimulus?.browserPath ?? 'browser'})`)
+  }
   lines.push('')
   lines.push('## Final-file verdict (honest analyzer)')
   lines.push('')
@@ -747,12 +926,14 @@ function writeBaselineReport(
       (diagnostics.compositorFallbackReason ? ` | reason: ${diagnostics.compositorFallbackReason}` : '')
   )
   lines.push(`- Encoder: min speed ${fmt(diagnostics.minEncoderSpeed, 2)}x | dropped ${diagnostics.droppedFrames}`)
-  lines.push(`- Recording bridge — repeated-fed ${diagnostics.encoderBridgeRepeatedFrames} (${diagnostics.encoderBridgeRepeatedFrameBursts} burst(s), max run ${diagnostics.encoderBridgeMaxRepeatedFrameRun}) | synthetic-filler ${diagnostics.encoderBridgeSyntheticFrames} | source→encode age max ${fmt(diagnostics.encoderBridgeSourceAgeMs, 0)}ms | Metal targets ${diagnostics.encoderBridgeMetalTargetFrames} | Metal handles ${diagnostics.encoderBridgeMetalTargetHandleFrames} | raw copied ${diagnostics.encoderBridgeRawVideoCopiedFrames} | Metal copied ${diagnostics.encoderBridgeMetalTargetCopiedFrames} | zero-copy ${diagnostics.encoderBridgeZeroCopyFrames} | VT output ${diagnostics.encoderBridgeVideoToolboxOutputFrames} (${diagnostics.encoderBridgeVideoToolboxOutputBytes} bytes, ${diagnostics.encoderBridgeVideoToolboxOutputEncodeMs}ms max encode) | VT probe ${diagnostics.encoderBridgeVideoToolboxProbeFrames} (${diagnostics.encoderBridgeVideoToolboxProbeBytes} bytes, ${diagnostics.encoderBridgeVideoToolboxProbeErrors} errors)`)
+  lines.push(`- Recording bridge — repeated-fed ${diagnostics.encoderBridgeRepeatedFrames} (${diagnostics.encoderBridgeRepeatedFrameBursts} burst(s), max run ${diagnostics.encoderBridgeMaxRepeatedFrameRun}) | synthetic-filler ${diagnostics.encoderBridgeSyntheticFrames} | source→encode age p95/max ${fmt(diagnostics.encoderBridgeSourceAgeP95Ms)}/${fmt(diagnostics.encoderBridgeSourceAgeMs, 0)}ms | repeat age p95/max ${fmt(diagnostics.encoderBridgeRepeatedFrameAgeP95Ms)}/${fmt(diagnostics.encoderBridgeRepeatedFrameAgeMaxMs, 0)}ms | Metal targets ${diagnostics.encoderBridgeMetalTargetFrames} | Metal handles ${diagnostics.encoderBridgeMetalTargetHandleFrames} | raw copied ${diagnostics.encoderBridgeRawVideoCopiedFrames} | Metal copied ${diagnostics.encoderBridgeMetalTargetCopiedFrames} | zero-copy ${diagnostics.encoderBridgeZeroCopyFrames} | VT output ${diagnostics.encoderBridgeVideoToolboxOutputFrames} (${diagnostics.encoderBridgeVideoToolboxOutputBytes} bytes, ${diagnostics.encoderBridgeVideoToolboxOutputEncodeMs}ms max encode) | VT probe ${diagnostics.encoderBridgeVideoToolboxProbeFrames} (${diagnostics.encoderBridgeVideoToolboxProbeBytes} bytes, ${diagnostics.encoderBridgeVideoToolboxProbeErrors} errors)`)
   lines.push(
     `- Recording bridge timings p95: compositor wait ${fmt(diagnostics.encoderBridgeCompositorWaitP95Ms)}ms | ` +
       `VT submit ${fmt(diagnostics.encoderBridgeVideoToolboxSubmitP95Ms)}ms | ` +
       `H.264 FIFO write ${fmt(diagnostics.encoderBridgeVideoToolboxFifoWriteP95Ms)}ms | ` +
-      `writer loop ${fmt(diagnostics.encoderBridgeWriterLoopP95Ms)}ms`
+      `writer total ${fmt(diagnostics.encoderBridgeWriterLoopP95Ms)}ms | ` +
+      `writer sleep/active ${fmt(diagnostics.encoderBridgeWriterSleepP95Ms)}/${fmt(diagnostics.encoderBridgeWriterActiveP95Ms)}ms | ` +
+      `deadline lag p95/max ${fmt(diagnostics.encoderBridgeDeadlineLagP95Ms)}/${fmt(diagnostics.encoderBridgeDeadlineLagMaxMs)}ms (${diagnostics.encoderBridgeLateDeadlineTicks} late tick(s))`
   )
   lines.push(
     `- Startup barrier: ${diagnostics.recordingStartupBarrierState ?? 'unknown'} | wait ${fmt(diagnostics.recordingStartupBarrierWaitMs, 0)}ms | ` +
@@ -769,10 +950,37 @@ function writeBaselineReport(
     `- Preview present: min fps ${fmt(diagnostics.minPreviewPresentFps, 1)} | source-to-present max ${fmt(diagnostics.previewInputToPresentLatencyMs, 0)}ms ` +
       `(p95 ${fmt(diagnostics.previewInputToPresentLatencyP95Ms, 0)}ms / p99 ${fmt(diagnostics.previewInputToPresentLatencyP99Ms, 0)}ms) | interval p95 max ${fmt(diagnostics.previewIntervalP95Ms)}ms`
   )
+  lines.push(
+    `- Native preview handoff timings p95: renderer poll interval ${fmtMs(diagnostics.nativePreviewRendererPollIntervalP95Ms)} | ` +
+      `renderer poll RTT ${fmtMs(diagnostics.nativePreviewRendererPollRoundTripP95Ms)} | ` +
+      `renderer present RTT ${fmtMs(diagnostics.nativePreviewRendererPresentRoundTripP95Ms)} | ` +
+      `main queue wait ${fmtMs(diagnostics.nativePreviewMainQueueWaitP95Ms)} | ` +
+      `main present ${fmtMs(diagnostics.nativePreviewMainPresentP95Ms)} | ` +
+      `helper RTT ${fmtMs(diagnostics.nativePreviewHelperRoundTripP95Ms)} | ` +
+      `renderer poll in-flight skips ${diagnostics.nativePreviewRendererPollInFlightSkips} | ` +
+      `main queued-behind ${diagnostics.nativePreviewMainQueuedBehindCount}`
+  )
+  lines.push(
+    `- Native preview status refresh: fetch p95 ${fmtMs(diagnostics.nativePreviewMainStatusFetchP95Ms)} | ` +
+      `success/fail ${diagnostics.nativePreviewMainStatusFetchSuccesses}/${diagnostics.nativePreviewMainStatusFetchFailures} | ` +
+      `presented status age current/p95 ${fmtMs(diagnostics.nativePreviewMainPresentedStatusAgeMs)}/${fmtMs(diagnostics.nativePreviewMainPresentedStatusAgeP95Ms)} | ` +
+      `presented frame age p95 ${fmtMs(diagnostics.nativePreviewMainPresentedFrameAgeP95Ms)}`
+  )
+  if (diagnostics.previewMeasurementError) {
+    lines.push(`- Native preview direct measurement: failed (${diagnostics.previewMeasurementError})`)
+  } else if (diagnostics.previewDirectMeasuredFps != null) {
+    lines.push(
+      `- Native preview direct measurement: ${fmt(diagnostics.previewDirectMeasuredFps, 1)}fps | ` +
+        `interval p95 ${fmt(diagnostics.previewDirectIntervalP95Ms)}ms | ` +
+        `source-to-present p95/p99 ${fmt(diagnostics.previewDirectInputToPresentP95Ms, 0)}/${fmt(diagnostics.previewDirectInputToPresentP99Ms, 0)}ms | ` +
+        `compositor lag ${fmt(diagnostics.previewDirectCompositorFrameLag, 0)} | blanks ${diagnostics.previewDirectBlankFrames}`
+    )
+  }
   lines.push(`- Preview frame lag/dropped frames: ${fmt(diagnostics.previewCompositorFrameLag, 0)} / ${diagnostics.previewDroppedFrames}`)
   lines.push(
     `- Preview source pixels: ${diagnostics.previewSourcePixelsPresent ? 'present' : 'not proven'} | frame polling suppressed during run: ${diagnostics.previewFramePollingSuppressed ? 'yes' : 'no'}`
   )
+  lines.push(`- Preview host commands pending: ${diagnostics.previewPendingHostCommandCount}`)
   lines.push(`- Preview repeated frames: ${diagnostics.previewRepeatedFrames}`)
   lines.push(`- Source frame age (max): camera ${fmt(diagnostics.previewCameraFrameAgeMs, 0)}ms | screen ${fmt(diagnostics.previewScreenFrameAgeMs, 0)}ms`)
   lines.push(
@@ -844,9 +1052,15 @@ function writeBaselineReport(
   lines.push('- **Final-file freeze / repeated-frame bursts / pacing** — the analyzer verdict above decodes the actual artifact.')
   lines.push('- **Transport honesty** — image-poll request counts (above) reveal whether a "native" preview is really PNG/JPEG/MJPEG polling.')
   lines.push('- **Live mic capture** — dropped frames and the capture-coverage gap signal now update during the run, not only at stop.')
+  if (claimsNativePreview({ previewTransport, diagnostics }) && diagnostics.previewSourcePixelsPresent) {
+    lines.push('- **Native CAMetalLayer source-to-present latency** — diagnostics saw native-surface/cametal-layer presents with source-pixel proof while fallback image polling was suppressed.')
+  }
   lines.push('')
-  lines.push('Still NOT proven here (deferred to the on-hardware native phase):')
-  lines.push('- **True CAMetalLayer source-to-present latency**: the Electron proof surface now reports host-present metrics, but the final native Metal layer still needs on-device validation.')
+  lines.push('Still NOT proven here:')
+  if (!claimsNativePreview({ previewTransport, diagnostics }) || !diagnostics.previewSourcePixelsPresent) {
+    lines.push('- **True CAMetalLayer source-to-present latency**: this run did not prove native-surface/cametal-layer presents with source pixels.')
+  }
+  lines.push('- **OBS side-by-side visual quality**: screen text sharpness, cursor edges, camera detail, crop/mirror behavior, and color still need a human comparison at the same preview size.')
   lines.push('- **Lip-sync**: A/V skew here is a container duration delta, not measured mouth/voice alignment — that needs capture-clock PTS instrumentation (the native part of slice #8). The live mic capture-coverage signal above is the honest gap indicator, since final-file audio gaps are masked by the muxer/aresample.')
   lines.push('')
 
@@ -932,6 +1146,7 @@ function writeBlockedStartupReport({
   lines.push(
     `- Preview source pixels at block: ${diagnostics.previewSourcePixelsPresent ? 'present' : 'not proven'} | frame polling suppressed: ${diagnostics.previewFramePollingSuppressed ? 'yes' : 'no'}`
   )
+  lines.push(`- Preview host commands pending at block: ${diagnostics.previewPendingHostCommandCount}`)
   lines.push(`- Compositor backend: ${diagnostics.compositorBackend ?? 'unknown'} | CPU fallback frames ${diagnostics.compositorCpuFallbackFrames}`)
   lines.push(`- Mic: captured ${diagnostics.micCapturedFrames ?? 'n/a'} | dropped ${diagnostics.micDroppedFrames}`)
   if (previewSurfaceOutputFailures.length) {
@@ -976,10 +1191,23 @@ function previewSurfaceOutputFailureMessages(failures) {
   return (failures ?? []).map((failure) => `preview-surface: host emitted handler error: ${failure}`)
 }
 
+function acceptanceGates() {
+  if (!config.avSyncStimulus) return DEFAULT_ACCEPTANCE_GATES
+  return {
+    ...DEFAULT_ACCEPTANCE_GATES,
+    minPreviewPresentFps: 0,
+    maxPreviewIntervalP95Ms: Number.POSITIVE_INFINITY,
+  }
+}
+
 function printSummary(report, startupReport, diagnostics, previewTransport, baselinePath, acceptance, ownership) {
+  const fmtMs = (value) => typeof value === 'number' && Number.isFinite(value) ? `${value}ms` : 'n/a'
   console.log('')
   console.log('════════ REAL-SOURCE BASELINE ════════')
-  console.log(`Acceptance gate: ${acceptance.pass ? 'PASS' : 'FAIL'}`)
+  console.log(
+    `Acceptance gate: ${acceptance.pass ? 'PASS' : 'FAIL'}` +
+      (config.avSyncStimulus ? ' (A/V sync stimulus; preview cadence gate relaxed)' : '')
+  )
   for (const f of acceptance.failures) console.log(`  ✗ ${f}`)
   console.log(`Final-file verdict: ${report.verdict.pass ? 'PASS' : 'FAIL'}`)
   for (const f of report.verdict.failures) console.log(`  ❌ ${f}`)
@@ -998,15 +1226,29 @@ function printSummary(report, startupReport, diagnostics, previewTransport, base
   console.log(
     `Preview source pixels: ${diagnostics.previewSourcePixelsPresent ? 'present' : 'not proven'} | frame polling suppressed: ${diagnostics.previewFramePollingSuppressed ? 'yes' : 'no'}`
   )
+  if (diagnostics.previewMeasurementError) {
+    console.log(`Native preview direct measurement: failed (${diagnostics.previewMeasurementError})`)
+  } else if (diagnostics.previewDirectMeasuredFps != null) {
+    console.log(
+      `Native preview direct measurement: ${diagnostics.previewDirectMeasuredFps.toFixed(1)}fps | interval p95 ${diagnostics.previewDirectIntervalP95Ms ?? 'n/a'}ms | source-to-present p95/p99 ${diagnostics.previewDirectInputToPresentP95Ms ?? 'n/a'}/${diagnostics.previewDirectInputToPresentP99Ms ?? 'n/a'}ms | compositor lag ${diagnostics.previewDirectCompositorFrameLag ?? 'n/a'} | blanks ${diagnostics.previewDirectBlankFrames}`
+    )
+  }
+  console.log(
+    `Native preview handoff timings p95: renderer poll interval ${fmtMs(diagnostics.nativePreviewRendererPollIntervalP95Ms)} | renderer poll RTT ${fmtMs(diagnostics.nativePreviewRendererPollRoundTripP95Ms)} | renderer present RTT ${fmtMs(diagnostics.nativePreviewRendererPresentRoundTripP95Ms)} | main queue wait ${fmtMs(diagnostics.nativePreviewMainQueueWaitP95Ms)} | main present ${fmtMs(diagnostics.nativePreviewMainPresentP95Ms)} | helper RTT ${fmtMs(diagnostics.nativePreviewHelperRoundTripP95Ms)} | renderer poll skips ${diagnostics.nativePreviewRendererPollInFlightSkips} | main queued-behind ${diagnostics.nativePreviewMainQueuedBehindCount}`
+  )
+  console.log(
+    `Native preview status refresh: fetch p95 ${fmtMs(diagnostics.nativePreviewMainStatusFetchP95Ms)} | success/fail ${diagnostics.nativePreviewMainStatusFetchSuccesses}/${diagnostics.nativePreviewMainStatusFetchFailures} | presented status age current/p95 ${fmtMs(diagnostics.nativePreviewMainPresentedStatusAgeMs)}/${fmtMs(diagnostics.nativePreviewMainPresentedStatusAgeP95Ms)} | presented frame age p95 ${fmtMs(diagnostics.nativePreviewMainPresentedFrameAgeP95Ms)}`
+  )
+  console.log(`Preview host commands pending: ${diagnostics.previewPendingHostCommandCount}`)
   console.log(
     `Compositor backend: ${diagnostics.compositorBackend ?? 'unknown'} | CPU fallback frames ${diagnostics.compositorCpuFallbackFrames}` +
       (diagnostics.compositorFallbackReason ? ` | ${diagnostics.compositorFallbackReason}` : '')
   )
   console.log(
-    `Recording bridge: repeated ${diagnostics.encoderBridgeRepeatedFrames} (${diagnostics.encoderBridgeRepeatedFrameBursts} burst(s), max run ${diagnostics.encoderBridgeMaxRepeatedFrameRun}) | Metal targets ${diagnostics.encoderBridgeMetalTargetFrames} | Metal handles ${diagnostics.encoderBridgeMetalTargetHandleFrames} | raw copied ${diagnostics.encoderBridgeRawVideoCopiedFrames} | Metal copied ${diagnostics.encoderBridgeMetalTargetCopiedFrames} | zero-copy ${diagnostics.encoderBridgeZeroCopyFrames} | VT output ${diagnostics.encoderBridgeVideoToolboxOutputFrames}`
+    `Recording bridge: repeated ${diagnostics.encoderBridgeRepeatedFrames} (${diagnostics.encoderBridgeRepeatedFrameBursts} burst(s), max run ${diagnostics.encoderBridgeMaxRepeatedFrameRun}) | source age p95/max ${diagnostics.encoderBridgeSourceAgeP95Ms ?? 'n/a'}/${diagnostics.encoderBridgeSourceAgeMs ?? 'n/a'}ms | repeat age p95/max ${diagnostics.encoderBridgeRepeatedFrameAgeP95Ms ?? 'n/a'}/${diagnostics.encoderBridgeRepeatedFrameAgeMaxMs ?? 'n/a'}ms | Metal targets ${diagnostics.encoderBridgeMetalTargetFrames} | Metal handles ${diagnostics.encoderBridgeMetalTargetHandleFrames} | raw copied ${diagnostics.encoderBridgeRawVideoCopiedFrames} | Metal copied ${diagnostics.encoderBridgeMetalTargetCopiedFrames} | zero-copy ${diagnostics.encoderBridgeZeroCopyFrames} | VT output ${diagnostics.encoderBridgeVideoToolboxOutputFrames}`
   )
   console.log(
-    `Recording bridge timings p95: compositor wait ${diagnostics.encoderBridgeCompositorWaitP95Ms ?? 'n/a'}ms | VT submit ${diagnostics.encoderBridgeVideoToolboxSubmitP95Ms ?? 'n/a'}ms | H.264 FIFO write ${diagnostics.encoderBridgeVideoToolboxFifoWriteP95Ms ?? 'n/a'}ms | writer loop ${diagnostics.encoderBridgeWriterLoopP95Ms ?? 'n/a'}ms`
+    `Recording bridge timings p95: compositor wait ${diagnostics.encoderBridgeCompositorWaitP95Ms ?? 'n/a'}ms | VT submit ${diagnostics.encoderBridgeVideoToolboxSubmitP95Ms ?? 'n/a'}ms | H.264 FIFO write ${diagnostics.encoderBridgeVideoToolboxFifoWriteP95Ms ?? 'n/a'}ms | writer total ${diagnostics.encoderBridgeWriterLoopP95Ms ?? 'n/a'}ms | writer sleep/active ${diagnostics.encoderBridgeWriterSleepP95Ms ?? 'n/a'}/${diagnostics.encoderBridgeWriterActiveP95Ms ?? 'n/a'}ms | deadline lag p95/max ${diagnostics.encoderBridgeDeadlineLagP95Ms ?? 'n/a'}/${diagnostics.encoderBridgeDeadlineLagMaxMs ?? 'n/a'}ms (${diagnostics.encoderBridgeLateDeadlineTicks ?? 0} late tick(s))`
   )
   const activeOwners = (ownership ?? []).filter((item) => item.status !== 'pass')
   console.log(
@@ -1127,7 +1369,11 @@ function sessionParams(sources) {
       video: videoSettings(),
       rtmp: { preset: 'custom', serverUrl: '', streamKey: '' },
     },
-    audio: { microphoneGainDb: 0, microphoneMuted: false, microphoneSyncOffsetMs: 0 },
+    audio: {
+      microphoneGainDb: 0,
+      microphoneMuted: false,
+      microphoneSyncOffsetMs: config.microphoneSyncOffsetMs,
+    },
   }
 }
 
@@ -1152,11 +1398,61 @@ async function tryStep(label, fn) {
   }
 }
 
+async function requiredStep(label, fn) {
+  try {
+    await fn()
+  } catch (error) {
+    throw new Error(`${label} failed: ${error?.message ?? error}`)
+  }
+}
+
 async function requestSafe(ws, method, params) {
   try {
     return await request(ws, config.timeoutMs, method, params)
   } catch {
     return null
+  }
+}
+
+async function applyPendingNativePreviewHostCommands(ws) {
+  const smoke = launched?.connections?.['preview-motion-ready']
+  if (!smoke) {
+    throw new Error('Preview host command server was not available for visible-preview baseline.')
+  }
+  const commands = await request(ws, config.timeoutMs, 'preview.surface.take_native_host_commands')
+  if (!Array.isArray(commands)) {
+    throw new Error('Backend returned an invalid native preview host command batch.')
+  }
+  if (commands.length === 0) {
+    return await smokeCommand(smoke, 'native-preview-surface-status')
+  }
+  console.log(`Applying ${commands.length} native preview host command(s) to Electron preview host.`)
+  return await smokeCommand(smoke, 'apply-native-preview-host-commands', { commands })
+}
+
+async function smokeCommand(smoke, command, params = {}) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), config.timeoutMs)
+  try {
+    const response = await fetch(`http://${smoke.host}:${smoke.port}/command`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command, params }),
+      signal: controller.signal,
+    })
+    const text = await response.text()
+    let payload
+    try {
+      payload = JSON.parse(text)
+    } catch {
+      throw new Error(`${command} smoke command returned invalid JSON: ${text.slice(0, 200)}`)
+    }
+    if (!response.ok || !payload.ok) {
+      throw new Error(payload?.error ?? `${command} smoke command failed.`)
+    }
+    return payload.result
+  } finally {
+    clearTimeout(timer)
   }
 }
 

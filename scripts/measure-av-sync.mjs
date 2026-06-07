@@ -10,7 +10,8 @@
 // To generate the reference fixture to play while recording (or to self-test):
 //   node scripts/measure-av-sync.mjs --make-fixture out.mp4 [--seconds 10] [--audio-delay-ms 0]
 //
-// Exits non-zero when the median A/V offset hard-fails (>150ms).
+// Exits non-zero when the median A/V offset hard-fails (>150ms), or when
+// `--require-target` is set and the median misses the 100ms target.
 
 import { spawn } from 'node:child_process'
 
@@ -39,9 +40,23 @@ async function main() {
     process.exit(2)
   }
 
-  const result = await measureAvSync(file, { ffmpegPath })
+  const requireTarget = argv.includes('--require-target')
+  const currentMicrophoneSyncOffsetMs = numFlag(argv, '--current-offset-ms') ?? 0
+  const targetMs = 100
+  const result = await measureAvSync(file, {
+    ffmpegPath,
+    currentMicrophoneSyncOffsetMs,
+    gates: { requireTarget, targetMs },
+  })
   console.log(`A/V sync: ${result.medianOffsetMs == null ? 'n/a' : `${result.medianOffsetMs.toFixed(0)}ms median`} (positive = audio lags video)`)
   console.log(`  flashes ${result.flashCount}, clicks ${result.clickCount}, pairs ${result.pairs.length}, max |offset| ${result.maxAbsOffsetMs == null ? 'n/a' : `${result.maxAbsOffsetMs.toFixed(0)}ms`}`)
+  if (result.recommendedMicrophoneSyncOffsetMs != null) {
+    const withinTarget = Math.abs(result.medianOffsetMs) <= targetMs
+    const label = withinTarget ? 'current within target; zero-error estimate' : 'suggested'
+    console.log(
+      `  microphoneSyncOffsetMs: current ${result.currentMicrophoneSyncOffsetMs}ms -> ${label} ${result.recommendedMicrophoneSyncOffsetMs}ms`
+    )
+  }
   for (const f of result.failures) console.log(`  ❌ ${f}`)
   for (const w of result.warnings) console.log(`  ⚠️  ${w}`)
   console.log(result.pass ? 'PASS' : 'FAIL')

@@ -2,8 +2,8 @@ import { fileURLToPath } from 'node:url'
 
 import { defineConfig } from 'vitest/config'
 
-// Lightweight unit-test runner for pure renderer logic (no electron, no DOM). Component
-// behavior is exercised through the pure view module in src/renderer/src/lib.
+// Lightweight unit-test runner for pure desktop logic (no electron, no DOM). Component
+// behavior is exercised through pure modules in src/renderer/src/lib.
 export default defineConfig({
   resolve: {
     alias: {
@@ -12,6 +12,6 @@ export default defineConfig({
   },
   test: {
     environment: 'node',
-    include: ['src/renderer/src/**/*.test.ts'],
+    include: ['src/main/**/*.test.ts', 'src/renderer/src/**/*.test.ts', 'src/shared/**/*.test.ts'],
   },
 })

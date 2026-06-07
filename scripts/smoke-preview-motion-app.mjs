@@ -11,6 +11,7 @@ const measurementMs = Number(process.env.VIDEORC_PREVIEW_MOTION_SAMPLE_MS ?? 100
 const obsMinFps = Number(process.env.VIDEORC_PREVIEW_MOTION_OBS_MIN_FPS ?? 55)
 const obsMaxFrameAgeMs = Number(process.env.VIDEORC_PREVIEW_MOTION_OBS_MAX_AGE_MS ?? 100)
 const obsMaxIntervalP95Ms = Number(process.env.VIDEORC_PREVIEW_MOTION_OBS_MAX_INTERVAL_P95_MS ?? 24)
+const obsMaxCompositorFrameLag = Number(process.env.VIDEORC_PREVIEW_MOTION_OBS_MAX_COMPOSITOR_LAG ?? 1)
 const expectedSurfaceTransport =
   process.env.VIDEORC_EXPECT_NATIVE_METAL_PREVIEW === '1' ? 'native-surface' : 'electron-proof-surface'
 const expectedSurfaceBacking =
@@ -56,9 +57,10 @@ async function runPreviewMotionSmoke(connection, smoke) {
 
     assertNativeMotionHealthy(renderer)
     const obsQualified = isObsQualified(liveStatus, renderer, diagnostics)
+    const currentness = currentnessSummary(renderer, diagnostics)
     const reason = obsQualified
       ? 'Preview meets OBS-quality Phase 0 strict thresholds.'
-      : `Current native preview is below OBS target: renderer ${format(renderer.measuredFps)}fps, p95 interval ${format(renderer.intervalP95Ms)}ms, frame age ${format(diagnostics.previewFrameAgeMs)}ms.`
+      : `Current native preview is below OBS target: renderer ${format(renderer.measuredFps)}fps, p95 interval ${format(renderer.intervalP95Ms)}ms, ${currentness}.`
 
     await request(ws, timeoutMs, 'diagnostics.preview_baseline.record', {
       transport: liveStatus.transport,
@@ -67,6 +69,8 @@ async function runPreviewMotionSmoke(connection, smoke) {
       measuredFps: renderer.measuredFps,
       presentFps: diagnostics.previewPresentFps,
       frameAgeMs: diagnostics.previewFrameAgeMs,
+      compositorFrameLag: nativePreviewCompositorFrameLag(renderer, diagnostics),
+      sourcePixelsPresent: nativePreviewSourcePixelsPresent(renderer),
       cadenceP95Ms: renderer.intervalP95Ms,
       intervalJitterP95Ms: renderer.intervalJitterP95Ms,
       blankFrames: renderer.blankFrames,
@@ -81,7 +85,7 @@ async function runPreviewMotionSmoke(connection, smoke) {
     }
 
     console.log(
-      `Preview motion baseline: ${liveStatus.transport}, renderer ${format(renderer.measuredFps)}fps, p95 interval ${format(renderer.intervalP95Ms)}ms, blanks ${renderer.blankFrames}, compositor frames ${renderer.compositorFrames}, frame age ${format(diagnostics.previewFrameAgeMs)}ms, OBS qualified ${obsQualified ? 'yes' : 'no'}`
+      `Preview motion baseline: ${liveStatus.transport}, renderer ${format(renderer.measuredFps)}fps, p95 interval ${format(renderer.intervalP95Ms)}ms, blanks ${renderer.blankFrames}, compositor frames ${renderer.compositorFrames}, ${currentness}, OBS qualified ${obsQualified ? 'yes' : 'no'}`
     )
   } finally {
     try {
@@ -144,9 +148,34 @@ function isObsQualified(status, renderer, diagnostics) {
     (status.targetFps ?? 0) >= 60 &&
     (renderer.measuredFps ?? 0) >= obsMinFps &&
     (renderer.intervalP95Ms ?? Number.POSITIVE_INFINITY) <= obsMaxIntervalP95Ms &&
-    (diagnostics.previewFrameAgeMs ?? Number.POSITIVE_INFINITY) <= obsMaxFrameAgeMs &&
+    nativePreviewCurrentnessHealthy(renderer, diagnostics) &&
     renderer.blankFrames === 0
   )
+}
+
+function nativePreviewCurrentnessHealthy(renderer, diagnostics) {
+  if (typeof diagnostics.previewFrameAgeMs === 'number') {
+    return diagnostics.previewFrameAgeMs <= obsMaxFrameAgeMs
+  }
+  return (
+    nativePreviewSourcePixelsPresent(renderer) &&
+    (nativePreviewCompositorFrameLag(renderer, diagnostics) ?? Number.POSITIVE_INFINITY) <= obsMaxCompositorFrameLag
+  )
+}
+
+function nativePreviewSourcePixelsPresent(renderer) {
+  return Boolean(renderer.sourcePixelsPresent ?? renderer.status?.sourcePixelsPresent ?? renderer.liveLayerCount > 0)
+}
+
+function nativePreviewCompositorFrameLag(renderer, diagnostics) {
+  return numeric(renderer.compositorFrameLag ?? renderer.status?.compositorFrameLag ?? diagnostics.previewCompositorFrameLag)
+}
+
+function currentnessSummary(renderer, diagnostics) {
+  if (typeof diagnostics.previewFrameAgeMs === 'number') {
+    return `frame age ${format(diagnostics.previewFrameAgeMs)}ms`
+  }
+  return `compositor lag ${format(nativePreviewCompositorFrameLag(renderer, diagnostics))} frame(s), source pixels ${nativePreviewSourcePixelsPresent(renderer) ? 'yes' : 'no'}`
 }
 
 async function waitForNativeSurface(ws, previousFrames = -1) {
@@ -303,4 +332,8 @@ function sleep(ms) {
 
 function format(value) {
   return typeof value === 'number' ? value.toFixed(1) : 'n/a'
+}
+
+function numeric(value) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
 }

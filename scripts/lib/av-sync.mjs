@@ -17,9 +17,15 @@ import { parseSilencedetect } from './recording-analyzer.mjs'
 export const DEFAULT_AV_SYNC_GATES = Object.freeze({
   targetMs: 100, // |median offset| at/under this is in spec
   hardFailMs: 150, // above this hard-fails
+  requireTarget: false, // when true, target misses fail instead of warn
   flashLumaThreshold: 100, // YAVG above this is a flash frame (0..255)
   clickNoiseDb: -40, // silencedetect noise floor for click onsets
   pairWindowMs: 500, // a flash/click further apart than this is not a pair
+})
+
+export const MICROPHONE_SYNC_OFFSET_LIMITS = Object.freeze({
+  minMs: -1000,
+  maxMs: 1000,
 })
 
 // ---------------------------------------------------------------------------
@@ -120,19 +126,42 @@ export function measureAvOffset(flashes, clicks, pairWindowMs = DEFAULT_AV_SYNC_
   return { pairs, medianOffsetMs: median, meanOffsetMs: mean, maxAbsOffsetMs: maxAbs }
 }
 
+/**
+ * Translate a measured flash/click offset into the next microphone sync setting. A
+ * positive measured offset means audio is late, so the microphone offset must move
+ * negative by that amount.
+ */
+export function recommendMicrophoneSyncOffsetMs(
+  measurement,
+  currentOffsetMs = 0,
+  limits = MICROPHONE_SYNC_OFFSET_LIMITS
+) {
+  if (measurement.medianOffsetMs == null || !Number.isFinite(measurement.medianOffsetMs)) {
+    return null
+  }
+  const current = Number.isFinite(currentOffsetMs) ? currentOffsetMs : 0
+  const recommended = Math.round(current - measurement.medianOffsetMs)
+  return Math.max(limits.minMs, Math.min(limits.maxMs, recommended))
+}
+
 /** Apply the A/V sync gates to a measured offset. */
 export function evaluateAvSync(measurement, gates = DEFAULT_AV_SYNC_GATES) {
   const failures = []
   const warnings = []
   if (measurement.medianOffsetMs == null) {
-    warnings.push('no flash/click pairs detected — was the recording made against the flash+click fixture?')
-    return { pass: true, failures, warnings }
+    failures.push('no flash/click pairs detected — record against the flash+click fixture before accepting lip-sync')
+    return { pass: false, failures, warnings }
   }
   const abs = Math.abs(measurement.medianOffsetMs)
   if (abs > gates.hardFailMs) {
     failures.push(`A/V sync ${measurement.medianOffsetMs.toFixed(0)}ms exceeds hard-fail ${gates.hardFailMs}ms`)
   } else if (abs > gates.targetMs) {
-    warnings.push(`A/V sync ${measurement.medianOffsetMs.toFixed(0)}ms exceeds target ${gates.targetMs}ms`)
+    const message = `A/V sync ${measurement.medianOffsetMs.toFixed(0)}ms exceeds target ${gates.targetMs}ms`
+    if (gates.requireTarget) {
+      failures.push(message)
+    } else {
+      warnings.push(message)
+    }
   }
   return { pass: failures.length === 0, failures, warnings }
 }
@@ -195,6 +224,9 @@ export async function runClickOnsets(filePath, { ffmpegPath = 'ffmpeg', noiseDb 
 export async function measureAvSync(filePath, options = {}) {
   const ffmpegPath = options.ffmpegPath ?? 'ffmpeg'
   const gates = { ...DEFAULT_AV_SYNC_GATES, ...(options.gates ?? {}) }
+  const currentMicrophoneSyncOffsetMs = Number.isFinite(options.currentMicrophoneSyncOffsetMs)
+    ? options.currentMicrophoneSyncOffsetMs
+    : 0
   const [frames, clicks] = await Promise.all([
     runSignalstats(filePath, { ffmpegPath }),
     runClickOnsets(filePath, { ffmpegPath, noiseDb: gates.clickNoiseDb }),
@@ -202,11 +234,17 @@ export async function measureAvSync(filePath, options = {}) {
   const flashes = clusterFlashes(frames, gates.flashLumaThreshold)
   const measurement = measureAvOffset(flashes, clicks, gates.pairWindowMs)
   const verdict = evaluateAvSync(measurement, gates)
+  const recommendedMicrophoneSyncOffsetMs = recommendMicrophoneSyncOffsetMs(
+    measurement,
+    currentMicrophoneSyncOffsetMs
+  )
   return {
     pass: verdict.pass,
     medianOffsetMs: measurement.medianOffsetMs,
     meanOffsetMs: measurement.meanOffsetMs,
     maxAbsOffsetMs: measurement.maxAbsOffsetMs,
+    currentMicrophoneSyncOffsetMs,
+    recommendedMicrophoneSyncOffsetMs,
     flashCount: flashes.length,
     clickCount: clicks.length,
     failures: verdict.failures,

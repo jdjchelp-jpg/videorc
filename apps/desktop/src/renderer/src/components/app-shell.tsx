@@ -68,7 +68,7 @@ export function AppShell(): ReactElement {
 
   return (
     <WorkspaceNavContext.Provider value={{ active, setActive }}>
-      <div className="flex min-h-screen bg-background text-foreground">
+      <div className="flex min-h-screen bg-background text-foreground" data-videorc-active-tab={active}>
         <Sidebar
           active={active}
           onSelect={setActive}

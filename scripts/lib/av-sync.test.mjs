@@ -16,6 +16,7 @@ import {
   measureAvOffset,
   measureAvSync,
   parseSignalstatsYavg,
+  recommendMicrophoneSyncOffsetMs,
 } from './av-sync.mjs'
 
 const ffmpegPath = process.env.VIDEORC_SMOKE_FFMPEG_PATH ?? 'ffmpeg'
@@ -83,6 +84,35 @@ describe('evaluateAvSync', () => {
     assert.equal(evaluateAvSync({ medianOffsetMs: 220 }).pass, false)
     assert.equal(evaluateAvSync({ medianOffsetMs: -200 }).pass, false)
   })
+
+  it('hard-fails when no flash/click pairs were detected', () => {
+    const verdict = evaluateAvSync({ medianOffsetMs: null })
+    assert.equal(verdict.pass, false)
+    assert.ok(verdict.failures.some((f) => /no flash\/click pairs/.test(f)))
+  })
+
+  it('can hard-fail target misses for final acceptance', () => {
+    const verdict = evaluateAvSync({ medianOffsetMs: 120 }, { targetMs: 100, hardFailMs: 150, requireTarget: true })
+    assert.equal(verdict.pass, false)
+    assert.ok(verdict.failures.some((f) => /exceeds target/.test(f)))
+  })
+})
+
+describe('recommendMicrophoneSyncOffsetMs', () => {
+  it('moves the microphone offset negative when audio lags video', () => {
+    assert.equal(recommendMicrophoneSyncOffsetMs({ medianOffsetMs: 121 }, 0), -121)
+    assert.equal(recommendMicrophoneSyncOffsetMs({ medianOffsetMs: 46 }, -120), -166)
+  })
+
+  it('moves the microphone offset positive when audio leads video and clamps bounds', () => {
+    assert.equal(recommendMicrophoneSyncOffsetMs({ medianOffsetMs: -80 }, -120), -40)
+    assert.equal(recommendMicrophoneSyncOffsetMs({ medianOffsetMs: 300 }, -900), -1000)
+    assert.equal(recommendMicrophoneSyncOffsetMs({ medianOffsetMs: -300 }, 900), 1000)
+  })
+
+  it('does not recommend a setting without a paired measurement', () => {
+    assert.equal(recommendMicrophoneSyncOffsetMs({ medianOffsetMs: null }, 0), null)
+  })
 })
 
 // --- Integration: recover a known injected offset from a real fixture ---
@@ -124,12 +154,16 @@ describe('measureAvSync (integration)', () => {
   })
 
   it('recovers an injected 200ms A/V offset and hard-fails it', async () => {
-    const result = await measureAvSync(offset, { ffmpegPath })
+    const result = await measureAvSync(offset, { ffmpegPath, currentMicrophoneSyncOffsetMs: 0 })
     assert.ok(
       result.medianOffsetMs > 150 && result.medianOffsetMs < 260,
       `expected ~200ms, got ${result.medianOffsetMs}ms`
     )
     assert.equal(result.pass, false)
     assert.ok(result.failures.some((f) => /A\/V sync/.test(f)))
+    assert.ok(
+      result.recommendedMicrophoneSyncOffsetMs <= -150 && result.recommendedMicrophoneSyncOffsetMs >= -260,
+      `suggested ${result.recommendedMicrophoneSyncOffsetMs}ms`
+    )
   })
 })

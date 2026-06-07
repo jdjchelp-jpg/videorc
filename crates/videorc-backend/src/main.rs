@@ -143,6 +143,7 @@ async fn main() -> Result<()> {
         .route("/preview/camera/live.png", get(live_camera_frame_handler))
         .route("/preview/screen/live.png", get(live_screen_frame_handler))
         .route("/preview/{id}", get(preview_handler))
+        .route("/compositor/status", get(compositor_status_handler))
         .route("/oauth/callback", get(oauth_callback_handler))
         .route("/ws", get(ws_handler))
         .with_state(state.clone());
@@ -223,6 +224,17 @@ struct OAuthCallbackQuery {
 async fn health_handler(State(state): State<AppState>) -> Json<BackendHealth> {
     let ffmpeg_path = default_ffmpeg_path();
     Json(backend_health(&state, &ffmpeg_path).await)
+}
+
+async fn compositor_status_handler(
+    State(state): State<AppState>,
+    Query(query): Query<WsQuery>,
+) -> impl IntoResponse {
+    if query.token != state.token {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+
+    Json(compositor_status(&state).await).into_response()
 }
 
 async fn preview_handler(

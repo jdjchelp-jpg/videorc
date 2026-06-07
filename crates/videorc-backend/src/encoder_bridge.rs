@@ -35,6 +35,8 @@ use crate::video_toolbox_encoder::{
 };
 
 const ENCODER_BRIDGE_DIAGNOSTIC_WINDOW: Duration = Duration::from_secs(2);
+const ENCODER_BRIDGE_DEADLINE_LAG_THRESHOLD: Duration = Duration::from_millis(1);
+const VIDEOTOOLBOX_FRESH_FRAME_GRACE_DIVISOR: f64 = 2.0;
 const VIDEOTOOLBOX_PROBE_ENV: &str = "VIDEORC_ENCODER_BRIDGE_VIDEOTOOLBOX_PROBE";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,6 +92,12 @@ struct EncoderBridgeRuntimeStats {
     synthetic_fallback_frames: u64,
     /// Max age (ms) of a compositor frame at the moment it was fed to the encoder.
     source_to_encode_age_ms: Option<u64>,
+    /// P95 age (ms) of compositor frames at the moment they were fed to the encoder.
+    source_to_encode_age_p95_ms: Option<f64>,
+    /// P95 age (ms) of compositor frames that were re-fed as duplicate bridge frames.
+    repeated_frame_age_p95_ms: Option<f64>,
+    /// Max age (ms) of a compositor frame that was re-fed as a duplicate bridge frame.
+    repeated_frame_age_max_ms: Option<u64>,
     /// Ticks where the bridge still copied YUV into FFmpeg, but the compositor frame also
     /// exposed an IOSurface-backed Metal target that a future VideoToolbox path can adopt.
     metal_target_frames: u64,
@@ -118,6 +126,11 @@ struct EncoderBridgeRuntimeStats {
     video_toolbox_submit_p95_ms: Option<f64>,
     video_toolbox_fifo_write_p95_ms: Option<f64>,
     writer_loop_p95_ms: Option<f64>,
+    writer_sleep_p95_ms: Option<f64>,
+    writer_active_p95_ms: Option<f64>,
+    deadline_lag_p95_ms: Option<f64>,
+    deadline_lag_max_ms: Option<f64>,
+    late_deadline_ticks: u64,
 }
 
 /// A compositor frame fed into the encoder FIFO on one tick.
@@ -161,13 +174,29 @@ fn compositor_frame_wait_budget(
     frame_interval: Duration,
 ) -> Duration {
     if video_output.uses_video_toolbox() {
-        return Duration::ZERO;
+        // Keep the normal VideoToolbox tick mostly immediate, but give the compositor
+        // a small phase-alignment grace. Zero wait sampled just before a fresh Metal
+        // target publish and produced many isolated duplicate re-feeds; full-frame
+        // waits pushed the writer loop behind real time.
+        return if consecutive_repeated_frames > 0 {
+            match video_output {
+                EncoderBridgeVideoOutput::VideoToolboxH264MpegTs => frame_interval + frame_interval,
+                EncoderBridgeVideoOutput::VideoToolboxH264AnnexB => frame_interval,
+                EncoderBridgeVideoOutput::RawYuv420p => Duration::ZERO,
+            }
+        } else {
+            videotoolbox_fresh_frame_grace(frame_interval)
+        };
     }
     if consecutive_repeated_frames > 0 {
         frame_interval + frame_interval
     } else {
         frame_interval
     }
+}
+
+fn videotoolbox_fresh_frame_grace(frame_interval: Duration) -> Duration {
+    Duration::from_secs_f64(frame_interval.as_secs_f64() / VIDEOTOOLBOX_FRESH_FRAME_GRACE_DIVISOR)
 }
 
 #[derive(Debug)]
@@ -371,6 +400,7 @@ pub async fn run_synthetic_encoder_bridge(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn start_synthetic_recording_bridge(
     state: AppState,
     session_id: String,
@@ -663,6 +693,9 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
     let mut max_repeated_frame_run = 0_u64;
     let mut synthetic_fallback_frames = 0_u64;
     let mut max_source_to_encode_age_ms: Option<u64> = None;
+    let mut source_to_encode_age_times_ms = Vec::with_capacity(128);
+    let mut repeated_frame_age_times_ms = Vec::with_capacity(128);
+    let mut max_repeated_frame_age_ms: Option<u64> = None;
     let mut metal_target_frames = 0_u64;
     let mut raw_video_copied_frames = 0_u64;
     let mut metal_target_copied_frames = 0_u64;
@@ -679,6 +712,11 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
     let mut video_toolbox_submit_times_ms = Vec::with_capacity(128);
     let mut video_toolbox_fifo_write_times_ms = Vec::with_capacity(128);
     let mut writer_loop_times_ms = Vec::with_capacity(128);
+    let mut writer_sleep_times_ms = Vec::with_capacity(128);
+    let mut writer_active_times_ms = Vec::with_capacity(128);
+    let mut deadline_lag_times_ms = Vec::with_capacity(128);
+    let mut max_deadline_lag_ms: Option<f64> = None;
+    let mut late_deadline_ticks = 0_u64;
     #[cfg(target_os = "macos")]
     let mut video_toolbox_probe = EncoderBridgeVideoToolboxProbe::new(
         video_output.uses_video_toolbox() || encoder_bridge_video_toolbox_probe_enabled(),
@@ -711,29 +749,58 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
         return;
     }
     let mut last_fed_sequence: Option<u64> = None;
+    let mut first_frame_wait_sequence =
+        latest_compositor_frame(frame_store.as_ref()).map(|frame| frame.sequence);
     let mut consecutive_repeated_frames = 0_u64;
 
     while !stop.load(Ordering::Relaxed) {
         let loop_started_at = Instant::now();
         let now = Instant::now();
+        if now > next_frame_at {
+            let deadline_lag = now.duration_since(next_frame_at);
+            if deadline_lag >= ENCODER_BRIDGE_DEADLINE_LAG_THRESHOLD {
+                let lag_ms = deadline_lag.as_secs_f64() * 1000.0;
+                deadline_lag_times_ms.push(lag_ms);
+                max_deadline_lag_ms =
+                    Some(max_deadline_lag_ms.map_or(lag_ms, |current| current.max(lag_ms)));
+                late_deadline_ticks = late_deadline_ticks.saturating_add(1);
+            }
+        }
+        let sleep_started_at = Instant::now();
         if now < next_frame_at {
             thread::sleep(next_frame_at - now);
         }
+        let active_started_at = Instant::now();
+        writer_sleep_times_ms.push(
+            active_started_at
+                .duration_since(sleep_started_at)
+                .as_secs_f64()
+                * 1000.0,
+        );
         next_frame_at += frame_interval;
         sequence = sequence.saturating_add(1);
-        let wait_budget =
-            compositor_frame_wait_budget(video_output, consecutive_repeated_frames, frame_interval);
+        let startup_wait_sequence = if last_fed_sequence.is_none() {
+            first_frame_wait_sequence
+        } else {
+            None
+        };
+        let wait_budget = if startup_wait_sequence.is_some() {
+            frame_interval + frame_interval
+        } else {
+            compositor_frame_wait_budget(video_output, consecutive_repeated_frames, frame_interval)
+        };
+        let previous_sequence = last_fed_sequence.or(startup_wait_sequence);
         let compositor_wait_started_at = Instant::now();
         let fed = match video_output {
             EncoderBridgeVideoOutput::RawYuv420p => copy_next_compositor_frame(
                 frame_store.as_ref(),
                 &mut bytes,
-                last_fed_sequence,
+                previous_sequence,
                 wait_budget,
             ),
             EncoderBridgeVideoOutput::VideoToolboxH264AnnexB
             | EncoderBridgeVideoOutput::VideoToolboxH264MpegTs => {
-                next_compositor_frame(frame_store.as_ref(), last_fed_sequence, wait_budget)
+                next_compositor_frame(frame_store.as_ref(), previous_sequence, wait_budget)
             }
         };
         compositor_wait_times_ms.push(compositor_wait_started_at.elapsed().as_secs_f64() * 1000.0);
@@ -758,6 +825,9 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
                             max_repeated_frame_run,
                             synthetic_fallback_frames,
                             source_to_encode_age_ms: max_source_to_encode_age_ms,
+                            source_to_encode_age_p95_ms: p95_ms(&source_to_encode_age_times_ms),
+                            repeated_frame_age_p95_ms: p95_ms(&repeated_frame_age_times_ms),
+                            repeated_frame_age_max_ms: max_repeated_frame_age_ms,
                             metal_target_frames,
                             raw_video_copied_frames,
                             metal_target_copied_frames,
@@ -775,6 +845,11 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
                                 &video_toolbox_fifo_write_times_ms,
                             ),
                             writer_loop_p95_ms: p95_ms(&writer_loop_times_ms),
+                            writer_sleep_p95_ms: p95_ms(&writer_sleep_times_ms),
+                            writer_active_p95_ms: p95_ms(&writer_active_times_ms),
+                            deadline_lag_p95_ms: p95_ms(&deadline_lag_times_ms),
+                            deadline_lag_max_ms: max_deadline_lag_ms,
+                            late_deadline_ticks,
                         },
                         Some(
                             "VideoToolbox encoder bridge had no compositor frame to encode"
@@ -802,6 +877,13 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
             last_fed_sequence = Some(frame.sequence);
             max_source_to_encode_age_ms =
                 Some(max_source_to_encode_age_ms.map_or(frame.age_ms, |age| age.max(frame.age_ms)));
+            source_to_encode_age_times_ms.push(frame.age_ms as f64);
+            if frame_source == BridgeFrameSource::Repeated {
+                repeated_frame_age_times_ms.push(frame.age_ms as f64);
+                max_repeated_frame_age_ms = Some(
+                    max_repeated_frame_age_ms.map_or(frame.age_ms, |age| age.max(frame.age_ms)),
+                );
+            }
         }
         let wrote_metal_target_frame = fed
             .as_ref()
@@ -918,6 +1000,9 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
                     max_repeated_frame_run,
                     synthetic_fallback_frames,
                     source_to_encode_age_ms: max_source_to_encode_age_ms,
+                    source_to_encode_age_p95_ms: p95_ms(&source_to_encode_age_times_ms),
+                    repeated_frame_age_p95_ms: p95_ms(&repeated_frame_age_times_ms),
+                    repeated_frame_age_max_ms: max_repeated_frame_age_ms,
                     metal_target_frames,
                     raw_video_copied_frames,
                     metal_target_copied_frames,
@@ -933,6 +1018,11 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
                     video_toolbox_submit_p95_ms: p95_ms(&video_toolbox_submit_times_ms),
                     video_toolbox_fifo_write_p95_ms: p95_ms(&video_toolbox_fifo_write_times_ms),
                     writer_loop_p95_ms: p95_ms(&writer_loop_times_ms),
+                    writer_sleep_p95_ms: p95_ms(&writer_sleep_times_ms),
+                    writer_active_p95_ms: p95_ms(&writer_active_times_ms),
+                    deadline_lag_p95_ms: p95_ms(&deadline_lag_times_ms),
+                    deadline_lag_max_ms: max_deadline_lag_ms,
+                    late_deadline_ticks,
                 },
                 Some(format!(
                     "Could not write compositor frame into recording FFmpeg: {error}"
@@ -968,6 +1058,9 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
                     max_repeated_frame_run,
                     synthetic_fallback_frames,
                     source_to_encode_age_ms: max_source_to_encode_age_ms,
+                    source_to_encode_age_p95_ms: p95_ms(&source_to_encode_age_times_ms),
+                    repeated_frame_age_p95_ms: p95_ms(&repeated_frame_age_times_ms),
+                    repeated_frame_age_max_ms: max_repeated_frame_age_ms,
                     metal_target_frames,
                     raw_video_copied_frames,
                     metal_target_copied_frames,
@@ -983,6 +1076,11 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
                     video_toolbox_submit_p95_ms: p95_ms(&video_toolbox_submit_times_ms),
                     video_toolbox_fifo_write_p95_ms: p95_ms(&video_toolbox_fifo_write_times_ms),
                     writer_loop_p95_ms: p95_ms(&writer_loop_times_ms),
+                    writer_sleep_p95_ms: p95_ms(&writer_sleep_times_ms),
+                    writer_active_p95_ms: p95_ms(&writer_active_times_ms),
+                    deadline_lag_p95_ms: p95_ms(&deadline_lag_times_ms),
+                    deadline_lag_max_ms: max_deadline_lag_ms,
+                    late_deadline_ticks,
                 },
                 Some(format!(
                     "Could not write VideoToolbox output into recording FFmpeg: {error}"
@@ -995,8 +1093,13 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
         } else {
             0
         };
+        writer_active_times_ms.push(active_started_at.elapsed().as_secs_f64() * 1000.0);
         writer_loop_times_ms.push(loop_started_at.elapsed().as_secs_f64() * 1000.0);
         frames_in_window = frames_in_window.saturating_add(1);
+        if startup_wait_sequence.is_some() {
+            next_frame_at = Instant::now() + frame_interval;
+            first_frame_wait_sequence = None;
+        }
 
         if window_started_at.elapsed() >= ENCODER_BRIDGE_DIAGNOSTIC_WINDOW {
             emit_encoder_bridge_diagnostics_from_thread(
@@ -1013,6 +1116,9 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
                     max_repeated_frame_run,
                     synthetic_fallback_frames,
                     source_to_encode_age_ms: max_source_to_encode_age_ms,
+                    source_to_encode_age_p95_ms: p95_ms(&source_to_encode_age_times_ms),
+                    repeated_frame_age_p95_ms: p95_ms(&repeated_frame_age_times_ms),
+                    repeated_frame_age_max_ms: max_repeated_frame_age_ms,
                     metal_target_frames,
                     raw_video_copied_frames,
                     metal_target_copied_frames,
@@ -1028,6 +1134,11 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
                     video_toolbox_submit_p95_ms: p95_ms(&video_toolbox_submit_times_ms),
                     video_toolbox_fifo_write_p95_ms: p95_ms(&video_toolbox_fifo_write_times_ms),
                     writer_loop_p95_ms: p95_ms(&writer_loop_times_ms),
+                    writer_sleep_p95_ms: p95_ms(&writer_sleep_times_ms),
+                    writer_active_p95_ms: p95_ms(&writer_active_times_ms),
+                    deadline_lag_p95_ms: p95_ms(&deadline_lag_times_ms),
+                    deadline_lag_max_ms: max_deadline_lag_ms,
+                    late_deadline_ticks,
                 },
                 None,
             );
@@ -1037,6 +1148,10 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
             video_toolbox_submit_times_ms.clear();
             video_toolbox_fifo_write_times_ms.clear();
             writer_loop_times_ms.clear();
+            writer_sleep_times_ms.clear();
+            writer_active_times_ms.clear();
+            source_to_encode_age_times_ms.clear();
+            repeated_frame_age_times_ms.clear();
         }
     }
 
@@ -1087,6 +1202,9 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
             max_repeated_frame_run,
             synthetic_fallback_frames,
             source_to_encode_age_ms: max_source_to_encode_age_ms,
+            source_to_encode_age_p95_ms: p95_ms(&source_to_encode_age_times_ms),
+            repeated_frame_age_p95_ms: p95_ms(&repeated_frame_age_times_ms),
+            repeated_frame_age_max_ms: max_repeated_frame_age_ms,
             metal_target_frames,
             raw_video_copied_frames,
             metal_target_copied_frames,
@@ -1102,6 +1220,11 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
             video_toolbox_submit_p95_ms: p95_ms(&video_toolbox_submit_times_ms),
             video_toolbox_fifo_write_p95_ms: p95_ms(&video_toolbox_fifo_write_times_ms),
             writer_loop_p95_ms: p95_ms(&writer_loop_times_ms),
+            writer_sleep_p95_ms: p95_ms(&writer_sleep_times_ms),
+            writer_active_p95_ms: p95_ms(&writer_active_times_ms),
+            deadline_lag_p95_ms: p95_ms(&deadline_lag_times_ms),
+            deadline_lag_max_ms: max_deadline_lag_ms,
+            late_deadline_ticks,
         },
         None,
     );
@@ -1282,29 +1405,36 @@ impl EncoderBridgeVideoToolboxProbe {
 #[cfg(target_os = "macos")]
 enum VideoToolboxH264PipeWriter {
     AnnexB,
-    MpegTs(MpegTsH264Writer),
+    MpegTs {
+        writer: MpegTsH264Writer,
+        access_unit_buffer: Vec<u8>,
+    },
 }
 
 #[cfg(target_os = "macos")]
 impl VideoToolboxH264PipeWriter {
     fn for_output(video_output: EncoderBridgeVideoOutput) -> Self {
         match video_output {
-            EncoderBridgeVideoOutput::VideoToolboxH264MpegTs => {
-                Self::MpegTs(MpegTsH264Writer::new())
-            }
+            EncoderBridgeVideoOutput::VideoToolboxH264MpegTs => Self::MpegTs {
+                writer: MpegTsH264Writer::new(),
+                access_unit_buffer: Vec::new(),
+            },
             EncoderBridgeVideoOutput::RawYuv420p
             | EncoderBridgeVideoOutput::VideoToolboxH264AnnexB => Self::AnnexB,
         }
     }
 
-    fn write_frame(
+    fn write_frame<W: StdWrite>(
         &mut self,
-        fifo: &mut File,
+        sink: &mut W,
         frame: &VideoToolboxH264AnnexBFrame,
     ) -> io::Result<()> {
         match self {
-            Self::AnnexB => fifo.write_all(&frame.bytes),
-            Self::MpegTs(writer) => {
+            Self::AnnexB => sink.write_all(&frame.bytes),
+            Self::MpegTs {
+                writer,
+                access_unit_buffer,
+            } => {
                 let pts_90khz = timing_to_90khz(
                     frame.timing.presentation_time_value,
                     frame.timing.presentation_time_scale,
@@ -1312,9 +1442,11 @@ impl VideoToolboxH264PipeWriter {
                 .ok_or_else(|| {
                     io::Error::other("VideoToolbox frame timing cannot be mapped to MPEG-TS PTS")
                 })?;
+                access_unit_buffer.clear();
                 writer
-                    .write_h264_access_unit(fifo, pts_90khz, &frame.bytes)
-                    .map(|_| ())
+                    .write_h264_access_unit(access_unit_buffer, pts_90khz, &frame.bytes)
+                    .map(|_| ())?;
+                sink.write_all(access_unit_buffer)
             }
         }
     }
@@ -1609,6 +1741,9 @@ async fn emit_encoder_bridge_diagnostics(
                 max_repeated_frame_run: runtime.max_repeated_frame_run,
                 synthetic_fallback_frames: runtime.synthetic_fallback_frames,
                 source_to_encode_age_ms: runtime.source_to_encode_age_ms,
+                source_to_encode_age_p95_ms: runtime.source_to_encode_age_p95_ms,
+                repeated_frame_age_p95_ms: runtime.repeated_frame_age_p95_ms,
+                repeated_frame_age_max_ms: runtime.repeated_frame_age_max_ms,
                 metal_target_frames: runtime.metal_target_frames,
                 raw_video_copied_frames: runtime.raw_video_copied_frames,
                 metal_target_copied_frames: runtime.metal_target_copied_frames,
@@ -1624,6 +1759,11 @@ async fn emit_encoder_bridge_diagnostics(
                 video_toolbox_submit_p95_ms: runtime.video_toolbox_submit_p95_ms,
                 video_toolbox_fifo_write_p95_ms: runtime.video_toolbox_fifo_write_p95_ms,
                 writer_loop_p95_ms: runtime.writer_loop_p95_ms,
+                writer_sleep_p95_ms: runtime.writer_sleep_p95_ms,
+                writer_active_p95_ms: runtime.writer_active_p95_ms,
+                deadline_lag_p95_ms: runtime.deadline_lag_p95_ms,
+                deadline_lag_max_ms: runtime.deadline_lag_max_ms,
+                late_deadline_ticks: runtime.late_deadline_ticks,
                 error,
             },
             target_fps,
@@ -1715,8 +1855,9 @@ mod tests {
     }
 
     #[test]
-    fn videotoolbox_bridge_samples_latest_compositor_frame_without_waiting() {
+    fn videotoolbox_bridge_uses_small_normal_tick_grace() {
         let frame_interval = Duration::from_millis(33);
+        let normal_grace = videotoolbox_fresh_frame_grace(frame_interval);
 
         assert_eq!(
             compositor_frame_wait_budget(
@@ -1724,15 +1865,31 @@ mod tests {
                 0,
                 frame_interval
             ),
-            Duration::ZERO
+            normal_grace
         );
         assert_eq!(
             compositor_frame_wait_budget(
                 EncoderBridgeVideoOutput::VideoToolboxH264AnnexB,
-                4,
+                0,
                 frame_interval
             ),
-            Duration::ZERO
+            normal_grace
+        );
+        assert_eq!(
+            compositor_frame_wait_budget(
+                EncoderBridgeVideoOutput::VideoToolboxH264AnnexB,
+                1,
+                frame_interval
+            ),
+            frame_interval
+        );
+        assert_eq!(
+            compositor_frame_wait_budget(
+                EncoderBridgeVideoOutput::VideoToolboxH264MpegTs,
+                1,
+                frame_interval
+            ),
+            frame_interval + frame_interval
         );
     }
 
@@ -1966,6 +2123,50 @@ mod tests {
 
         assert_eq!(fed.sequence, 11);
         assert_eq!(bytes, expected);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn mpeg_ts_pipe_writer_coalesces_access_unit_to_single_fifo_write() {
+        let mut pipe_writer = VideoToolboxH264PipeWriter::for_output(
+            EncoderBridgeVideoOutput::VideoToolboxH264MpegTs,
+        );
+        let frame = VideoToolboxH264AnnexBFrame {
+            timing: VideoToolboxFrameTiming::new(1, 30, 1, 30),
+            bytes: vec![0x55; 600],
+            nal_types: vec![5],
+            is_idr: true,
+        };
+        let mut sink = CountingSink::default();
+
+        pipe_writer
+            .write_frame(&mut sink, &frame)
+            .expect("write MPEG-TS frame");
+
+        assert_eq!(sink.write_calls, 1);
+        assert_eq!(sink.bytes.len() % 188, 0);
+        assert!(sink.bytes.len() > frame.bytes.len());
+        assert_eq!(sink.bytes[0], 0x47);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[derive(Default)]
+    struct CountingSink {
+        write_calls: usize,
+        bytes: Vec<u8>,
+    }
+
+    #[cfg(target_os = "macos")]
+    impl StdWrite for CountingSink {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.write_calls += 1;
+            self.bytes.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
     }
 
     fn publish_test_compositor_frame(

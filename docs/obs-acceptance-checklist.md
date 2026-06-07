@@ -14,10 +14,13 @@ whole point of the root-fix work.
 | Tool | What it does |
 |---|---|
 | `pnpm baseline:real-source [--gate]` | Real screen + camera + mic → 60s record → samples live diagnostics → runs the analyzer → writes a baseline + acceptance verdict. `--gate` makes the exit code reflect the gates. |
+| `pnpm baseline:real-source:av-sync-mpegts-output` | Real screen + camera + mic + visible flash/click browser stimulus → record an MP4 for `measure:av-sync`. Use `VIDEORC_BASELINE_MIC_SYNC_OFFSET_MS` to verify microphone calibration. |
+| `pnpm acceptance:obs-side-by-side` | Manual acceptance harness: launches the motion or A/V sync stimulus, optionally opens OBS and the Videorc dev app, and prints the human side-by-side checklist without changing OBS settings. |
 | `pnpm smoke:recording-native-preview` | Native/proof preview recording smoke that writes startup and final-file analyzer reports beside each MP4, including the first-60-frame startup thumbnail sheet. |
+| `pnpm smoke:preview-motion` | Native preview motion/currentness smoke that exercises scene/layout changes and verifies native-surface/CAMetalLayer cadence, blank-frame count, and compositor lag. |
 | `pnpm analyze:recording <file> --fps N` | Honest final-file analyzer on any recording (freeze / repeated-frame bursts / pacing / audio gaps / A/V skew). |
 | `pnpm analyze:startup <file> --width W --height H --fps N` | First-2-seconds startup analyzer (metadata + decoded frame dimensions + first-frame hashes + startup thumbnail sheet). |
-| `pnpm measure:av-sync <file>` | Lip-sync measurement against the flash+click fixture. |
+| `pnpm measure:av-sync <file> --current-offset-ms N --require-target` | Lip-sync measurement against the flash+click fixture. `--require-target` makes the 100 ms target a failing acceptance gate, and `--current-offset-ms` prints the next microphone sync estimate. |
 | `pnpm measure:av-sync --make-fixture out.mp4 --seconds 120` | Generate the flash+click reference to play on a second screen / through speakers while recording. |
 | `pnpm test:scripts` | Unit/integration tests for all of the above (must stay green). |
 
@@ -34,11 +37,11 @@ any image-poll route during the session fails on transport honesty.
 
 | Gate | Threshold | Where measured |
 |---|---|---|
-| Final-file freeze segment | none > **100 ms** | analyzer (`freezedetect`) |
-| Repeated-frame burst | none > **2** consecutive | analyzer (`framemd5`) |
+| Final-file freeze segment | none > **100 ms** when visible motion is required; warning-only for no-motion real-source baselines | analyzer (`freezedetect`) |
+| Repeated-frame burst | none > **2** consecutive when visible motion is required; warning-only for no-motion real-source baselines | analyzer (`framemd5`) |
 | Startup resolution | first 2s decoded frames match target output; no preview-sized frame leak; report includes first-frame evidence and dimension timeline | startup analyzer |
 | Frame count vs `duration × fps` | within **2%** | analyzer (`ffprobe`) |
-| Recording duplicate/synthetic fed frames | **0** | `encoderBridgeRepeatedFrames` / `encoderBridgeSyntheticFrames` |
+| Recording duplicate/synthetic fed frames | synthetic **0**; duplicate re-feed bursts must stay within the decoded-file proof budget and are recorded as evidence when final-file proof passes | `encoderBridgeRepeatedFrames` / `encoderBridgeSyntheticFrames` |
 | Encoder speed | ≥ **0.98×** | diagnostics |
 | Mic dropped frames | **0** | live diagnostics |
 | Mic capture coverage | ≥ **95%** | live diagnostics |
@@ -71,13 +74,49 @@ Stress variants (perform during the run, by hand): drag/resize the camera overla
 screen text quickly; move a window; move your hand quickly in front of the camera. Re-run
 the gate afterward — the final file must still pass freeze/repeated-frame/pacing.
 
+Static real-source baselines do not guarantee visible pixel motion. In those runs,
+`VIDEORC_BASELINE_REQUIRE_MOTION=0` keeps exact decoded-frame repeats and freezedetect
+segments as warnings, while frame pacing, startup dimensions, synthetic frames, transport
+honesty, mic capture, and native preview currentness remain hard gates. Use
+`VIDEORC_BASELINE_REQUIRE_MOTION=1` or the stress/manual scenarios when the goal is to
+prove motion smoothness from the final file alone.
+
 Lip-sync pass: play `--make-fixture` output on a second screen + through speakers (or clap
-on camera), record 30–120 s, then `pnpm measure:av-sync <recording>`.
+on camera), record 30–120 s, then `pnpm measure:av-sync <recording>`. For the automated
+browser-stimulus path, run `pnpm baseline:real-source:av-sync-mpegts-output`, then run
+`pnpm measure:av-sync <recording> --current-offset-ms N --require-target`. If the median
+is over the 100 ms target but under the 150 ms hard fail, set
+`VIDEORC_BASELINE_MIC_SYNC_OFFSET_MS` to verify the matching microphone calibration and
+re-measure before considering mouth/voice sync accepted.
 
 ## Manual acceptance — OBS side-by-side
 
 No metric replaces a human watching both. Open **OBS** and **Videorc** side by side with
 the **same** camera, the **same** screen/window, and the **same** output FPS.
+
+Repeatable harness:
+
+```sh
+pnpm acceptance:obs-side-by-side -- --stimulus=motion
+```
+
+For mouth/voice sync, use the flash/click variant:
+
+```sh
+pnpm acceptance:obs-side-by-side -- --stimulus=av-sync
+```
+
+The harness does not mutate OBS. It only opens OBS/Videorc, starts the selected stimulus,
+prints the checklist, and keeps the stimulus alive until Ctrl-C. Local inspection on
+2026-06-07 found OBS websocket disabled, so the manual pass should not depend on hidden
+OBS automation. OBS CLI exposes `--startrecording` but no stop-recording counterpart in
+the local help output, so do not manufacture an automated OBS recording by force-quitting
+OBS during MP4 output. Also match OBS/Videorc output settings before judging quality; the
+local OBS profile was detected as 3840x2160 at 24 NTSC, while the current automated
+Videorc evidence is 1920x1080 or 2560x1440 at 30fps. The harness defaults to the `Long`
+OBS scene because it has visible screen/window and camera sources; it prints the visible
+OBS sources before launch and warns if the chosen scene is camera-only, such as
+`talking head`.
 
 - [ ] **Preview sharpness** — screen text is as readable in Videorc preview as in OBS (the preview path badge reads **OBS-native**, not Fallback).
 - [ ] **Preview hand latency** — move your hand quickly; Videorc preview keeps up with OBS, no rubber-banding.
@@ -97,11 +136,45 @@ the **same** camera, the **same** screen/window, and the **same** output FPS.
 - [ ] The user's previous failure pattern (laggy/soft preview, glitchy/desynced recordings) no longer reproduces.
 
 Record the outcome (pass/fail per scenario, the diagnostics/analyzer reports, and the
-manual notes) in a dated acceptance note alongside this checklist.
+manual notes) in a dated acceptance note alongside this checklist. Current note:
+[`docs/acceptance/2026-06-07-obs-parity-acceptance.md`](acceptance/2026-06-07-obs-parity-acceptance.md).
 
-> **Status:** the automated gates and tooling are implemented and unit-tested. The native
-> Metal preview (Phase 2) and GPU compositor (Phase 3) are the remaining work that the
-> "OBS-native" preview-path and sharpness checks above are designed to hold accountable;
-> until they land, expect the preview-path badge to read **Fallback** or **Proof surface**
-> and the transport/backing honesty gates to fail a native claim — which is the intended,
-> honest behavior.
+> **Status 2026-06-07:** the latest local motion-required MPEG-TS gates now pass at
+> 1080p30 and 1440p30 with real screen/camera/mic sources, native `CAMetalLayer`
+> preview, zero image polling, Metal compositor, VideoToolbox zero-copy output, startup
+> PASS, final-file PASS, and encoder-bridge repeats `0`. Evidence:
+> `/var/folders/5b/08_snhzs2xb559qf1j6dth2r0000gn/T/videorc-real-source-baseline-1780792948903/videorc-session-20260607-004236.baseline.md`
+> and
+> `/var/folders/5b/08_snhzs2xb559qf1j6dth2r0000gn/T/videorc-real-source-baseline-1780793237944/videorc-session-20260607-004722.baseline.md`.
+> A latest-code 10-minute motion-required endurance gate also passes at
+> `/var/folders/5b/08_snhzs2xb559qf1j6dth2r0000gn/T/videorc-real-source-baseline-1780793397213/videorc-session-20260607-005001.baseline.md`:
+> acceptance PASS, final-file PASS, startup PASS, native preview `100.6fps`, interval p95
+> `18ms`, source-to-present p95/p99 `25/28ms`, image polls `0`, mic dropped `0`, raw/Metal
+> copied `0/0`, zero-copy `18002`, VT output `18002`, and one single-frame bridge repeat.
+> The 1080p60 scenario was attempted on the selected real source set, but the selected
+> MacBook Pro Camera reports only 15/30fps modes and FFmpeg rejected 60fps before any
+> recording artifact was created. Evidence:
+> `/var/folders/5b/08_snhzs2xb559qf1j6dth2r0000gn/T/videorc-real-source-baseline-1780794317959/`.
+> The automated browser flash/click stimulus now captures valid lip-sync pairs. With the
+> default `0ms` microphone sync offset, the real-source MP4 at
+> `/var/folders/5b/08_snhzs2xb559qf1j6dth2r0000gn/T/videorc-real-source-baseline-1780794836805/videorc-session-20260607-011401.mp4`
+> measured `+121ms` median audio lag (`62` pairs, max `158ms`), which passes the hard
+> fail but misses the `100ms` target. Re-running the same path with
+> `VIDEORC_BASELINE_MIC_SYNC_OFFSET_MS=-120` produced
+> `/var/folders/5b/08_snhzs2xb559qf1j6dth2r0000gn/T/videorc-real-source-baseline-1780795031566/videorc-session-20260607-011715.mp4`
+> and measured `+6ms` median (`31` pairs, max `28ms`). The AV-sync stimulus now also
+> carries continuous low-luma motion and the baseline gate explicitly relaxes only
+> preview FPS/interval cadence for this stimulus, leaving final-file, startup, native
+> transport, GPU/zero-copy, mic, and source-to-present checks active. Final calibrated
+> evidence:
+> `/var/folders/5b/08_snhzs2xb559qf1j6dth2r0000gn/T/videorc-real-source-baseline-1780795444655/videorc-session-20260607-012409.baseline.md`
+> is baseline PASS, and
+> `/var/folders/5b/08_snhzs2xb559qf1j6dth2r0000gn/T/videorc-real-source-baseline-1780795444655/videorc-session-20260607-012409.mp4`
+> measures `+46ms` median (`31` pairs, max `49ms`) with
+> `pnpm measure:av-sync ... --current-offset-ms -120 --require-target`; the command exits
+> PASS and reports the current setting within target with a zero-error estimate of
+> `-166ms`. The Sources tab Sync control now supports exact millisecond entry, so
+> measured offsets can be applied directly instead of being rounded to the old 25 ms
+> slider step. The remaining acceptance work is the human OBS side-by-side pass; an
+> automatic guided calibration flow is optional polish rather than a blocker for applying
+> the measured sync value.

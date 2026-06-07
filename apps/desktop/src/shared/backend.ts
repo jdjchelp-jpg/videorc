@@ -854,6 +854,7 @@ export interface CompositorStatus {
   targetFps: number
   width: number
   height: number
+  runId?: string
   sceneRevision?: number
   sceneId?: string
   sceneLayout?: LayoutSettings
@@ -866,6 +867,10 @@ export interface CompositorStatus {
   droppedFrames: number
   frameAgeMs?: number
   frameTimeP95Ms?: number
+  /** IOSurface id for the latest retained Metal compositor target; handoff only, not a native-preview claim. */
+  metalTargetIosurfaceId?: number
+  metalTargetWidth?: number
+  metalTargetHeight?: number
   updatedAt: string
   message?: string
 }
@@ -904,6 +909,16 @@ export interface PreviewSurfaceSceneUpdateParams {
 
 export interface PreviewSurfaceCompositorUpdateParams extends CompositorStatus {
   suppressFramePolling?: boolean
+  nativePreviewRendererPollIntervalP95Ms?: number
+  nativePreviewRendererPollRoundTripP95Ms?: number
+  nativePreviewRendererPresentRoundTripP95Ms?: number
+  nativePreviewRendererPollInFlightSkips?: number
+  nativePreviewMainStatusFetchP95Ms?: number
+  nativePreviewMainStatusFetchFailures?: number
+  nativePreviewMainStatusFetchSuccesses?: number
+  nativePreviewMainPresentedStatusAgeMs?: number
+  nativePreviewMainPresentedStatusAgeP95Ms?: number
+  nativePreviewMainPresentedFrameAgeP95Ms?: number
 }
 
 export interface PreviewSurfaceStatus {
@@ -925,8 +940,23 @@ export interface PreviewSurfaceStatus {
   presentFps?: number
   intervalP95Ms?: number
   intervalP99Ms?: number
+  nativePreviewRendererPollIntervalP95Ms?: number
+  nativePreviewRendererPollRoundTripP95Ms?: number
+  nativePreviewRendererPresentRoundTripP95Ms?: number
+  nativePreviewRendererPollInFlightSkips?: number
+  nativePreviewMainQueueWaitP95Ms?: number
+  nativePreviewMainPresentP95Ms?: number
+  nativePreviewMainQueuedBehindCount?: number
+  nativePreviewHelperRoundTripP95Ms?: number
+  nativePreviewMainStatusFetchP95Ms?: number
+  nativePreviewMainStatusFetchFailures?: number
+  nativePreviewMainStatusFetchSuccesses?: number
+  nativePreviewMainPresentedStatusAgeMs?: number
+  nativePreviewMainPresentedStatusAgeP95Ms?: number
+  nativePreviewMainPresentedFrameAgeP95Ms?: number
   framePollingSuppressed: boolean
   sourcePixelsPresent: boolean
+  pendingHostCommandCount: number
   bounds?: PreviewSurfaceBounds
   startedAt?: string
   updatedAt: string
@@ -946,6 +976,20 @@ export interface PreviewSurfacePresentParams {
   presentFps?: number
   intervalP95Ms?: number
   intervalP99Ms?: number
+  nativePreviewRendererPollIntervalP95Ms?: number
+  nativePreviewRendererPollRoundTripP95Ms?: number
+  nativePreviewRendererPresentRoundTripP95Ms?: number
+  nativePreviewRendererPollInFlightSkips?: number
+  nativePreviewMainQueueWaitP95Ms?: number
+  nativePreviewMainPresentP95Ms?: number
+  nativePreviewMainQueuedBehindCount?: number
+  nativePreviewHelperRoundTripP95Ms?: number
+  nativePreviewMainStatusFetchP95Ms?: number
+  nativePreviewMainStatusFetchFailures?: number
+  nativePreviewMainStatusFetchSuccesses?: number
+  nativePreviewMainPresentedStatusAgeMs?: number
+  nativePreviewMainPresentedStatusAgeP95Ms?: number
+  nativePreviewMainPresentedFrameAgeP95Ms?: number
   framePollingSuppressed?: boolean
   sourcePixelsPresent?: boolean
 }
@@ -1094,6 +1138,12 @@ export interface DiagnosticStats {
   encoderBridgeSyntheticFrames: number
   /** Max age (ms) of a compositor frame when it was fed to the encoder. */
   encoderBridgeSourceAgeMs?: number
+  /** P95 age (ms) of compositor frames when they were fed to the encoder. */
+  encoderBridgeSourceAgeP95Ms?: number
+  /** P95 age (ms) of compositor frames re-fed as duplicate bridge frames. */
+  encoderBridgeRepeatedFrameAgeP95Ms?: number
+  /** Max age (ms) of compositor frames re-fed as duplicate bridge frames. */
+  encoderBridgeRepeatedFrameAgeMaxMs?: number
   /** FIFO ticks whose copied compositor frame also exposed an IOSurface-backed Metal target. */
   encoderBridgeMetalTargetFrames: number
   /** FIFO frames still written through raw-video FFmpeg stdin. */
@@ -1119,8 +1169,18 @@ export interface DiagnosticStats {
   encoderBridgeVideoToolboxSubmitP95Ms?: number
   /** P95 time spent writing completed VideoToolbox H.264 access units into FFmpeg. */
   encoderBridgeVideoToolboxFifoWriteP95Ms?: number
-  /** P95 end-to-end bridge writer loop time. */
+  /** P95 end-to-end bridge writer loop time, including intentional CFR sleep. */
   encoderBridgeWriterLoopP95Ms?: number
+  /** P95 time spent sleeping until the bridge writer's scheduled CFR deadline. */
+  encoderBridgeWriterSleepP95Ms?: number
+  /** P95 active bridge writer work after scheduled-deadline sleep. */
+  encoderBridgeWriterActiveP95Ms?: number
+  /** P95 schedule lag for bridge writer ticks that missed their CFR deadline during the session. */
+  encoderBridgeDeadlineLagP95Ms?: number
+  /** Max bridge writer schedule lag observed during the active session. */
+  encoderBridgeDeadlineLagMaxMs?: number
+  /** Cumulative bridge writer ticks that started late against their CFR deadline. */
+  encoderBridgeLateDeadlineTicks: number
   encoderBridgeError?: string
   /** Which encoder the active session requested — proves hardware vs software encode. */
   encodeBackend?: EncodeBackend
@@ -1384,6 +1444,7 @@ export interface RuntimeInfo {
   nativePreviewSurfaceProofEnabled: boolean
   previewSmokeMode?: boolean
   disableAutoPreview?: boolean
+  nativePreviewSurfaceStageSuspended?: boolean
 }
 
 export interface VideorcApi {

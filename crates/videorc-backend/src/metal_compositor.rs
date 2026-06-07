@@ -21,13 +21,14 @@ use std::time::Instant;
 
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
-use objc2_core_foundation::{CFDictionary, CFRetained, CFType, CGSize};
+use objc2_core_foundation::{CFBoolean, CFDictionary, CFRetained, CFType, CGSize};
 use objc2_core_video::{
     CVMetalTexture, CVMetalTextureCache, CVMetalTextureGetTexture, CVPixelBuffer,
     CVPixelBufferCreate, CVPixelBufferGetIOSurface, kCVPixelBufferIOSurfacePropertiesKey,
     kCVPixelFormatType_32BGRA,
 };
 use objc2_foundation::NSString;
+use objc2_io_surface::IOSurfaceRef;
 use objc2_metal::{
     MTLClearColor, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue,
     MTLCreateSystemDefaultDevice, MTLDevice, MTLDrawable, MTLLibrary, MTLLoadAction, MTLOrigin,
@@ -179,6 +180,55 @@ pub struct MetalComposeTimings {
     pub total_ms: f64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MetalPreviewPresentFailure {
+    IosurfaceImportFailed,
+    DrawableUnavailable,
+    CommandBufferUnavailable,
+    EncodeFailed,
+}
+
+impl MetalPreviewPresentFailure {
+    pub fn reason(self) -> &'static str {
+        match self {
+            Self::IosurfaceImportFailed => "iosurface-import-failed",
+            Self::DrawableUnavailable => "drawable-unavailable",
+            Self::CommandBufferUnavailable => "command-buffer-unavailable",
+            Self::EncodeFailed => "encode-failed",
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct MetalImportedIosurfaceTexture {
+    iosurface_id: u32,
+    width: usize,
+    height: usize,
+    texture: Retained<MetalTexture>,
+}
+
+impl MetalImportedIosurfaceTexture {
+    pub fn matches(&self, iosurface_id: u32, width: usize, height: usize) -> bool {
+        self.iosurface_id == iosurface_id && self.width == width && self.height == height
+    }
+
+    pub fn iosurface_id(&self) -> u32 {
+        self.iosurface_id
+    }
+
+    pub fn width(&self) -> usize {
+        self.width
+    }
+
+    pub fn height(&self) -> usize {
+        self.height
+    }
+
+    fn texture(&self) -> &MetalTexture {
+        &self.texture
+    }
+}
+
 /// Retained CoreVideo handle for the compositor's latest IOSurface-backed render target.
 ///
 /// VideoToolbox can adopt this buffer in the encoder-export slice, avoiding the current
@@ -208,6 +258,11 @@ impl MetalCompositorTargetPixelBuffer {
 
     pub fn has_iosurface(&self) -> bool {
         CVPixelBufferGetIOSurface(Some(self.pixel_buffer.as_ref())).is_some()
+    }
+
+    pub fn iosurface_id(&self) -> Option<u32> {
+        let iosurface = CVPixelBufferGetIOSurface(Some(self.pixel_buffer.as_ref()))?;
+        Some(iosurface.id())
     }
 }
 
@@ -507,6 +562,10 @@ pub fn make_preview_layer(device: &MetalDevice, width: f64, height: f64) -> Reta
     layer.setPixelFormat(MTLPixelFormat::BGRA8Unorm);
     // The drawable is a render target for the scaled preview present path.
     layer.setFramebufferOnly(false);
+    layer.setMaximumDrawableCount(3);
+    layer.setPresentsWithTransaction(false);
+    layer.setAllowsNextDrawableTimeout(true);
+    layer.setDisplaySyncEnabled(false);
     layer.setDrawableSize(CGSize { width, height });
     layer
 }
@@ -538,6 +597,10 @@ impl MetalPreviewPresenter {
         })
     }
 
+    pub fn new_default() -> Option<Self> {
+        Self::new(MTLCreateSystemDefaultDevice()?)
+    }
+
     pub fn device(&self) -> &MetalDevice {
         &self.device
     }
@@ -545,12 +608,20 @@ impl MetalPreviewPresenter {
     /// Present a composited texture to the layer's next drawable via a scaled render pass.
     /// Returns `false` when no drawable is available (e.g. a headless test layer).
     pub fn present_texture_to_layer(&self, layer: &CAMetalLayer, texture: &MetalTexture) -> bool {
+        self.try_present_texture_to_layer(layer, texture).is_ok()
+    }
+
+    pub fn try_present_texture_to_layer(
+        &self,
+        layer: &CAMetalLayer,
+        texture: &MetalTexture,
+    ) -> Result<(), MetalPreviewPresentFailure> {
         let Some(drawable) = layer.nextDrawable() else {
-            return false;
+            return Err(MetalPreviewPresentFailure::DrawableUnavailable);
         };
         let drawable_texture = drawable.texture();
         let Some(command_buffer) = self.queue.commandBuffer() else {
-            return false;
+            return Err(MetalPreviewPresentFailure::CommandBufferUnavailable);
         };
         if encode_texture_present(
             &self.device,
@@ -563,13 +634,62 @@ impl MetalPreviewPresenter {
         )
         .is_none()
         {
-            return false;
+            return Err(MetalPreviewPresentFailure::EncodeFailed);
         }
         let mtl_drawable: &ProtocolObject<dyn MTLDrawable> = ProtocolObject::from_ref(&*drawable);
         command_buffer.presentDrawable(mtl_drawable);
         command_buffer.commit();
-        command_buffer.waitUntilCompleted();
-        true
+        Ok(())
+    }
+
+    /// Import an IOSurface-backed compositor target by id, then present it through the
+    /// same render-scaled preview path as the in-process compositor target.
+    pub fn present_iosurface_to_layer(
+        &self,
+        layer: &CAMetalLayer,
+        iosurface_id: u32,
+        width: usize,
+        height: usize,
+    ) -> bool {
+        self.try_present_iosurface_to_layer(layer, iosurface_id, width, height)
+            .is_ok()
+    }
+
+    pub fn try_present_iosurface_to_layer(
+        &self,
+        layer: &CAMetalLayer,
+        iosurface_id: u32,
+        width: usize,
+        height: usize,
+    ) -> Result<(), MetalPreviewPresentFailure> {
+        let Some(imported) = self.import_iosurface_texture_handle(iosurface_id, width, height)
+        else {
+            return Err(MetalPreviewPresentFailure::IosurfaceImportFailed);
+        };
+        self.try_present_imported_iosurface_to_layer(layer, &imported)
+    }
+
+    pub fn import_iosurface_texture_handle(
+        &self,
+        iosurface_id: u32,
+        width: usize,
+        height: usize,
+    ) -> Option<MetalImportedIosurfaceTexture> {
+        let texture = import_iosurface_texture(&self.device, iosurface_id, width, height)?;
+        Some(MetalImportedIosurfaceTexture {
+            iosurface_id,
+            width,
+            height,
+            texture,
+        })
+    }
+
+    pub fn try_present_imported_iosurface_to_layer(
+        &self,
+        layer: &CAMetalLayer,
+        imported: &MetalImportedIosurfaceTexture,
+    ) -> Result<(), MetalPreviewPresentFailure> {
+        self.try_present_texture_to_layer(layer, imported.texture())
     }
 
     #[cfg(test)]
@@ -633,7 +753,6 @@ pub fn present_texture_to_layer(
     let mtl_drawable: &ProtocolObject<dyn MTLDrawable> = ProtocolObject::from_ref(&*drawable);
     command_buffer.presentDrawable(mtl_drawable);
     command_buffer.commit();
-    command_buffer.waitUntilCompleted();
     true
 }
 
@@ -676,6 +795,30 @@ pub fn import_pixel_buffer_texture(
     }
     let cv_texture = unsafe { CFRetained::from_raw(NonNull::new(cv_texture)?) };
     CVMetalTextureGetTexture(&cv_texture)
+}
+
+/// Import a compositor IOSurface handoff as a Metal texture on this process/device.
+///
+/// This is the native-preview bridge primitive for a helper process or Electron native
+/// host: the backend can publish an IOSurface id with a compositor frame, and the host
+/// can import that shared storage without a PNG/JPEG readback path.
+pub fn import_iosurface_texture(
+    device: &MetalDevice,
+    iosurface_id: u32,
+    width: usize,
+    height: usize,
+) -> Option<Retained<MetalTexture>> {
+    let surface = IOSurfaceRef::lookup(iosurface_id)?;
+    let descriptor = unsafe {
+        MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
+            MTLPixelFormat::BGRA8Unorm,
+            width,
+            height,
+            false,
+        )
+    };
+    descriptor.setUsage(MTLTextureUsage::ShaderRead);
+    device.newTextureWithDescriptor_iosurface_plane(&descriptor, surface.as_ref(), 0)
 }
 
 // --- helpers ---
@@ -745,7 +888,14 @@ fn make_iosurface_bgra_pixel_buffer(
     width: usize,
     height: usize,
 ) -> Option<CFRetained<CVPixelBuffer>> {
-    let iosurface_properties = CFDictionary::<CFType, CFType>::empty();
+    #[allow(deprecated)]
+    let iosurface_is_global_key = unsafe { objc2_io_surface::kIOSurfaceIsGlobal };
+    // The helper-process preview host can only import by IOSurface id when the surface is
+    // globally lookupable. A future Mach-port/native-addon handoff can remove this.
+    let iosurface_properties = CFDictionary::<CFType, CFType>::from_slices(
+        &[iosurface_is_global_key.as_ref()],
+        &[CFBoolean::new(true).as_ref()],
+    );
     let pixel_buffer_attributes = CFDictionary::<CFType, CFType>::from_slices(
         &[unsafe { kCVPixelBufferIOSurfacePropertiesKey }.as_ref()],
         &[iosurface_properties.as_ref()],
@@ -1275,6 +1425,58 @@ mod tests {
         let pixels = read_texture_bgra(&target, 4, 4);
         assert_eq!(pixel(&pixels, 4, 0, 0), [0, 255, 0, 255]);
         assert_eq!(pixel(&pixels, 4, 3, 3), [0, 255, 0, 255]);
+    }
+
+    #[test]
+    fn preview_presenter_imports_iosurface_handoff_or_skips_without_a_gpu() {
+        let Some(mut compositor) = MetalSceneCompositor::new() else {
+            eprintln!("skipping: no Metal device available in this environment");
+            return;
+        };
+        let Some(presenter) = compositor.make_preview_presenter() else {
+            return;
+        };
+        let red = [0u8, 0, 255, 255];
+        let source = full_frame(&red, 1, 1, false, false, [0.0; 4]);
+        compositor
+            .compose_bgra(8, 4, [0.0, 0.0, 0.0, 1.0], &[source])
+            .expect("compose IOSurface-backed target");
+        let Some(target) = compositor.latest_target_pixel_buffer() else {
+            eprintln!("skipping: IOSurface-backed render target unavailable on this device");
+            return;
+        };
+        let Some(iosurface_id) = target.iosurface_id() else {
+            eprintln!("skipping: target has no IOSurface id");
+            return;
+        };
+
+        let imported = import_iosurface_texture(
+            presenter.device(),
+            iosurface_id,
+            target.width(),
+            target.height(),
+        )
+        .expect("import compositor IOSurface handoff");
+
+        assert_eq!(imported.width(), 8);
+        assert_eq!(imported.height(), 4);
+        assert_eq!(
+            imported.iosurface().as_deref().map(IOSurfaceRef::id),
+            Some(iosurface_id)
+        );
+
+        let layer = make_preview_layer(presenter.device(), 8.0, 4.0);
+        // Headless layers usually have no drawable. This still exercises the complete
+        // import-then-present path without requiring an on-screen AppKit host.
+        let present_result = presenter.try_present_iosurface_to_layer(
+            &layer,
+            iosurface_id,
+            target.width(),
+            target.height(),
+        );
+        if let Err(failure) = present_result {
+            assert_ne!(failure, MetalPreviewPresentFailure::IosurfaceImportFailed);
+        }
     }
 
     #[test]

@@ -94,6 +94,10 @@ function classifyPreviewLag({ diagnostics, claimsNative, imagePolls, cpuFallback
     owners.add('proof preview transport')
     evidence.push(`preview backing: ${diagnostics.previewSurfaceBacking ?? 'unknown'}`)
   }
+  if ((diagnostics.previewPendingHostCommandCount ?? 0) > 0) {
+    owners.add('undrained preview host commands')
+    evidence.push(`${diagnostics.previewPendingHostCommandCount} host command(s) pending`)
+  }
   if (imagePolls != null && imagePolls > 0) {
     owners.add('image-poll fallback transport')
     evidence.push(`${imagePolls} image poll(s) during recording`)
@@ -159,18 +163,23 @@ function classifyPreviewQuality({ diagnostics, claimsNative, imagePolls, cpuFall
 
   const evidence = []
   const owners = new Set()
+  const hasNativeCametalLayer = claimsNative && diagnostics.previewSurfaceBacking === 'cametal-layer'
 
-  if (!claimsNative || diagnostics.previewSurfaceBacking !== 'cametal-layer') {
+  if (!hasNativeCametalLayer) {
     owners.add('native Metal preview host')
     evidence.push(`preview backing: ${diagnostics.previewSurfaceBacking ?? 'unknown'}`)
   }
-  if (diagnostics.previewFramePollingSuppressed) {
+  if (diagnostics.previewFramePollingSuppressed && !hasNativeCametalLayer) {
     owners.add('proof preview source suppression')
     evidence.push('frame polling suppressed while recording')
   }
   if (!diagnostics.previewSourcePixelsPresent) {
     owners.add('preview source-pixel proof')
     evidence.push('source pixels not proven on preview host')
+  }
+  if ((diagnostics.previewPendingHostCommandCount ?? 0) > 0) {
+    owners.add('undrained preview host commands')
+    evidence.push(`${diagnostics.previewPendingHostCommandCount} host command(s) pending`)
   }
   if (imagePolls != null && imagePolls > 0) {
     owners.add('PNG/JPEG fallback preview')
@@ -185,11 +194,16 @@ function classifyPreviewQuality({ diagnostics, claimsNative, imagePolls, cpuFall
   }
 
   if (owners.size === 0) {
+    if (hasNativeCametalLayer && diagnostics.previewFramePollingSuppressed) {
+      evidence.push('native CAMetalLayer carried source pixels while fallback frame polling was suppressed')
+    }
     return item({
       area: 'Preview quality vs OBS',
       status: STATUS.NEEDS_MANUAL,
       owner: 'visual sampling / color parity',
-      evidence: ['metrics show the native path; visual sharpness and color still require OBS side-by-side inspection'],
+      evidence: evidence.length
+        ? evidence
+        : ['metrics show the native path; visual sharpness and color still require OBS side-by-side inspection'],
       nextStep: 'Compare screen text, cursor edges, camera detail, crop/mirror, and color bars against OBS.',
     })
   }

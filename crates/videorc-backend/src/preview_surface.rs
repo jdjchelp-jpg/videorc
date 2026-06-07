@@ -74,6 +74,7 @@ pub async fn create_preview_surface(
         interval_p99_ms: None,
         frame_polling_suppressed: false,
         source_pixels_present: false,
+        pending_host_command_count: 0,
         bounds: Some(bounds.clone()),
         started_at: Some(now.clone()),
         updated_at: now,
@@ -87,6 +88,7 @@ pub async fn create_preview_surface(
             &mut slot.pending_native_host_commands,
             host_update,
         );
+        status.pending_host_command_count = pending_host_command_count(&slot);
         slot.status = status.clone();
         slot.run_id = Some(run_id);
     }
@@ -129,6 +131,7 @@ pub async fn update_preview_surface_bounds(
                 host_update,
             );
         }
+        next.pending_host_command_count = pending_host_command_count(&slot);
         slot.status = next.clone();
         next
     };
@@ -160,6 +163,7 @@ pub async fn destroy_preview_surface(state: &AppState) -> PreviewSurfaceStatus {
         next.interval_p99_ms = None;
         next.frame_polling_suppressed = false;
         next.source_pixels_present = false;
+        next.pending_host_command_count = pending_host_command_count(&slot);
         next.started_at = None;
         next.updated_at = Utc::now().to_rfc3339();
         next.message = Some("Native preview surface stopped.".to_string());
@@ -204,13 +208,10 @@ pub async fn preview_surface_status(state: &AppState) -> PreviewSurfaceStatus {
 }
 
 pub async fn take_native_preview_host_commands(state: &AppState) -> Vec<NativePreviewHostCommand> {
-    std::mem::take(
-        &mut state
-            .preview_surface
-            .lock()
-            .await
-            .pending_native_host_commands,
-    )
+    let mut slot = state.preview_surface.lock().await;
+    let commands = std::mem::take(&mut slot.pending_native_host_commands);
+    slot.status.pending_host_command_count = pending_host_command_count(&slot);
+    commands
 }
 
 pub async fn update_preview_surface_present(
@@ -225,15 +226,15 @@ pub async fn update_preview_surface_present(
         let mut next = slot.status.clone();
         let native_claim_allowed = native_present_claim_allowed(&slot.status, &params);
         let blocked_native_claim = present_update_claims_native(&params) && !native_claim_allowed;
-        if let Some(transport) = params.transport {
-            if transport != PreviewTransport::NativeSurface || native_claim_allowed {
-                next.transport = transport;
-            }
+        if let Some(transport) = params.transport
+            && (transport != PreviewTransport::NativeSurface || native_claim_allowed)
+        {
+            next.transport = transport;
         }
-        if let Some(backing) = params.backing {
-            if backing != PreviewSurfaceBacking::CaMetalLayer || native_claim_allowed {
-                next.backing = backing;
-            }
+        if let Some(backing) = params.backing
+            && (backing != PreviewSurfaceBacking::CaMetalLayer || native_claim_allowed)
+        {
+            next.backing = backing;
         }
         if let Some(frame_id) = params.presented_frame_id {
             next.presented_frame_id = Some(frame_id);
@@ -261,31 +262,29 @@ pub async fn update_preview_surface_present(
         next
     };
 
-    let diagnostic_stats = {
-        let mut diagnostics = state.diagnostics.lock().await;
-        let mut next = diagnostics.clone();
-        next.preview_present_fps = status.present_fps;
-        next.preview_input_to_present_latency_ms = status.input_to_present_latency_ms;
-        next.preview_input_to_present_latency_p50_ms = status.input_to_present_latency_p50_ms;
-        next.preview_input_to_present_latency_p95_ms = status.input_to_present_latency_p95_ms;
-        next.preview_input_to_present_latency_p99_ms = status.input_to_present_latency_p99_ms;
-        next.preview_compositor_frame_lag = status.compositor_frame_lag;
-        next.preview_dropped_frames = status.dropped_frames;
-        next.preview_frame_age_ms = status.input_to_present_latency_ms;
-        next.preview_render_frame_time_p95_ms = status.interval_p95_ms;
-        next.preview_render_frame_time_p99_ms = status.interval_p99_ms;
-        next.preview_transport = status.transport;
-        next.preview_surface_backing = status.backing;
-        next.preview_frame_polling_suppressed = status.frame_polling_suppressed;
-        next.preview_source_pixels_present = status.source_pixels_present;
+    emit_preview_surface_present_diagnostics(state, &status).await;
+    state.emit_event("preview.surface.status", status.clone());
+    status
+}
+
+#[allow(dead_code)]
+pub async fn activate_native_preview_host(
+    state: &AppState,
+    activation: NativePreviewHostActivation,
+) -> PreviewSurfaceStatus {
+    let status = {
+        let mut slot = state.preview_surface.lock().await;
+        let mut next = slot.status.clone();
+        if next.state != PreviewSurfaceState::Live {
+            return next;
+        }
+        apply_native_host_activation(&mut next, activation);
         next.updated_at = Utc::now().to_rfc3339();
-        *diagnostics = next.clone();
+        slot.status = next.clone();
         next
     };
-    state.emit_event(
-        "diagnostics.stats",
-        apply_runtime_diagnostics_snapshot(diagnostic_stats, state.ffmpeg_work.snapshot()),
-    );
+
+    emit_preview_surface_present_diagnostics(state, &status).await;
     state.emit_event("preview.surface.status", status.clone());
     status
 }
@@ -355,20 +354,67 @@ fn apply_native_host_update(
         pending_commands.push(command);
     }
 
-    let Some(NativePreviewHostActivation {
+    if let Some(activation) = update.activation {
+        apply_native_host_activation(status, activation);
+    }
+}
+
+fn apply_native_host_activation(
+    status: &mut PreviewSurfaceStatus,
+    NativePreviewHostActivation {
         transport,
         backing,
+        presented_frame_id,
+        frame_polling_suppressed,
+        source_pixels_present,
         message,
-    }) = update.activation
-    else {
-        return;
-    };
-
+    }: NativePreviewHostActivation,
+) {
+    let presented_frame_id = status
+        .presented_frame_id
+        .map(|current_frame_id| current_frame_id.max(presented_frame_id))
+        .unwrap_or(presented_frame_id);
     status.transport = transport;
     status.backing = backing;
+    status.presented_frame_id = Some(presented_frame_id);
+    status.frames_rendered = status.frames_rendered.max(presented_frame_id);
+    status.frame_polling_suppressed = frame_polling_suppressed;
+    status.source_pixels_present = source_pixels_present;
     if let Some(message) = message {
         status.message = Some(message);
     }
+}
+
+async fn emit_preview_surface_present_diagnostics(state: &AppState, status: &PreviewSurfaceStatus) {
+    let diagnostic_stats = {
+        let mut diagnostics = state.diagnostics.lock().await;
+        let mut next = diagnostics.clone();
+        next.preview_present_fps = status.present_fps;
+        next.preview_input_to_present_latency_ms = status.input_to_present_latency_ms;
+        next.preview_input_to_present_latency_p50_ms = status.input_to_present_latency_p50_ms;
+        next.preview_input_to_present_latency_p95_ms = status.input_to_present_latency_p95_ms;
+        next.preview_input_to_present_latency_p99_ms = status.input_to_present_latency_p99_ms;
+        next.preview_compositor_frame_lag = status.compositor_frame_lag;
+        next.preview_dropped_frames = status.dropped_frames;
+        next.preview_frame_age_ms = status.input_to_present_latency_ms;
+        next.preview_render_frame_time_p95_ms = status.interval_p95_ms;
+        next.preview_render_frame_time_p99_ms = status.interval_p99_ms;
+        next.preview_transport = status.transport;
+        next.preview_surface_backing = status.backing;
+        next.preview_frame_polling_suppressed = status.frame_polling_suppressed;
+        next.preview_source_pixels_present = status.source_pixels_present;
+        next.updated_at = Utc::now().to_rfc3339();
+        *diagnostics = next.clone();
+        next
+    };
+    state.emit_event(
+        "diagnostics.stats",
+        apply_runtime_diagnostics_snapshot(diagnostic_stats, state.ffmpeg_work.snapshot()),
+    );
+}
+
+fn pending_host_command_count(slot: &PreviewSurfaceRuntime) -> u64 {
+    slot.pending_native_host_commands.len() as u64
 }
 
 fn surface_dimension(value: f64) -> u32 {
@@ -397,6 +443,7 @@ fn unavailable_status(message: Option<String>) -> PreviewSurfaceStatus {
         interval_p99_ms: None,
         frame_polling_suppressed: false,
         source_pixels_present: false,
+        pending_host_command_count: 0,
         bounds: None,
         started_at: None,
         updated_at: Utc::now().to_rfc3339(),
@@ -407,7 +454,7 @@ fn unavailable_status(message: Option<String>) -> PreviewSurfaceStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::native_preview_host::NativePreviewHostCommandKind;
+    use crate::native_preview_host::{NativePreviewHostActivation, NativePreviewHostCommandKind};
     use crate::protocol::PreviewSurfaceBounds;
     use crate::storage::Database;
     use tokio::sync::broadcast;
@@ -446,24 +493,27 @@ mod tests {
         )
         .await;
 
+        let surface = state.preview_surface.lock().await;
+        let last_command_kind = surface.native_host.last_command_kind();
+        let drawable_size = surface
+            .native_host
+            .bounds()
+            .map(|bounds| bounds.drawable_size());
+        drop(surface);
+        destroy_preview_surface(&state).await;
+
         assert_eq!(status.state, PreviewSurfaceState::Live);
         assert_eq!(status.transport, PreviewTransport::ElectronProofSurface);
         assert_eq!(status.backing, PreviewSurfaceBacking::ElectronBrowserWindow);
         assert_eq!(status.target_fps, 60);
         assert_eq!(status.width, 800);
         assert_eq!(status.height, 450);
-        let surface = state.preview_surface.lock().await;
+        assert_eq!(status.pending_host_command_count, 1);
         assert_eq!(
-            surface.native_host.last_command_kind(),
+            last_command_kind,
             Some(NativePreviewHostCommandKind::Create)
         );
-        assert_eq!(
-            surface
-                .native_host
-                .bounds()
-                .map(|bounds| bounds.drawable_size()),
-            Some((1600.0, 900.0))
-        );
+        assert_eq!(drawable_size, Some((1600.0, 900.0)));
     }
 
     #[tokio::test]
@@ -487,25 +537,25 @@ mod tests {
         )
         .await;
 
+        let resize_count = state.diagnostics.lock().await.preview_surface_resize_count;
+        let surface = state.preview_surface.lock().await;
+        let last_command_kind = surface.native_host.last_command_kind();
+        let drawable_size = surface
+            .native_host
+            .bounds()
+            .map(|bounds| bounds.drawable_size());
+        drop(surface);
+        destroy_preview_surface(&state).await;
+
         assert_eq!(status.state, PreviewSurfaceState::Live);
         assert_eq!(status.width, 640);
         assert_eq!(status.height, 360);
+        assert_eq!(resize_count, 1);
         assert_eq!(
-            state.diagnostics.lock().await.preview_surface_resize_count,
-            1
-        );
-        let surface = state.preview_surface.lock().await;
-        assert_eq!(
-            surface.native_host.last_command_kind(),
+            last_command_kind,
             Some(NativePreviewHostCommandKind::UpdateBounds)
         );
-        assert_eq!(
-            surface
-                .native_host
-                .bounds()
-                .map(|bounds| bounds.drawable_size()),
-            Some((1280.0, 720.0))
-        );
+        assert_eq!(drawable_size, Some((1280.0, 720.0)));
     }
 
     #[tokio::test]
@@ -527,7 +577,9 @@ mod tests {
             },
         )
         .await;
-        destroy_preview_surface(&state).await;
+        let destroyed = destroy_preview_surface(&state).await;
+
+        assert_eq!(destroyed.pending_host_command_count, 3);
 
         let commands = take_native_preview_host_commands(&state).await;
 
@@ -542,6 +594,12 @@ mod tests {
                 NativePreviewHostCommandKind::UpdateBounds,
                 NativePreviewHostCommandKind::Destroy,
             ]
+        );
+        assert_eq!(
+            preview_surface_status(&state)
+                .await
+                .pending_host_command_count,
+            0
         );
         assert!(commands[0].bounds.is_some());
         assert!(commands[1].bounds.is_some());
@@ -583,6 +641,9 @@ mod tests {
         )
         .await;
 
+        let diagnostics = state.diagnostics.lock().await.clone();
+        destroy_preview_surface(&state).await;
+
         assert_eq!(status.transport, PreviewTransport::NativeSurface);
         assert_eq!(status.backing, PreviewSurfaceBacking::CaMetalLayer);
         assert_eq!(status.presented_frame_id, Some(42));
@@ -595,8 +656,6 @@ mod tests {
         assert_eq!(status.present_fps, Some(58.5));
         assert!(status.frame_polling_suppressed);
         assert!(!status.source_pixels_present);
-
-        let diagnostics = state.diagnostics.lock().await;
         assert_eq!(
             diagnostics.preview_transport,
             PreviewTransport::NativeSurface
@@ -625,6 +684,103 @@ mod tests {
         assert_eq!(diagnostics.preview_dropped_frames, 3);
         assert_eq!(diagnostics.preview_render_frame_time_p95_ms, Some(19.0));
         assert_eq!(diagnostics.preview_render_frame_time_p99_ms, Some(24.0));
+    }
+
+    #[tokio::test]
+    async fn native_host_activation_marks_cametal_layer_after_presented_frame() {
+        let state = test_state();
+        create_preview_surface(
+            state.clone(),
+            PreviewSurfaceCreateParams {
+                bounds: bounds(800.0, 450.0),
+                target_fps: 60,
+                source: PreviewSurfaceSource::Synthetic,
+            },
+        )
+        .await;
+
+        let status = activate_native_preview_host(
+            &state,
+            NativePreviewHostActivation::cametal_layer_presented(12),
+        )
+        .await;
+
+        let diagnostics = state.diagnostics.lock().await.clone();
+        destroy_preview_surface(&state).await;
+
+        assert_eq!(status.transport, PreviewTransport::NativeSurface);
+        assert_eq!(status.backing, PreviewSurfaceBacking::CaMetalLayer);
+        assert_eq!(status.presented_frame_id, Some(12));
+        assert_eq!(status.frames_rendered, 12);
+        assert!(status.frame_polling_suppressed);
+        assert!(status.source_pixels_present);
+        assert!(
+            status
+                .message
+                .as_deref()
+                .is_some_and(|message| message.contains("CAMetalLayer"))
+        );
+        assert_eq!(
+            diagnostics.preview_transport,
+            PreviewTransport::NativeSurface
+        );
+        assert_eq!(
+            diagnostics.preview_surface_backing,
+            PreviewSurfaceBacking::CaMetalLayer
+        );
+        assert!(diagnostics.preview_frame_polling_suppressed);
+        assert!(diagnostics.preview_source_pixels_present);
+    }
+
+    #[tokio::test]
+    async fn native_host_activation_does_not_rewind_presented_frame_id() {
+        let state = test_state();
+        create_preview_surface(
+            state.clone(),
+            PreviewSurfaceCreateParams {
+                bounds: bounds(800.0, 450.0),
+                target_fps: 60,
+                source: PreviewSurfaceSource::Synthetic,
+            },
+        )
+        .await;
+        activate_native_preview_host(
+            &state,
+            NativePreviewHostActivation::cametal_layer_presented(12),
+        )
+        .await;
+
+        let status = activate_native_preview_host(
+            &state,
+            NativePreviewHostActivation::cametal_layer_presented(10),
+        )
+        .await;
+        destroy_preview_surface(&state).await;
+
+        assert_eq!(status.presented_frame_id, Some(12));
+        assert_eq!(status.frames_rendered, 12);
+    }
+
+    #[tokio::test]
+    async fn native_host_activation_is_ignored_when_surface_is_not_live() {
+        let state = test_state();
+
+        let status = activate_native_preview_host(
+            &state,
+            NativePreviewHostActivation::cametal_layer_presented(12),
+        )
+        .await;
+
+        assert_eq!(status.transport, PreviewTransport::Unavailable);
+        assert_eq!(status.backing, PreviewSurfaceBacking::None);
+        assert_eq!(status.presented_frame_id, None);
+
+        let diagnostics = state.diagnostics.lock().await;
+        assert_eq!(diagnostics.preview_transport, PreviewTransport::Unavailable);
+        assert_eq!(
+            diagnostics.preview_surface_backing,
+            PreviewSurfaceBacking::None
+        );
     }
 
     #[tokio::test]
@@ -661,6 +817,9 @@ mod tests {
         )
         .await;
 
+        let diagnostics = state.diagnostics.lock().await.clone();
+        destroy_preview_surface(&state).await;
+
         assert_eq!(status.transport, PreviewTransport::ElectronProofSurface);
         assert_eq!(status.backing, PreviewSurfaceBacking::ElectronBrowserWindow);
         assert_eq!(status.presented_frame_id, None);
@@ -670,8 +829,6 @@ mod tests {
                 .as_deref()
                 .is_some_and(|message| message.contains("first presented compositor frame"))
         );
-
-        let diagnostics = state.diagnostics.lock().await;
         assert_eq!(
             diagnostics.preview_transport,
             PreviewTransport::ElectronProofSurface
@@ -737,6 +894,8 @@ mod tests {
         )
         .await;
 
+        destroy_preview_surface(&state).await;
+
         assert_eq!(status.transport, PreviewTransport::NativeSurface);
         assert_eq!(status.backing, PreviewSurfaceBacking::CaMetalLayer);
         assert_eq!(status.presented_frame_id, Some(42));
@@ -798,6 +957,9 @@ mod tests {
         )
         .await;
 
+        let diagnostics = state.diagnostics.lock().await.clone();
+        destroy_preview_surface(&state).await;
+
         assert_eq!(stale.transport, PreviewTransport::NativeSurface);
         assert_eq!(stale.backing, PreviewSurfaceBacking::CaMetalLayer);
         assert_eq!(stale.presented_frame_id, Some(42));
@@ -806,8 +968,6 @@ mod tests {
         assert_eq!(stale.input_to_present_latency_ms, Some(37));
         assert_eq!(stale.input_to_present_latency_p95_ms, Some(48));
         assert_eq!(stale.present_fps, Some(58.5));
-
-        let diagnostics = state.diagnostics.lock().await;
         assert_eq!(
             diagnostics.preview_surface_backing,
             PreviewSurfaceBacking::CaMetalLayer
@@ -875,12 +1035,13 @@ mod tests {
         )
         .await;
 
+        let diagnostics = state.diagnostics.lock().await.clone();
+        destroy_preview_surface(&state).await;
+
         assert_eq!(status.presented_frame_id, Some(43));
         assert_eq!(status.compositor_frame_lag, Some(0));
         assert_eq!(status.dropped_frames, 7);
         assert_eq!(status.input_to_present_latency_ms, Some(20));
-
-        let diagnostics = state.diagnostics.lock().await;
         assert_eq!(diagnostics.preview_dropped_frames, 7);
         assert_eq!(diagnostics.preview_input_to_present_latency_ms, Some(20));
     }

@@ -46,17 +46,19 @@ use crate::encoder_bridge::{
 use crate::ffmpeg::{ffprobe_path_for, resolve_ffmpeg_path};
 use crate::ffmpeg_work::{CapturePermit, MaintenanceCancelToken};
 use crate::pipeline::{RecordingPipeline, container_for_outputs, container_key};
-use crate::preview_camera::preview_camera_latest_frame_info;
+use crate::preview_camera::{
+    preview_camera_latest_frame_info, reset_preview_camera_capture_timings,
+};
 use crate::preview_screen::preview_screen_latest_frame_info;
 use crate::protocol::{
     AudioSettings, AudioTrack, AudioTrackSource, CameraCorner, CameraFit, CameraShape, CameraSize,
     CameraTransformMode, CompositorSceneUpdateParams, CompositorState, EncodeBackend, HealthLevel,
     LayoutPreset, LayoutSettings, PreviewCameraState, PreviewLiveParams, PreviewLiveSource,
     PreviewLiveState, PreviewLiveStatus, PreviewScreenSourceKind, PreviewScreenState,
-    PreviewSnapshot, PreviewSnapshotParams, PreviewSurfaceBacking, PreviewSurfaceState,
-    PreviewTransport, RecordingPipelineStage, RecordingState, RecordingStatus, RemuxSessionParams,
-    RtmpPreset, RtmpSettings, Scene, SceneConfigParams, SceneSourceKind, SideBySideCameraSide,
-    SideBySideSplit, StartSessionParams, StreamHealth, VideoPreset, VideoSettings,
+    PreviewSnapshot, PreviewSnapshotParams, PreviewSurfaceState, PreviewTransport,
+    RecordingPipelineStage, RecordingState, RecordingStatus, RemuxSessionParams, RtmpPreset,
+    RtmpSettings, Scene, SceneConfigParams, SceneSourceKind, SideBySideCameraSide, SideBySideSplit,
+    StartSessionParams, StreamHealth, VideoPreset, VideoSettings,
 };
 use crate::repair::{
     GateStatus, MAINTENANCE_CANCELLED, QualityExpectations, QualityThresholds, RepairJob,
@@ -2778,7 +2780,7 @@ const MICROPHONE_WARMUP_TIMEOUT: Duration = Duration::from_millis(1500);
 const RECORDING_STARTUP_BARRIER_TIMEOUT: Duration = Duration::from_millis(2500);
 /// Consecutive target-resolution real-source compositor frames required before encoding.
 const RECORDING_STARTUP_BARRIER_MIN_FRAMES: u32 = 3;
-const RECORDING_CAMERA_CADENCE_READY_TIMEOUT: Duration = Duration::from_millis(1500);
+const RECORDING_CAMERA_CADENCE_READY_TIMEOUT: Duration = Duration::from_millis(3000);
 const RECORDING_CAMERA_CADENCE_READY_POLL: Duration = Duration::from_millis(25);
 const RECORDING_CAMERA_CADENCE_FRAME_INTERVAL_FACTOR: f64 = 2.1;
 const RECORDING_CAMERA_CADENCE_MAX_FRAME_AGE_MS: u64 = 250;
@@ -2887,6 +2889,7 @@ async fn await_recording_camera_cadence_ready(
         return Ok(());
     }
 
+    reset_preview_camera_capture_timings(state).await;
     let started_at = Instant::now();
     let threshold_ms = camera_cadence_ready_threshold_ms(target_fps);
 
@@ -3157,10 +3160,10 @@ async fn wait_for_recording_encoder_bridge_sources_ready(
 
 async fn recording_compositor_target_fps(state: &AppState, video: &VideoSettings) -> u32 {
     let preview_surface = state.preview_surface.lock().await.status.clone();
-    if preview_surface.state == PreviewSurfaceState::Live
-        && preview_surface.transport == PreviewTransport::NativeSurface
-        && preview_surface.backing == PreviewSurfaceBacking::CaMetalLayer
-    {
+    if preview_surface.state == PreviewSurfaceState::Live {
+        // Native activation can arrive after recording starts; honor the live preview's
+        // requested cadence immediately so the 30fps encoder does not race a 30fps
+        // compositor and repeatedly sample the previous target.
         return video.fps.max(preview_surface.target_fps).max(1);
     }
     video.fps.max(1)
@@ -5082,8 +5085,9 @@ mod tests {
     use super::*;
     use crate::protocol::{
         CameraCorner, CameraFit, CameraShape, CameraSize, CameraTransform, LayoutPreset,
-        LayoutSettings, OutputSettings, PreviewLiveParams, RtmpSettings, Scene, SceneOutput,
-        SceneOutputKind, SceneSource, SceneSourceKind, SceneTransform, SourceSelection,
+        LayoutSettings, OutputSettings, PreviewLiveParams, PreviewSurfaceBacking, RtmpSettings,
+        Scene, SceneOutput, SceneOutputKind, SceneSource, SceneSourceKind, SceneTransform,
+        SourceSelection,
     };
     use crate::storage::Database;
     use crate::streaming::{
@@ -6426,7 +6430,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bridge_compositor_caps_electron_proof_surface_to_recording_fps() {
+    async fn bridge_compositor_uses_live_preview_surface_fps_before_native_activation() {
         let state = test_state();
         {
             let mut surface = state.preview_surface.lock().await;
@@ -6443,7 +6447,7 @@ mod tests {
             bitrate_kbps: 8000,
         };
 
-        assert_eq!(recording_compositor_target_fps(&state, &video).await, 30);
+        assert_eq!(recording_compositor_target_fps(&state, &video).await, 60);
     }
 
     #[tokio::test]

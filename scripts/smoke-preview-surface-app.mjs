@@ -43,6 +43,8 @@ async function runPreviewSurfaceSmoke(connection, smoke) {
     await smokeCommand(smoke, 'open-layout-tab')
     const bootstrap = await smokeCommand(smoke, 'inspect-native-preview-bootstrap')
     assertNativeBootstrap(bootstrap)
+    const runtime = await smokeCommand(smoke, 'inspect-native-preview-runtime')
+    console.log(`Preview surface runtime: ${JSON.stringify(runtime)}`)
     const firstStatus = await waitForNativeSurface(ws)
     const nativeStage = await smokeCommand(smoke, 'inspect-native-preview-bootstrap', {
       requireNativePlaceholder: true
@@ -245,7 +247,8 @@ async function smokeCommand(smoke, command, params = {}) {
       return await sendSmokeCommand(smoke, command, params)
     } catch (error) {
       lastError = error
-      if (!String(error?.message ?? error).includes('Main window is not ready')) {
+      const message = String(error?.message ?? error)
+      if (!message.includes('Main window is not ready') && !message.includes('Could not find tab ')) {
         throw error
       }
       await sleep(150)

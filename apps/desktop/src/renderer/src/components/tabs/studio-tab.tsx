@@ -262,7 +262,13 @@ export function StudioTab(): ReactElement {
             <p className="text-sm text-muted-foreground">
               Camera and screen arrangement, crop, and output resolution.
             </p>
-            <Button size="sm" variant="outline" className="w-fit" onClick={() => setActive('layout')}>
+            <Button
+              size="sm"
+              variant="outline"
+              className="w-fit"
+              data-videorc-open-tab="layout"
+              onClick={() => setActive('layout')}
+            >
               Edit layout
             </Button>
           </InspectorSection>

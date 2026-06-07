@@ -25,6 +25,7 @@ function cleanInput() {
       previewCompositorFrameLag: 0,
       previewFramePollingSuppressed: false,
       previewSourcePixelsPresent: true,
+      previewPendingHostCommandCount: 0,
       minEncoderSpeed: 1.0,
     },
   }
@@ -96,6 +97,36 @@ test('obs parity evidence flags proof host when source pixels are suppressed', (
   assert.match(quality.owner, /preview source-pixel proof/)
   assert.match(quality.evidence.join(' '), /frame polling suppressed/)
   assert.match(quality.evidence.join(' '), /source pixels not proven/)
+})
+
+test('obs parity evidence treats native polling suppression as expected manual visual proof', () => {
+  const input = cleanInput()
+  input.diagnostics.previewFramePollingSuppressed = true
+  input.diagnostics.previewSourcePixelsPresent = true
+
+  const quality = byArea(classifyObsParityEvidence(input), 'Preview quality vs OBS')
+
+  assert.equal(quality.status, 'needs-manual')
+  assert.equal(quality.owner, 'visual sampling / color parity')
+  assert.match(quality.evidence.join(' '), /native CAMetalLayer/)
+})
+
+test('obs parity evidence flags undrained preview host commands', () => {
+  const input = cleanInput()
+  input.claimsNative = false
+  input.diagnostics.previewSurfaceBacking = 'none'
+  input.diagnostics.previewSourcePixelsPresent = false
+  input.diagnostics.previewPendingHostCommandCount = 1
+
+  const items = classifyObsParityEvidence(input)
+  const lag = byArea(items, 'Preview lag while recording')
+  const quality = byArea(items, 'Preview quality vs OBS')
+
+  assert.equal(lag.status, 'fail')
+  assert.match(lag.owner, /undrained preview host commands/)
+  assert.match(lag.evidence.join(' '), /1 host command/)
+  assert.equal(quality.status, 'fail')
+  assert.match(quality.owner, /undrained preview host commands/)
 })
 
 test('obs parity evidence marks preview areas unmeasured for no-preview comparisons', () => {

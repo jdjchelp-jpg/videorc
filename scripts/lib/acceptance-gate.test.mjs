@@ -21,6 +21,9 @@ const cleanInput = () => ({
     minMicCaptureCoverage: 1.0,
     imagePollDuringSession: { total: 0 },
     previewSurfaceBacking: 'cametal-layer',
+    previewPendingHostCommandCount: 0,
+    minPreviewPresentFps: 60,
+    previewIntervalP95Ms: 16.7,
   },
   claimsNative: true,
   expectAudio: true,
@@ -67,6 +70,16 @@ describe('evaluateAcceptance', () => {
 
     assert.equal(v.pass, false)
     assert.match(v.failures.join(' '), /expected CAMetalLayer preview backing/)
+  })
+
+  it('fails the strict OBS preview gate when native host commands are still pending', () => {
+    const input = cleanInput()
+    input.requireObsNativePreview = true
+    input.diagnostics.previewPendingHostCommandCount = 2
+    const v = evaluateAcceptance(input)
+
+    assert.equal(v.pass, false)
+    assert.match(v.failures.join(' '), /2 native preview host command/)
   })
 
   it('fails the strict OBS compositor gate when the live compositor falls back to CPU', () => {
@@ -192,10 +205,22 @@ describe('evaluateAcceptance', () => {
     assert.equal(evaluateAcceptance(fallback).pass, true)
   })
 
-  it('fails a native preview whose host-present latency or frame lag is too high', () => {
+  it('fails a native preview whose cadence, host-present latency, or frame lag is too high', () => {
+    const lowFps = cleanInput()
+    lowFps.diagnostics.minPreviewPresentFps = 24
+    let v = evaluateAcceptance(lowFps)
+    assert.equal(v.pass, false)
+    assert.match(v.failures.join(' '), /present FPS 24.0 below 55/)
+
+    const jittery = cleanInput()
+    jittery.diagnostics.previewIntervalP95Ms = 80
+    v = evaluateAcceptance(jittery)
+    assert.equal(v.pass, false)
+    assert.match(v.failures.join(' '), /p95 present interval 80.0ms/)
+
     const p95 = cleanInput()
     p95.diagnostics.previewInputToPresentLatencyP95Ms = 72
-    let v = evaluateAcceptance(p95)
+    v = evaluateAcceptance(p95)
     assert.equal(v.pass, false)
     assert.match(v.failures.join(' '), /p95 latency 72ms/)
 
@@ -211,6 +236,13 @@ describe('evaluateAcceptance', () => {
     assert.equal(v.pass, false)
     assert.match(v.failures.join(' '), /source-to-present latency 180ms/)
 
+    const staticSourceMax = cleanInput()
+    staticSourceMax.diagnostics.previewInputToPresentLatencyMs = 11_178
+    staticSourceMax.diagnostics.previewInputToPresentLatencyP95Ms = 1
+    staticSourceMax.diagnostics.previewInputToPresentLatencyP99Ms = 1
+    v = evaluateAcceptance(staticSourceMax)
+    assert.equal(v.pass, true)
+
     const lagging = cleanInput()
     lagging.diagnostics.previewCompositorFrameLag = 5
     v = evaluateAcceptance(lagging)
@@ -219,6 +251,8 @@ describe('evaluateAcceptance', () => {
 
     const fallback = cleanInput()
     fallback.claimsNative = false
+    fallback.diagnostics.minPreviewPresentFps = 24
+    fallback.diagnostics.previewIntervalP95Ms = 80
     fallback.diagnostics.previewInputToPresentLatencyMs = 180
     fallback.diagnostics.previewCompositorFrameLag = 5
     assert.equal(evaluateAcceptance(fallback).pass, true)

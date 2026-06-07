@@ -17,8 +17,8 @@ use crate::diagnostics::{
 };
 use crate::frame_store::{FrameHandle, FrameStore, FrameStoreStats};
 use crate::protocol::{
-    LayoutSettings, PreviewCameraStartParams, PreviewCameraState, PreviewCameraStatus,
-    VideoSettings,
+    CameraShape, CameraSize, CameraTransformMode, LayoutPreset, LayoutSettings,
+    PreviewCameraStartParams, PreviewCameraState, PreviewCameraStatus, VideoSettings,
 };
 use crate::source_registry::{SourceConsumerReason, SourceKey};
 use crate::source_status::SourceLifecycleStatus;
@@ -26,6 +26,10 @@ use crate::state::AppState;
 
 const PREVIEW_CAMERA_DEFAULT_PNG_WIDTH: u32 = 640;
 const PREVIEW_CAMERA_MAX_PNG_WIDTH: u32 = 1920;
+const CAMERA_REFERENCE_WIDTH: u32 = 1280;
+const CAMERA_REFERENCE_HEIGHT: u32 = 720;
+const CAMERA_OVERLAY_CAPTURE_MIN_WIDTH: u32 = 1280;
+const CAMERA_OVERLAY_CAPTURE_MIN_HEIGHT: u32 = 720;
 
 pub type PreviewCameraSlot = Arc<tokio::sync::Mutex<PreviewCameraRuntime>>;
 
@@ -158,6 +162,16 @@ impl CameraCaptureTimingWindow {
         push_timing_sample(&mut self.row_copy_ms, row_copy_ms);
         push_timing_sample(&mut self.publish_ms, publish_ms);
         self.frame_bytes = frame_bytes;
+    }
+
+    fn reset(&mut self) {
+        self.last_callback_at = None;
+        self.last_sample_pts_seconds = None;
+        self.callback_gap_ms.clear();
+        self.sample_pts_gap_ms.clear();
+        self.pixel_buffer_lock_ms.clear();
+        self.row_copy_ms.clear();
+        self.publish_ms.clear();
     }
 
     fn snapshot(&self) -> PreviewCameraCaptureTimingStats {
@@ -495,6 +509,21 @@ pub async fn preview_camera_frame_source(state: &AppState) -> Option<PreviewCame
     })
 }
 
+pub async fn reset_preview_camera_capture_timings(state: &AppState) {
+    let shared = {
+        let slot = state.preview_camera.lock().await;
+        slot.active
+            .as_ref()
+            .map(|active| Arc::clone(&active.shared))
+    };
+    if let Some(shared) = shared {
+        let mut guard = shared
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard.capture_timings.reset();
+    }
+}
+
 pub async fn latest_preview_camera_png(
     state: &AppState,
     requested_max_width: Option<u32>,
@@ -809,12 +838,105 @@ fn downscale_rgba_for_preview(
     (next.into_raw(), next_width, next_height)
 }
 
+fn fit_camera_source_in_target_box(
+    source_width: u32,
+    source_height: u32,
+    target_width: u32,
+    target_height: u32,
+) -> (u32, u32) {
+    if source_width == 0 || source_height == 0 || target_width == 0 || target_height == 0 {
+        return (source_width, source_height);
+    }
+
+    let box_width = target_width.min(source_width).max(1);
+    let box_height = target_height.min(source_height).max(1);
+    let height_for_width = scale_preserving_aspect(source_height, box_width, source_width);
+    if height_for_width <= box_height {
+        return (box_width, height_for_width.max(1));
+    }
+
+    (
+        scale_preserving_aspect(source_width, box_height, source_height).max(1),
+        box_height,
+    )
+}
+
+fn scale_preserving_aspect(source_dimension: u32, target_dimension: u32, source_basis: u32) -> u32 {
+    if source_basis == 0 {
+        return target_dimension;
+    }
+    ((u64::from(source_dimension) * u64::from(target_dimension) + (u64::from(source_basis) / 2))
+        / u64::from(source_basis))
+    .clamp(1, u64::from(u32::MAX)) as u32
+}
+
 #[derive(Clone)]
 struct NativeCameraPreviewConfig {
     camera_id: String,
     unique_id: String,
     video: VideoSettings,
     layout: LayoutSettings,
+}
+
+fn camera_capture_target_dimensions(layout: &LayoutSettings, video: &VideoSettings) -> (u32, u32) {
+    if layout.layout_preset != LayoutPreset::ScreenCamera {
+        return (video.width, video.height);
+    }
+
+    let (overlay_width, overlay_height) = if let (CameraTransformMode::Custom, Some(transform)) =
+        (layout.camera_transform_mode, layout.camera_transform)
+    {
+        (
+            scale_camera_dimension(
+                (transform.width.clamp(0.0, 1.0) * f64::from(video.width.max(1))).round(),
+            ),
+            scale_camera_dimension(
+                (transform.height.clamp(0.0, 1.0) * f64::from(video.height.max(1))).round(),
+            ),
+        )
+    } else {
+        scaled_camera_box_size(&layout.camera_size, &layout.camera_shape, video)
+    };
+
+    (
+        overlay_width
+            .max(CAMERA_OVERLAY_CAPTURE_MIN_WIDTH)
+            .min(video.width.max(1)),
+        overlay_height
+            .max(CAMERA_OVERLAY_CAPTURE_MIN_HEIGHT)
+            .min(video.height.max(1)),
+    )
+}
+
+fn scaled_camera_box_size(
+    size: &CameraSize,
+    shape: &CameraShape,
+    video: &VideoSettings,
+) -> (u32, u32) {
+    let scale = camera_output_scale(video);
+    let width = match size {
+        CameraSize::Small => 260,
+        CameraSize::Medium => 360,
+        CameraSize::Large => 480,
+    };
+    let height = match shape {
+        CameraShape::Rectangle => (width * 9 + 8) / 16,
+        CameraShape::Circle => width,
+    };
+
+    (
+        scale_camera_dimension(f64::from(width) * scale),
+        scale_camera_dimension(f64::from(height) * scale),
+    )
+}
+
+fn camera_output_scale(video: &VideoSettings) -> f64 {
+    (f64::from(video.width) / f64::from(CAMERA_REFERENCE_WIDTH))
+        .min(f64::from(video.height) / f64::from(CAMERA_REFERENCE_HEIGHT))
+}
+
+fn scale_camera_dimension(value: f64) -> u32 {
+    value.round().max(1.0).min(f64::from(u32::MAX)) as u32
 }
 
 #[derive(Debug)]
@@ -868,8 +990,8 @@ mod macos {
     use objc2_core_video::{
         CVPixelBufferGetBaseAddress, CVPixelBufferGetBytesPerRow, CVPixelBufferGetHeight,
         CVPixelBufferGetPixelFormatType, CVPixelBufferGetWidth, CVPixelBufferLockBaseAddress,
-        CVPixelBufferLockFlags, CVPixelBufferUnlockBaseAddress, kCVPixelBufferPixelFormatTypeKey,
-        kCVPixelFormatType_32BGRA,
+        CVPixelBufferLockFlags, CVPixelBufferUnlockBaseAddress, kCVPixelBufferHeightKey,
+        kCVPixelBufferPixelFormatTypeKey, kCVPixelBufferWidthKey, kCVPixelFormatType_32BGRA,
     };
     use objc2_foundation::{NSDictionary, NSNumber, NSObject, NSObjectProtocol, NSString};
 
@@ -982,9 +1104,10 @@ mod macos {
             )));
         };
 
-        let selected = select_camera_format(&device, &config.video).ok_or_else(|| {
-            NativeCameraStartup::Failed("Camera did not report usable formats.".to_string())
-        })?;
+        let selected =
+            select_camera_format(&device, &config.layout, &config.video).ok_or_else(|| {
+                NativeCameraStartup::Failed("Camera did not report usable formats.".to_string())
+            })?;
         configure_device(&device, &selected, config.video.fps)?;
 
         let input = unsafe { AVCaptureDeviceInput::deviceInputWithDevice_error(&device) }.map_err(
@@ -1000,7 +1123,7 @@ mod macos {
             if session.canSetSessionPreset(AVCaptureSessionPresetInputPriority) {
                 session.setSessionPreset(AVCaptureSessionPresetInputPriority);
             }
-            set_bgra_video_settings(&output);
+            set_bgra_video_settings(&output, selected.output_width, selected.output_height);
             output.setAlwaysDiscardsLateVideoFrames(true);
             output.setSampleBufferDelegate_queue(
                 Some(ProtocolObject::from_ref(&*delegate)),
@@ -1031,7 +1154,7 @@ mod macos {
             .or_else(|| {
                 Some(format!(
                     "Native camera preview running with {}x{} at {:.0} fps. {layout_detail}",
-                    selected.format.width, selected.format.height, selected.selected_fps
+                    selected.output_width, selected.output_height, selected.selected_fps
                 ))
             });
 
@@ -1041,8 +1164,8 @@ mod macos {
             _input: input,
             _delegate: delegate,
             _queue: queue,
-            width: selected.format.width,
-            height: selected.format.height,
+            width: selected.output_width,
+            height: selected.output_height,
             selected_fps: selected.selected_fps,
             message,
         })
@@ -1051,12 +1174,15 @@ mod macos {
     struct NativeCameraFormatSelection {
         format: CameraFormatSummary,
         native_format: Retained<AVCaptureDeviceFormat>,
+        output_width: u32,
+        output_height: u32,
         selected_fps: f64,
         fallback_reason: Option<String>,
     }
 
     fn select_camera_format(
         camera: &AVCaptureDevice,
+        layout: &LayoutSettings,
         video: &VideoSettings,
     ) -> Option<NativeCameraFormatSelection> {
         let formats = unsafe { camera.formats() };
@@ -1085,7 +1211,8 @@ mod macos {
             .iter()
             .map(|(summary, _)| summary.clone())
             .collect::<Vec<_>>();
-        let choice = choose_camera_format(&summaries, video.width, video.height, video.fps)?;
+        let (target_width, target_height) = camera_capture_target_dimensions(layout, video);
+        let choice = choose_camera_format(&summaries, target_width, target_height, video.fps)?;
         let selected_entry = entries
             .into_iter()
             .find(|(summary, _)| *summary == choice.format)?;
@@ -1093,10 +1220,18 @@ mod macos {
             selected_entry.0.min_fps.max(1.0),
             selected_entry.0.max_fps.max(1.0),
         );
+        let (output_width, output_height) = fit_camera_source_in_target_box(
+            selected_entry.0.width,
+            selected_entry.0.height,
+            target_width,
+            target_height,
+        );
 
         Some(NativeCameraFormatSelection {
             format: selected_entry.0,
             native_format: selected_entry.1,
+            output_width,
+            output_height,
             selected_fps,
             fallback_reason: choice.fallback_reason,
         })
@@ -1126,12 +1261,20 @@ mod macos {
         Ok(())
     }
 
-    unsafe fn set_bgra_video_settings(output: &AVCaptureVideoDataOutput) {
+    unsafe fn set_bgra_video_settings(output: &AVCaptureVideoDataOutput, width: u32, height: u32) {
         let pixel_format_key: &NSString =
             unsafe { &*(kCVPixelBufferPixelFormatTypeKey as *const _ as *const NSString) };
+        let width_key: &NSString =
+            unsafe { &*(kCVPixelBufferWidthKey as *const _ as *const NSString) };
+        let height_key: &NSString =
+            unsafe { &*(kCVPixelBufferHeightKey as *const _ as *const NSString) };
         let pixel_format = NSNumber::new_u32(kCVPixelFormatType_32BGRA);
-        let settings =
-            NSDictionary::<NSString, NSNumber>::from_slices(&[pixel_format_key], &[&pixel_format]);
+        let width = NSNumber::new_u32(width);
+        let height = NSNumber::new_u32(height);
+        let settings = NSDictionary::<NSString, NSNumber>::from_slices(
+            &[pixel_format_key, width_key, height_key],
+            &[&pixel_format, &width, &height],
+        );
         let settings = unsafe { settings.cast_unchecked::<NSString, AnyObject>() };
         unsafe {
             output.setVideoSettings(Some(settings));
@@ -1214,9 +1357,7 @@ mod macos {
             } else {
                 guard.frame_store.record_buffer_allocation();
                 drop(guard);
-                let mut buffer = Vec::with_capacity(frame_bytes);
-                buffer.resize(frame_bytes, 0);
-                buffer
+                vec![0; frame_bytes]
             }
         };
         unsafe {
@@ -1440,6 +1581,87 @@ mod tests {
 
         assert_eq!(params.video.fps, 60);
         assert!(params.layout.camera_mirror);
+    }
+
+    #[test]
+    fn camera_only_capture_target_keeps_output_resolution() {
+        let layout = test_layout(false);
+        let video = test_video();
+
+        assert_eq!(
+            camera_capture_target_dimensions(&layout, &video),
+            (video.width, video.height)
+        );
+    }
+
+    #[test]
+    fn side_by_side_capture_target_keeps_output_resolution() {
+        let mut layout = test_layout(false);
+        layout.layout_preset = LayoutPreset::SideBySide;
+        let video = test_video();
+
+        assert_eq!(
+            camera_capture_target_dimensions(&layout, &video),
+            (video.width, video.height)
+        );
+    }
+
+    #[test]
+    fn screen_camera_overlay_capture_target_uses_overlay_quality_floor() {
+        let mut layout = test_layout(false);
+        layout.layout_preset = LayoutPreset::ScreenCamera;
+        layout.camera_size = CameraSize::Medium;
+        layout.camera_shape = CameraShape::Rectangle;
+
+        assert_eq!(
+            camera_capture_target_dimensions(&layout, &test_video()),
+            (1280, 720)
+        );
+    }
+
+    #[test]
+    fn camera_overlay_publish_dimensions_preserve_source_aspect() {
+        assert_eq!(
+            fit_camera_source_in_target_box(1920, 1080, 1280, 720),
+            (1280, 720)
+        );
+        assert_eq!(
+            fit_camera_source_in_target_box(1920, 1080, 1000, 720),
+            (1000, 563)
+        );
+    }
+
+    #[test]
+    fn camera_overlay_publish_dimensions_do_not_upscale_source() {
+        assert_eq!(
+            fit_camera_source_in_target_box(640, 480, 1280, 720),
+            (640, 480)
+        );
+    }
+
+    #[test]
+    fn camera_capture_timing_window_reset_drops_warmup_gaps() {
+        let mut timings = CameraCaptureTimingWindow::default();
+        let now = Instant::now();
+
+        timings.record_callback_at(now);
+        timings.record_callback_at(now + Duration::from_millis(180));
+        timings.record_sample_pts(Some(0.0));
+        timings.record_sample_pts(Some(0.180));
+        assert_eq!(timings.snapshot().sample_pts_gap_p95_ms, Some(180.0));
+
+        timings.reset();
+        let reset_snapshot = timings.snapshot();
+        assert_eq!(reset_snapshot.capture_gap_p95_ms, None);
+        assert_eq!(reset_snapshot.sample_pts_gap_p95_ms, None);
+
+        timings.record_callback_at(now + Duration::from_millis(220));
+        timings.record_callback_at(now + Duration::from_millis(253));
+        timings.record_sample_pts(Some(0.220));
+        timings.record_sample_pts(Some(0.253));
+
+        assert_eq!(timings.snapshot().capture_gap_p95_ms, Some(33.0));
+        assert_eq!(timings.snapshot().sample_pts_gap_p95_ms, Some(33.0));
     }
 
     #[tokio::test]

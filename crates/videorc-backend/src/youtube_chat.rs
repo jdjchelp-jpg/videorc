@@ -322,9 +322,9 @@ fn classify_status(status: u16, reason: Option<&str>) -> YouTubeChatErrorKind {
         403 => match reason {
             Some("liveChatDisabled") => YouTubeChatErrorKind::Disabled,
             Some("liveChatEnded") => YouTubeChatErrorKind::Ended,
-            Some("rateLimitExceeded")
-            | Some("quotaExceeded")
-            | Some("userRateLimitExceeded") => YouTubeChatErrorKind::RateLimited,
+            Some("rateLimitExceeded") | Some("quotaExceeded") | Some("userRateLimitExceeded") => {
+                YouTubeChatErrorKind::RateLimited
+            }
             _ => YouTubeChatErrorKind::Disabled,
         },
         400 => match reason {
@@ -480,7 +480,11 @@ pub async fn resolve_live_chat_id(
 /// The connector task: resolve the chat id, then poll → normalize → deliver, honoring the
 /// server poll interval, with backoff + status transitions on errors. Spawned by session
 /// integration (and `liveChat.start` with a `youtube` config for the live smoke).
-pub async fn run_youtube_chat_connector(state: AppState, session_id: String, config: YouTubeChatConfig) {
+pub async fn run_youtube_chat_connector(
+    state: AppState,
+    session_id: String,
+    config: YouTubeChatConfig,
+) {
     let client = reqwest::Client::new();
     let base_url = config
         .api_base_url
@@ -735,12 +739,18 @@ mod tests {
             classify_status(403, Some("rateLimitExceeded")),
             YouTubeChatErrorKind::RateLimited
         );
-        assert_eq!(classify_status(429, None), YouTubeChatErrorKind::RateLimited);
+        assert_eq!(
+            classify_status(429, None),
+            YouTubeChatErrorKind::RateLimited
+        );
         assert_eq!(
             classify_status(400, Some("pageTokenInvalid")),
             YouTubeChatErrorKind::InvalidPageToken
         );
-        assert_eq!(classify_status(401, None), YouTubeChatErrorKind::AuthExpired);
+        assert_eq!(
+            classify_status(401, None),
+            YouTubeChatErrorKind::AuthExpired
+        );
         assert_eq!(classify_status(503, None), YouTubeChatErrorKind::Transient);
     }
 
@@ -756,17 +766,26 @@ mod tests {
 
     #[test]
     fn url_uses_list_vs_stream_path_and_threads_page_token() {
-        let list = chat_messages_url("https://api.test", YouTubeChatTransport::List, "LC1", Some("tokA"))
-            .unwrap();
+        let list = chat_messages_url(
+            "https://api.test",
+            YouTubeChatTransport::List,
+            "LC1",
+            Some("tokA"),
+        )
+        .unwrap();
         assert_eq!(list.path(), LIVE_CHAT_MESSAGES_PATH);
         let query = list.query().unwrap();
         assert!(query.contains("liveChatId=LC1"));
         assert!(query.contains("part=snippet%2CauthorDetails"));
         assert!(query.contains("pageToken=tokA"));
 
-        let stream =
-            chat_messages_url("https://api.test", YouTubeChatTransport::StreamList, "LC1", None)
-                .unwrap();
+        let stream = chat_messages_url(
+            "https://api.test",
+            YouTubeChatTransport::StreamList,
+            "LC1",
+            None,
+        )
+        .unwrap();
         assert_eq!(stream.path(), LIVE_CHAT_MESSAGES_STREAM_PATH);
         assert!(!stream.query().unwrap().contains("pageToken"));
     }

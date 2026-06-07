@@ -1,11 +1,29 @@
 import { app, BrowserWindow, dialog, ipcMain, nativeImage, shell, type NativeImage } from 'electron'
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
-import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse as HttpResponse } from 'node:http'
+import {
+  createServer,
+  request as httpRequest,
+  type IncomingMessage,
+  type Server as HttpServer,
+  type ServerResponse as HttpResponse
+} from 'node:http'
+import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
 import { delimiter, dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 
+import { createNativePreviewHelperProcessDriver } from './native-preview-helper-process-driver'
+import { loadNativePreviewRealSurfaceDriver } from './native-preview-real-surface-loader'
+import {
+  DEFAULT_NATIVE_PREVIEW_MAX_HANDOFF_AGE_MS,
+  compositorStatusMetalTargetHandoff,
+  nativeCametalLayerStatusMatchesHandoff,
+  proofSurfaceCompositorMessage,
+  realSurfaceInvalidActivationMessage,
+  realSurfaceUnavailableMessage,
+  type NativePreviewRealSurfaceDriver
+} from '../shared/native-preview-host-driver'
 import type {
   BackendConnection,
   BackendLogEvent,
@@ -47,6 +65,47 @@ const OAUTH_APP_PROTOCOL_REDIRECT_URI = 'videorc://oauth/callback'
 const oauthAppProtocolEnabled = process.env.VIDEORC_OAUTH_CALLBACK_MODE === 'app-protocol'
 const nativePreviewSurfaceProofEnabled = process.env.VIDEORC_NATIVE_PREVIEW_SURFACE === '1'
 const nativePreviewFramePollingEnabled = process.env.VIDEORC_SMOKE_PREVIEW_MOTION !== '1'
+const smokeCommandServerEnabled =
+  process.env.VIDEORC_SMOKE_PREVIEW_MOTION === '1' || process.env.VIDEORC_SMOKE_COMMAND_SERVER === '1'
+const NATIVE_PREVIEW_INVALID_ACTIVATION_WARN_THRESHOLD = 3
+const requireNativePreviewRealSurfaceModule = createRequire(__filename)
+const configuredNativePreviewHostModulePath = process.env.VIDEORC_NATIVE_PREVIEW_HOST_MODULE?.trim()
+const nativePreviewRealSurfaceDriverLoad = loadNativePreviewRealSurfaceDriver({
+  modulePath: configuredNativePreviewHostModulePath,
+  loadModule: (modulePath) => requireNativePreviewRealSurfaceModule(modulePath)
+})
+const NATIVE_PREVIEW_HANDOFF_SAMPLE_LIMIT = 900
+let nativePreviewRealSurfaceDriverUnavailableReason = nativePreviewRealSurfaceDriverLoad.unavailableReason
+let nativePreviewRealSurfaceDriver: NativePreviewRealSurfaceDriver | null = nativePreviewRealSurfaceDriverLoad.driver
+let nativePreviewHelperProcessDriverResolved = false
+let nativePreviewLastRealSurfaceFallbackLogKey: string | undefined
+let nativePreviewRealSurfaceInvalidActivationCount = 0
+let nativePreviewMainQueueWaitSamplesMs: number[] = []
+let nativePreviewMainPresentSamplesMs: number[] = []
+let nativePreviewMainQueuedBehindCount = 0
+let nativePreviewMainStatusFetchSamplesMs: number[] = []
+let nativePreviewMainStatusAgeSamplesMs: number[] = []
+let nativePreviewMainStatusFrameAgeSamplesMs: number[] = []
+let nativePreviewMainStatusFetchFailures = 0
+let nativePreviewMainStatusFetchSuccesses = 0
+
+type NativePreviewRendererTimingFields = Pick<
+  PreviewSurfaceCompositorUpdateParams,
+  | 'nativePreviewRendererPollIntervalP95Ms'
+  | 'nativePreviewRendererPollRoundTripP95Ms'
+  | 'nativePreviewRendererPresentRoundTripP95Ms'
+  | 'nativePreviewRendererPollInFlightSkips'
+>
+
+type NativePreviewMainStatusRefreshFields = Pick<
+  PreviewSurfaceCompositorUpdateParams,
+  | 'nativePreviewMainStatusFetchP95Ms'
+  | 'nativePreviewMainStatusFetchFailures'
+  | 'nativePreviewMainStatusFetchSuccesses'
+  | 'nativePreviewMainPresentedStatusAgeMs'
+  | 'nativePreviewMainPresentedStatusAgeP95Ms'
+  | 'nativePreviewMainPresentedFrameAgeP95Ms'
+>
 
 const MACOS_PERMISSION_URLS: Record<SystemPermissionPane, string> = {
   privacy: 'x-apple.systempreferences:com.apple.preference.security',
@@ -110,6 +169,7 @@ function idleNativePreviewSurfaceStatus(message = 'Native preview surface is not
     droppedFrames: 0,
     framePollingSuppressed: false,
     sourcePixelsPresent: false,
+    pendingHostCommandCount: 0,
     updatedAt: new Date().toISOString(),
     message
   }
@@ -809,6 +869,7 @@ async function createNativePreviewSurface(bounds: PreviewSurfaceBounds): Promise
     nativePreviewSurfaceStatus = idleNativePreviewSurfaceStatus('Native preview surface proof mode is disabled.')
     return nativePreviewSurfaceStatus
   }
+  resetNativePreviewMainHandoffMetrics()
   if (!mainWindow || mainWindow.isDestroyed()) {
     throw new Error('Main window is not ready for native preview surface.')
   }
@@ -848,6 +909,7 @@ async function createNativePreviewSurface(bounds: PreviewSurfaceBounds): Promise
     intervalP99Ms: nativePreviewSurfaceStatus.intervalP99Ms,
     framePollingSuppressed: nativePreviewSurfaceFramePollingSuppressed,
     sourcePixelsPresent: nativePreviewSurfaceStatus.sourcePixelsPresent,
+    pendingHostCommandCount: 0,
     bounds,
     startedAt: nativePreviewSurfaceStatus.startedAt ?? new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -881,6 +943,7 @@ async function updateNativePreviewSurfaceBounds(bounds: PreviewSurfaceBounds): P
 }
 
 async function applyNativePreviewHostCommands(commands: NativePreviewHostCommand[]): Promise<PreviewSurfaceStatus> {
+  await applyNativePreviewRealSurfaceHostCommands(commands)
   let status = nativePreviewSurfaceStatus
   for (const command of commands) {
     if (command.kind === 'destroy') {
@@ -898,6 +961,25 @@ async function applyNativePreviewHostCommands(commands: NativePreviewHostCommand
         : await updateNativePreviewSurfaceBounds(command.bounds)
   }
   return status
+}
+
+async function applyNativePreviewRealSurfaceHostCommands(
+  commands: NativePreviewHostCommand[],
+  options: { startIfNeeded?: boolean } = {}
+): Promise<void> {
+  const driver = options.startIfNeeded === false
+    ? nativePreviewRealSurfaceDriver
+    : ensureNativePreviewRealSurfaceDriver()
+  if (!driver || commands.length === 0) {
+    return
+  }
+  try {
+    await driver.applyHostCommands(commands)
+  } catch (error) {
+    nativePreviewRealSurfaceDriver = null
+    nativePreviewRealSurfaceDriverUnavailableReason =
+      `Real CAMetalLayer IOSurface presenter module failed while applying host commands: ${errorMessage(error)}`
+  }
 }
 
 async function runNativePreviewSurfaceMutation(
@@ -954,9 +1036,13 @@ async function updateNativePreviewSurfaceCompositor(
 ): Promise<PreviewSurfaceStatus> {
   await waitForNativePreviewSurfaceMutation()
   const requestSerial = ++nativePreviewSurfaceCompositorRequestSerial
+  let queueWaitMs = 0
   if (nativePreviewSurfaceCompositorUpdateInFlight) {
     try {
+      const waitStartedAtMs = Date.now()
+      nativePreviewMainQueuedBehindCount += 1
       await nativePreviewSurfaceCompositorUpdateInFlight
+      queueWaitMs += Math.max(0, Date.now() - waitStartedAtMs)
     } catch {
       // The next call will surface the real error if the proof window is still broken.
     }
@@ -965,7 +1051,7 @@ async function updateNativePreviewSurfaceCompositor(
     }
   }
 
-  const update = presentNativePreviewSurfaceCompositor(status)
+  const update = presentNativePreviewSurfaceCompositor(status, { queueWaitMs })
   nativePreviewSurfaceCompositorUpdateInFlight = update
   try {
     return await update
@@ -977,14 +1063,26 @@ async function updateNativePreviewSurfaceCompositor(
 }
 
 async function presentNativePreviewSurfaceCompositor(
-  status: PreviewSurfaceCompositorUpdateParams
+  status: PreviewSurfaceCompositorUpdateParams,
+  mainTiming: { queueWaitMs?: number } = {}
 ): Promise<PreviewSurfaceStatus> {
   if (status.suppressFramePolling === true && !nativePreviewSurfaceFramePollingSuppressed) {
     await setNativePreviewSurfaceFramePollingSuppressed(true)
   }
-  const compositorScene = buildPreviewSurfaceSceneFromCompositorStatus(status)
+  const effectiveStatus = await refreshNativePreviewCompositorStatus(status)
+  const compositorScene = buildPreviewSurfaceSceneFromCompositorStatus(effectiveStatus)
   if (compositorScene) {
     nativePreviewSurfaceScene = compositorScene
+  }
+  const realSurfaceAttempt = await tryPresentNativePreviewRealSurfaceCompositor(effectiveStatus, mainTiming)
+  if (realSurfaceAttempt.kind === 'presented') {
+    nativePreviewLastRealSurfaceFallbackLogKey = undefined
+    return realSurfaceAttempt.status
+  }
+  const fallbackLogKey = realSurfaceAttempt.logKey ?? realSurfaceAttempt.reason
+  if (realSurfaceAttempt.reason && fallbackLogKey !== nativePreviewLastRealSurfaceFallbackLogKey) {
+    nativePreviewLastRealSurfaceFallbackLogKey = fallbackLogKey
+    logBackend('warn', realSurfaceAttempt.reason)
   }
   let metrics: Record<string, unknown> | null = null
   if (nativePreviewSurfaceWindow && !nativePreviewSurfaceWindow.isDestroyed()) {
@@ -992,7 +1090,7 @@ async function presentNativePreviewSurfaceCompositor(
     const sceneScript = compositorScene
       ? `window.__videorcSetPreviewScene?.(${jsonForInlineScript(compositorScene)});`
       : ''
-    const statusJson = jsonForInlineScript(status)
+    const statusJson = jsonForInlineScript(effectiveStatus)
     await nativePreviewSurfaceWindow.webContents.executeJavaScript(
       `${sceneScript}window.__videorcSetCompositorStatus?.(${statusJson})`,
       true
@@ -1014,8 +1112,10 @@ async function presentNativePreviewSurfaceCompositor(
   const liveLayerCount = finiteMetric(metrics?.liveLayerCount) ?? 0
   nativePreviewSurfaceStatus = {
     ...nativePreviewSurfaceStatus,
+    ...nativePreviewRendererTimingStatusFields(effectiveStatus),
+    ...nativePreviewMainStatusRefreshFields(effectiveStatus),
     source: hasScreen ? 'screen' : hasCamera ? 'camera' : nativePreviewSurfaceStatus.source,
-    framesRendered: Math.max(nativePreviewSurfaceStatus.framesRendered, status.framesRendered, presentedFrameId ?? 0),
+    framesRendered: Math.max(nativePreviewSurfaceStatus.framesRendered, effectiveStatus.framesRendered, presentedFrameId ?? 0),
     presentedFrameId,
     compositorFrameLag,
     droppedFrames,
@@ -1026,18 +1126,104 @@ async function presentNativePreviewSurfaceCompositor(
     presentFps,
     intervalP95Ms,
     intervalP99Ms,
-    framePollingSuppressed: nativePreviewSurfaceFramePollingSuppressed || status.suppressFramePolling === true,
+    framePollingSuppressed: nativePreviewSurfaceFramePollingSuppressed || effectiveStatus.suppressFramePolling === true,
     sourcePixelsPresent: liveLayerCount > 0,
     updatedAt: new Date().toISOString(),
-    message: status.state === 'live' ? 'Electron proof preview surface is displaying compositor output.' : status.message
+    message: proofSurfaceCompositorMessage(effectiveStatus, realSurfaceAttempt.reason)
   }
   return nativePreviewSurfaceStatus
+}
+
+type NativePreviewRealSurfacePresentAttempt =
+  | { kind: 'presented'; status: PreviewSurfaceStatus }
+  | { kind: 'skipped'; reason?: string; logKey?: string }
+
+async function tryPresentNativePreviewRealSurfaceCompositor(
+  status: PreviewSurfaceCompositorUpdateParams,
+  mainTiming: { queueWaitMs?: number } = {}
+): Promise<NativePreviewRealSurfacePresentAttempt> {
+  const handoff = compositorStatusMetalTargetHandoff(status, {
+    maxAgeMs: DEFAULT_NATIVE_PREVIEW_MAX_HANDOFF_AGE_MS
+  })
+  if (!handoff) {
+    nativePreviewRealSurfaceInvalidActivationCount = 0
+    return { kind: 'skipped' }
+  }
+  if (nativePreviewSurfaceStatus.state !== 'live') {
+    nativePreviewRealSurfaceInvalidActivationCount = 0
+    return { kind: 'skipped' }
+  }
+  // Re-present even when the helper already confirmed this compositor frame. Real
+  // sources can update at 30fps while the preview surface must still present at
+  // display cadence so motion stays current instead of waiting for a new frame id.
+  const driver = ensureNativePreviewRealSurfaceDriver()
+  if (!driver) {
+    nativePreviewRealSurfaceInvalidActivationCount = 0
+    return {
+      kind: 'skipped',
+      reason: realSurfaceUnavailableMessage(handoff, nativePreviewRealSurfaceDriverUnavailableReason),
+      logKey: `unavailable:${nativePreviewRealSurfaceDriverUnavailableReason ?? 'not-configured'}`
+    }
+  }
+
+  let driverStatus: PreviewSurfaceStatus | null
+  const presentStartedAtMs = Date.now()
+  try {
+    driverStatus = await driver.presentCompositorHandoff({
+      handoff,
+      bounds: nativePreviewSurfaceStatus.bounds,
+      scene: nativePreviewSurfaceScene,
+      suppressFramePolling: nativePreviewSurfaceFramePollingSuppressed || status.suppressFramePolling === true,
+      frameAgeMs: status.frameAgeMs,
+      compositorUpdatedAt: status.updatedAt
+    })
+  } catch (error) {
+    nativePreviewRealSurfaceInvalidActivationCount = 0
+    nativePreviewRealSurfaceDriver = null
+    nativePreviewRealSurfaceDriverUnavailableReason =
+      `Real CAMetalLayer IOSurface presenter failed while presenting compositor handoff: ${errorMessage(error)}`
+    return {
+      kind: 'skipped',
+      reason: realSurfaceUnavailableMessage(handoff, nativePreviewRealSurfaceDriverUnavailableReason),
+      logKey: `error:${nativePreviewRealSurfaceDriverUnavailableReason}`
+    }
+  }
+  const mainTimingStatus = recordNativePreviewMainHandoffMetrics(
+    mainTiming.queueWaitMs ?? 0,
+    Math.max(0, Date.now() - presentStartedAtMs)
+  )
+  if (!driverStatus || !nativeCametalLayerStatusMatchesHandoff(driverStatus, handoff)) {
+    nativePreviewRealSurfaceInvalidActivationCount += 1
+    const shouldReportInvalidActivation =
+      nativePreviewRealSurfaceInvalidActivationCount >= NATIVE_PREVIEW_INVALID_ACTIVATION_WARN_THRESHOLD
+    return {
+      kind: 'skipped',
+      reason: shouldReportInvalidActivation ? realSurfaceInvalidActivationMessage(handoff, driverStatus) : undefined,
+      logKey: `invalid-activation:${handoff.iosurfaceId}:${handoff.width}x${handoff.height}`
+    }
+  }
+
+  nativePreviewRealSurfaceInvalidActivationCount = 0
+  nativePreviewSurfaceStatus = {
+    ...driverStatus,
+    ...nativePreviewRendererTimingStatusFields(status),
+    ...nativePreviewMainStatusRefreshFields(status),
+    ...mainTimingStatus,
+    framePollingSuppressed: nativePreviewSurfaceFramePollingSuppressed || status.suppressFramePolling === true,
+    updatedAt: new Date().toISOString()
+  }
+  return { kind: 'presented', status: nativePreviewSurfaceStatus }
 }
 
 async function setNativePreviewSurfaceFramePollingSuppressed(
   suppressed: boolean
 ): Promise<PreviewSurfaceStatus> {
+  const wasSuppressed = nativePreviewSurfaceFramePollingSuppressed
   nativePreviewSurfaceFramePollingSuppressed = suppressed
+  if (suppressed && !wasSuppressed) {
+    resetNativePreviewMainHandoffMetrics()
+    nativePreviewRealSurfaceDriver?.resetMetrics?.()
+  }
   if (nativePreviewSurfaceWindow && !nativePreviewSurfaceWindow.isDestroyed()) {
     await waitForNativePreviewSurfaceScript()
     await nativePreviewSurfaceWindow.webContents.executeJavaScript(
@@ -1071,6 +1257,168 @@ function finiteMetric(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined
 }
 
+async function refreshNativePreviewCompositorStatus(
+  status: PreviewSurfaceCompositorUpdateParams
+): Promise<PreviewSurfaceCompositorUpdateParams> {
+  if (!backendConnection) {
+    return {
+      ...status,
+      ...nativePreviewMainStatusRefreshFields(status)
+    }
+  }
+
+  const params = new URLSearchParams({ token: backendConnection.token })
+  const fetchStartedAtMs = Date.now()
+  try {
+    const freshStatus = await requestBackendJson<CompositorStatus>(
+      `http://${backendConnection.host}:${backendConnection.port}/compositor/status?${params.toString()}`
+    )
+    const refreshFields = recordNativePreviewMainStatusRefresh(freshStatus, fetchStartedAtMs, true)
+    return {
+      ...freshStatus,
+      ...nativePreviewRendererTimingStatusFields(status),
+      ...refreshFields,
+      suppressFramePolling: status.suppressFramePolling
+    }
+  } catch {
+    const refreshFields = recordNativePreviewMainStatusRefresh(status, fetchStartedAtMs, false)
+    return {
+      ...status,
+      ...refreshFields
+    }
+  }
+}
+
+function requestBackendJson<T>(url: string): Promise<T> {
+  return new Promise<T>((resolveRequest, rejectRequest) => {
+    const request = httpRequest(url, { method: 'GET' }, (response) => {
+      const chunks: Buffer[] = []
+      response.on('data', (chunk: Buffer) => {
+        chunks.push(chunk)
+      })
+      response.on('end', () => {
+        const statusCode = response.statusCode ?? 0
+        if (statusCode < 200 || statusCode >= 300) {
+          rejectRequest(new Error(`Backend HTTP ${statusCode}`))
+          return
+        }
+        try {
+          resolveRequest(JSON.parse(Buffer.concat(chunks).toString('utf8')) as T)
+        } catch (error) {
+          rejectRequest(error instanceof Error ? error : new Error(String(error)))
+        }
+      })
+    })
+    request.setTimeout(1000, () => {
+      request.destroy(new Error('Backend HTTP request timed out.'))
+    })
+    request.on('error', rejectRequest)
+    request.end()
+  })
+}
+
+function nativePreviewRendererTimingStatusFields(
+  status: PreviewSurfaceCompositorUpdateParams
+): NativePreviewRendererTimingFields {
+  return {
+    nativePreviewRendererPollIntervalP95Ms: finiteMetric(status.nativePreviewRendererPollIntervalP95Ms),
+    nativePreviewRendererPollRoundTripP95Ms: finiteMetric(status.nativePreviewRendererPollRoundTripP95Ms),
+    nativePreviewRendererPresentRoundTripP95Ms: finiteMetric(status.nativePreviewRendererPresentRoundTripP95Ms),
+    nativePreviewRendererPollInFlightSkips: finiteMetric(status.nativePreviewRendererPollInFlightSkips)
+  }
+}
+
+function recordNativePreviewMainHandoffMetrics(
+  queueWaitMs: number,
+  presentMs: number
+): Partial<PreviewSurfaceStatus> {
+  recordNativePreviewTimingSample(nativePreviewMainQueueWaitSamplesMs, queueWaitMs)
+  recordNativePreviewTimingSample(nativePreviewMainPresentSamplesMs, presentMs)
+  return {
+    nativePreviewMainQueueWaitP95Ms: nativePreviewTimingPercentile(nativePreviewMainQueueWaitSamplesMs, 0.95),
+    nativePreviewMainPresentP95Ms: nativePreviewTimingPercentile(nativePreviewMainPresentSamplesMs, 0.95),
+    nativePreviewMainQueuedBehindCount
+  }
+}
+
+function recordNativePreviewMainStatusRefresh(
+  status: PreviewSurfaceCompositorUpdateParams | CompositorStatus,
+  fetchStartedAtMs: number,
+  succeeded: boolean
+): NativePreviewMainStatusRefreshFields {
+  recordNativePreviewTimingSample(nativePreviewMainStatusFetchSamplesMs, Math.max(0, Date.now() - fetchStartedAtMs))
+  if (succeeded) {
+    nativePreviewMainStatusFetchSuccesses += 1
+  } else {
+    nativePreviewMainStatusFetchFailures += 1
+  }
+
+  const statusAgeMs = nativePreviewCompositorStatusAgeMs(status)
+  if (typeof statusAgeMs === 'number') {
+    recordNativePreviewTimingSample(nativePreviewMainStatusAgeSamplesMs, statusAgeMs)
+  }
+  const frameAgeMs = finiteMetric(status.frameAgeMs)
+  if (typeof frameAgeMs === 'number') {
+    recordNativePreviewTimingSample(nativePreviewMainStatusFrameAgeSamplesMs, frameAgeMs)
+  }
+
+  return nativePreviewMainStatusRefreshFields(status)
+}
+
+function nativePreviewMainStatusRefreshFields(
+  status: PreviewSurfaceCompositorUpdateParams | CompositorStatus
+): NativePreviewMainStatusRefreshFields {
+  return {
+    nativePreviewMainStatusFetchP95Ms: nativePreviewTimingPercentile(nativePreviewMainStatusFetchSamplesMs, 0.95),
+    nativePreviewMainStatusFetchFailures,
+    nativePreviewMainStatusFetchSuccesses,
+    nativePreviewMainPresentedStatusAgeMs: nativePreviewCompositorStatusAgeMs(status),
+    nativePreviewMainPresentedStatusAgeP95Ms: nativePreviewTimingPercentile(nativePreviewMainStatusAgeSamplesMs, 0.95),
+    nativePreviewMainPresentedFrameAgeP95Ms: nativePreviewTimingPercentile(
+      nativePreviewMainStatusFrameAgeSamplesMs,
+      0.95
+    )
+  }
+}
+
+function nativePreviewCompositorStatusAgeMs(status: PreviewSurfaceCompositorUpdateParams | CompositorStatus): number | undefined {
+  const updatedAtMs = Date.parse(status.updatedAt)
+  if (!Number.isFinite(updatedAtMs)) {
+    return undefined
+  }
+  return Math.max(0, Date.now() - updatedAtMs)
+}
+
+function resetNativePreviewMainHandoffMetrics(): void {
+  nativePreviewMainQueueWaitSamplesMs = []
+  nativePreviewMainPresentSamplesMs = []
+  nativePreviewMainQueuedBehindCount = 0
+  nativePreviewMainStatusFetchSamplesMs = []
+  nativePreviewMainStatusAgeSamplesMs = []
+  nativePreviewMainStatusFrameAgeSamplesMs = []
+  nativePreviewMainStatusFetchFailures = 0
+  nativePreviewMainStatusFetchSuccesses = 0
+}
+
+function recordNativePreviewTimingSample(samples: number[], value: number): void {
+  if (!Number.isFinite(value)) {
+    return
+  }
+  samples.push(Math.max(0, value))
+  while (samples.length > NATIVE_PREVIEW_HANDOFF_SAMPLE_LIMIT) {
+    samples.shift()
+  }
+}
+
+function nativePreviewTimingPercentile(values: number[], percentileRank: number): number | undefined {
+  if (values.length === 0) {
+    return undefined
+  }
+  const sorted = [...values].sort((left, right) => left - right)
+  const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * percentileRank) - 1))
+  return sorted[index]
+}
+
 async function waitForNativePreviewSurfaceScript(timeoutMs = 5000): Promise<void> {
   if (!nativePreviewSurfaceWindow || nativePreviewSurfaceWindow.isDestroyed()) {
     return
@@ -1099,13 +1447,99 @@ function delay(ms: number): Promise<void> {
 }
 
 function destroyNativePreviewSurface(): PreviewSurfaceStatus {
+  resetNativePreviewMainHandoffMetrics()
   nativePreviewSurfaceCompositorRequestSerial += 1
+  void applyNativePreviewRealSurfaceHostCommands([{ kind: 'destroy' }], { startIfNeeded: false })
   if (nativePreviewSurfaceWindow && !nativePreviewSurfaceWindow.isDestroyed()) {
     nativePreviewSurfaceWindow.close()
   }
   nativePreviewSurfaceWindow = null
   nativePreviewSurfaceStatus = idleNativePreviewSurfaceStatus()
   return nativePreviewSurfaceStatus
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+function ensureNativePreviewRealSurfaceDriver(): NativePreviewRealSurfaceDriver | null {
+  if (nativePreviewRealSurfaceDriver) {
+    return nativePreviewRealSurfaceDriver
+  }
+  if (configuredNativePreviewHostModulePath || nativePreviewHelperProcessDriverResolved) {
+    return null
+  }
+
+  nativePreviewHelperProcessDriverResolved = true
+  const helperDriver = createNativePreviewHelperProcessDriverConfig()
+  if (!helperDriver.driver) {
+    nativePreviewRealSurfaceDriverUnavailableReason = helperDriver.unavailableReason
+    return null
+  }
+
+  nativePreviewRealSurfaceDriver = helperDriver.driver
+  nativePreviewRealSurfaceDriverUnavailableReason = undefined
+  return nativePreviewRealSurfaceDriver
+}
+
+function createNativePreviewHelperProcessDriverConfig():
+  | { driver: NativePreviewRealSurfaceDriver; unavailableReason?: undefined }
+  | { driver: null; unavailableReason: string } {
+  if (process.platform !== 'darwin') {
+    return {
+      driver: null,
+      unavailableReason: 'Real CAMetalLayer IOSurface helper is only available on macOS'
+    }
+  }
+
+  const explicitHelperPath = process.env.VIDEORC_NATIVE_PREVIEW_HOST_HELPER?.trim()
+  const root = workspaceRoot()
+  const cargoBinDir = join(homedir(), '.cargo', 'bin')
+  const ffmpegBinDir = resolvePackagedFfmpegBinDir()
+  const pathEntries = [ffmpegBinDir, cargoBinDir, process.env.PATH].filter(Boolean)
+  const env = {
+    ...process.env,
+    PATH: pathEntries.join(delimiter)
+  }
+
+  if (explicitHelperPath) {
+    return {
+      driver: createNativePreviewHelperProcessDriver({
+        command: explicitHelperPath,
+        cwd: root,
+        env,
+        onLog: logBackend
+      })
+    }
+  }
+
+  if (app.isPackaged) {
+    const helperPath = join(process.resourcesPath, 'native_preview_host_helper')
+    if (!existsSync(helperPath)) {
+      return {
+        driver: null,
+        unavailableReason: `Real CAMetalLayer IOSurface helper was not found at ${helperPath}`
+      }
+    }
+    return {
+      driver: createNativePreviewHelperProcessDriver({
+        command: helperPath,
+        cwd: dirname(helperPath),
+        env,
+        onLog: logBackend
+      })
+    }
+  }
+
+  return {
+    driver: createNativePreviewHelperProcessDriver({
+      command: resolveCargoBinary(),
+      args: ['run', '--quiet', '-p', 'videorc-backend', '--bin', 'native_preview_host_helper', '--'],
+      cwd: root,
+      env,
+      onLog: logBackend
+    })
+  }
 }
 
 function resolveAppIcon(): NativeImage | null {
@@ -1237,7 +1671,7 @@ function startBackend(): void {
   const cargoBinDir = join(homedir(), '.cargo', 'bin')
   const ffmpegBinDir = resolvePackagedFfmpegBinDir()
   const command = app.isPackaged ? resolvePackagedBackendBinary() : resolveCargoBinary()
-  const args = app.isPackaged ? [] : ['run', '--quiet', '-p', 'videorc-backend']
+  const args = app.isPackaged ? [] : ['run', '--quiet', '-p', 'videorc-backend', '--bin', 'videorc-backend']
   const pathEntries = [ffmpegBinDir, cargoBinDir, process.env.PATH].filter(Boolean)
 
   logBackend('info', `Launching backend from ${root}`)
@@ -1340,7 +1774,7 @@ function sendToWindows(channel: string, ...args: unknown[]): void {
 }
 
 function startSmokePreviewMotionServer(): void {
-  if (process.env.VIDEORC_SMOKE_PREVIEW_MOTION !== '1' || smokePreviewMotionServer) {
+  if (!smokeCommandServerEnabled || smokePreviewMotionServer) {
     return
   }
 
@@ -1437,6 +1871,9 @@ async function runSmokePreviewMotionCommand(command: string, params: Record<stri
     }
     const durationMs = typeof params.durationMs === 'number' ? params.durationMs : 2500
     await new Promise((resolveMeasure) => setTimeout(resolveMeasure, durationMs))
+    if (nativePreviewSurfaceStatusIsRealSurface(nativePreviewSurfaceStatus)) {
+      return nativePreviewSurfaceStatusMetrics(nativePreviewSurfaceStatus)
+    }
     const metrics = await nativePreviewSurfaceWindow.webContents.executeJavaScript(
       'window.__videorcNativePreviewMetrics?.() ?? null',
       true
@@ -1473,8 +1910,68 @@ async function runSmokePreviewMotionCommand(command: string, params: Record<stri
     return destroyNativePreviewSurface()
   }
 
+  if (command === 'apply-native-preview-host-commands') {
+    if (!Array.isArray(params.commands)) {
+      throw new Error('Native preview host command smoke requires a commands array.')
+    }
+    return runNativePreviewSurfaceMutation(() =>
+      applyNativePreviewHostCommands(params.commands as NativePreviewHostCommand[])
+    )
+  }
+
+  if (command === 'native-preview-surface-status') {
+    return nativePreviewSurfaceStatus
+  }
+
   const script = smokeRendererScript(command, params)
   return mainWindow.webContents.executeJavaScript(script, true)
+}
+
+function nativePreviewSurfaceStatusIsRealSurface(status: PreviewSurfaceStatus): boolean {
+  return (
+    status.state === 'live' &&
+    status.transport === 'native-surface' &&
+    status.backing === 'cametal-layer' &&
+    status.sourcePixelsPresent === true
+  )
+}
+
+function nativePreviewSurfaceStatusMetrics(status: PreviewSurfaceStatus): Record<string, unknown> {
+  return {
+    frames: status.framesRendered,
+    measuredFps: status.presentFps,
+    intervalP95Ms: status.intervalP95Ms,
+    intervalP99Ms: status.intervalP99Ms,
+    compositorFrames: status.framesRendered,
+    presentedCompositorFrame: status.presentedFrameId,
+    compositorFrameLag: status.compositorFrameLag,
+    skippedCompositorFrames: status.droppedFrames,
+    inputToPresentLatencyMs: status.inputToPresentLatencyMs,
+    inputToPresentLatencyP50Ms: status.inputToPresentLatencyP50Ms,
+    inputToPresentLatencyP95Ms: status.inputToPresentLatencyP95Ms,
+    inputToPresentLatencyP99Ms: status.inputToPresentLatencyP99Ms,
+    nativePreviewRendererPollIntervalP95Ms: status.nativePreviewRendererPollIntervalP95Ms,
+    nativePreviewRendererPollRoundTripP95Ms: status.nativePreviewRendererPollRoundTripP95Ms,
+    nativePreviewRendererPresentRoundTripP95Ms: status.nativePreviewRendererPresentRoundTripP95Ms,
+    nativePreviewRendererPollInFlightSkips: status.nativePreviewRendererPollInFlightSkips,
+    nativePreviewMainQueueWaitP95Ms: status.nativePreviewMainQueueWaitP95Ms,
+    nativePreviewMainPresentP95Ms: status.nativePreviewMainPresentP95Ms,
+    nativePreviewMainQueuedBehindCount: status.nativePreviewMainQueuedBehindCount,
+    nativePreviewHelperRoundTripP95Ms: status.nativePreviewHelperRoundTripP95Ms,
+    nativePreviewMainStatusFetchP95Ms: status.nativePreviewMainStatusFetchP95Ms,
+    nativePreviewMainStatusFetchFailures: status.nativePreviewMainStatusFetchFailures,
+    nativePreviewMainStatusFetchSuccesses: status.nativePreviewMainStatusFetchSuccesses,
+    nativePreviewMainPresentedStatusAgeMs: status.nativePreviewMainPresentedStatusAgeMs,
+    nativePreviewMainPresentedStatusAgeP95Ms: status.nativePreviewMainPresentedStatusAgeP95Ms,
+    nativePreviewMainPresentedFrameAgeP95Ms: status.nativePreviewMainPresentedFrameAgeP95Ms,
+    framePollingSuppressed: status.framePollingSuppressed,
+    sourcePixelsPresent: status.sourcePixelsPresent,
+    blankFrames: 0,
+    width: status.width,
+    height: status.height,
+    measurementSource: 'native-surface-status',
+    status
+  }
 }
 
 function smokePreviewSceneParams(revision: number, cameraX: number): PreviewSurfaceSceneUpdateParams {
@@ -1618,13 +2115,32 @@ function smokeRendererScript(command: string, params: Record<string, unknown>): 
         }
         throw new Error('Timed out waiting for ' + selector);
       };
+      const waitForActiveTab = async (tabId, timeoutMs = 8000) => {
+        const deadline = performance.now() + timeoutMs;
+        while (performance.now() < deadline) {
+          if (document.querySelector('[data-videorc-active-tab="' + tabId + '"]')) {
+            return document.querySelector('[data-videorc-active-tab="' + tabId + '"]');
+          }
+          const activeTab = Array.from(document.querySelectorAll('[data-videorc-tab-trigger]'))
+            .find((candidate) =>
+              candidate.getAttribute('data-videorc-tab-trigger') === tabId &&
+              candidate.getAttribute('aria-current') === 'page'
+            );
+          if (activeTab) return activeTab;
+          await sleep(50);
+        }
+        throw new Error('Timed out waiting for active tab ' + tabId);
+      };
       const openTab = async (tabId, waitSelector = null) => {
-        const tab = Array.from(document.querySelectorAll('[data-videorc-tab-trigger]'))
-          .find((candidate) => candidate.getAttribute('data-videorc-tab-trigger') === tabId);
+        const tab =
+          Array.from(document.querySelectorAll('[data-videorc-tab-trigger]'))
+            .find((candidate) => candidate.getAttribute('data-videorc-tab-trigger') === tabId) ??
+          document.querySelector('[data-videorc-open-tab="' + tabId + '"]');
         if (!tab) {
           throw new Error('Could not find tab ' + tabId);
         }
         tab.click();
+        await waitForActiveTab(tabId);
         if (waitSelector) {
           await waitFor(waitSelector);
         } else {
@@ -1652,6 +2168,26 @@ function smokeRendererScript(command: string, params: Record<string, unknown>): 
       if (${JSON.stringify(command)} === 'resume-native-preview-surface') {
         window.__videorcSmokeNativePreviewSuspended = false;
         return { suspended: false };
+      }
+
+      if (${JSON.stringify(command)} === 'inspect-native-preview-runtime') {
+        const runtimeInfo = await window.videorc?.getRuntimeInfo?.();
+        const stage = document.querySelector('[data-videorc-preview-stage]');
+        const surface = document.querySelector('[data-videorc-preview-surface]');
+        const nativePlaceholder = document.querySelector('[data-videorc-native-preview-surface]');
+        return {
+          runtimeInfo: runtimeInfo ?? null,
+          hasStage: Boolean(stage),
+          hasSurface: Boolean(surface),
+          hasNativePlaceholder: Boolean(nativePlaceholder),
+          smokeSuspended: Boolean(window.__videorcSmokeNativePreviewSuspended),
+          surfaceRect: surface
+            ? (() => {
+                const rect = surface.getBoundingClientRect();
+                return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
+              })()
+            : null
+        };
       }
 
       if (${JSON.stringify(command)} === 'inspect-native-preview-bootstrap') {

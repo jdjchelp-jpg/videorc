@@ -50,6 +50,8 @@ export const STORAGE_KEYS = {
 } as const
 
 export const ONBOARDING_VERSION = 'creator-ux-v1'
+export const MICROPHONE_SYNC_OFFSET_MIN_MS = -1000
+export const MICROPHONE_SYNC_OFFSET_MAX_MS = 1000
 
 export const defaultSettings: SettingsState = {
   outputDirectory: '',
@@ -208,6 +210,19 @@ export function loadCaptureConfig(): CaptureConfig {
   }
 }
 
+export function smokePreviewCompositorCaptureConfig(
+  config: Pick<CaptureConfig, 'sources' | 'layout' | 'video'>
+): Pick<CaptureConfig, 'sources' | 'layout' | 'video'> {
+  return {
+    ...config,
+    sources: {
+      microphoneId: config.sources.microphoneId,
+      microphoneName: config.sources.microphoneName,
+      testPattern: true
+    }
+  }
+}
+
 export function normalizeAudioSettings(audio: unknown): AudioSettings {
   const candidate = audio && typeof audio === 'object' ? (audio as Partial<AudioSettings>) : {}
   const savedOffset = candidate.microphoneSyncOffsetMs
@@ -215,7 +230,7 @@ export function normalizeAudioSettings(audio: unknown): AudioSettings {
   const microphoneSyncOffsetMs =
     savedOffset === -250 && !offsetUserSet
       ? 0
-      : clampNumber(savedOffset, defaultCaptureConfig.audio.microphoneSyncOffsetMs, -1000, 1000)
+      : normalizeMicrophoneSyncOffsetMs(savedOffset, defaultCaptureConfig.audio.microphoneSyncOffsetMs)
 
   return {
     microphoneGainDb: clampNumber(candidate.microphoneGainDb, defaultCaptureConfig.audio.microphoneGainDb, -24, 24),
@@ -226,6 +241,10 @@ export function normalizeAudioSettings(audio: unknown): AudioSettings {
     microphoneSyncOffsetMs,
     microphoneSyncOffsetUserSet: offsetUserSet
   }
+}
+
+export function normalizeMicrophoneSyncOffsetMs(value: unknown, fallback = 0): number {
+  return clampNumber(value, fallback, MICROPHONE_SYNC_OFFSET_MIN_MS, MICROPHONE_SYNC_OFFSET_MAX_MS)
 }
 
 const LAYOUT_PRESET_VALUES: readonly LayoutPreset[] = [

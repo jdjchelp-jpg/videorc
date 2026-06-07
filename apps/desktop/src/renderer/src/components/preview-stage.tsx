@@ -90,12 +90,14 @@ function clampRange(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value))
 }
 
-function nativePreviewSuspendedForSmoke(): boolean {
-  return Boolean(
-    typeof window !== 'undefined' &&
-      (window as typeof window & { __videorcSmokeNativePreviewSuspended?: boolean })
-        .__videorcSmokeNativePreviewSuspended
-  )
+function nativePreviewSuspendedForSmoke(runtimeInfo?: RuntimeInfo | null): boolean {
+  if (typeof window !== 'undefined') {
+    const smokeWindow = window as typeof window & { __videorcSmokeNativePreviewSuspended?: boolean }
+    if (typeof smokeWindow.__videorcSmokeNativePreviewSuspended === 'boolean') {
+      return smokeWindow.__videorcSmokeNativePreviewSuspended
+    }
+  }
+  return Boolean(runtimeInfo?.nativePreviewSurfaceStageSuspended)
 }
 
 export function PreviewStage({
@@ -250,11 +252,15 @@ export function PreviewStage({
         if (!element) {
           return
         }
-        if (nativePreviewSuspendedForSmoke()) {
+        if (nativePreviewSuspendedForSmoke(runtimeInfo)) {
           return
         }
         const rect = element.getBoundingClientRect()
         if (rect.width <= 0 || rect.height <= 0) {
+          return
+        }
+        if (!previewSurfaceRectUsable(rect)) {
+          lastNativeBoundsRef.current = null
           return
         }
         const bounds: PreviewSurfaceBounds = {
@@ -289,7 +295,12 @@ export function PreviewStage({
         window.cancelAnimationFrame(animationFrame)
       }
     }
-  }, [nativePreviewSurfaceEnabled, nativeSurfaceLive, onNativePreviewSurfaceBounds])
+  }, [
+    nativePreviewSurfaceEnabled,
+    nativeSurfaceLive,
+    onNativePreviewSurfaceBounds,
+    runtimeInfo?.nativePreviewSurfaceStageSuspended
+  ])
 
   const beginCameraDrag = (event: ReactPointerEvent<HTMLButtonElement>, source: SceneSource): void => {
     event.preventDefault()
@@ -652,6 +663,18 @@ function boundsChanged(previous: PreviewSurfaceBounds | null, next: PreviewSurfa
     Math.abs(previous.height - next.height) >= 1 ||
     Math.abs(previous.scaleFactor - next.scaleFactor) >= 0.01 ||
     Math.abs((previous.screenHeight ?? 0) - (next.screenHeight ?? 0)) >= 1
+  )
+}
+
+function previewSurfaceRectUsable(rect: DOMRect): boolean {
+  const viewportWidth = window.innerWidth || document.documentElement.clientWidth
+  const viewportHeight = window.innerHeight || document.documentElement.clientHeight
+  const tolerance = 0.5
+  return (
+    rect.left >= -tolerance &&
+    rect.top >= -tolerance &&
+    rect.right <= viewportWidth + tolerance &&
+    rect.bottom <= viewportHeight + tolerance
   )
 }
 

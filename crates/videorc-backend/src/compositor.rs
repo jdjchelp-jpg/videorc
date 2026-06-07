@@ -40,6 +40,9 @@ use crate::state::AppState;
 const COMPOSITOR_DIAGNOSTIC_WINDOW: Duration = Duration::from_secs(2);
 const COMPOSITOR_LIVE_SOURCE_REFRESH_INTERVAL: Duration = Duration::from_millis(250);
 const COMPOSITOR_LIVE_SOURCE_STALE_RECOVERY_AFTER: Duration = Duration::from_secs(1);
+const COMPOSITOR_LIVE_SOURCE_CONTENDED_RECOVERY_AFTER: Duration = Duration::from_millis(125);
+const COMPOSITOR_LIVE_SOURCE_CONTENDED_RECOVERY_MISSES: u32 = 3;
+const COMPOSITOR_SUPPRESSED_PROOF_PROGRESS_FPS: u32 = 10;
 
 pub type CompositorSlot = std::sync::Arc<tokio::sync::Mutex<CompositorRuntime>>;
 pub type CompositorFrameStore =
@@ -70,12 +73,33 @@ impl CompositorFrameExportHandle {
         #[cfg(target_os = "macos")]
         {
             let target = self.metal_target.as_ref()?;
-            return Some((target.width() as u32, target.height() as u32));
+            Some((target.width() as u32, target.height() as u32))
         }
         #[cfg(not(target_os = "macos"))]
         {
             None
         }
+    }
+
+    pub fn metal_target_iosurface_id(&self) -> Option<u32> {
+        #[cfg(target_os = "macos")]
+        {
+            let target = self.metal_target.as_ref()?;
+            target.iosurface_id()
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            None
+        }
+    }
+
+    fn metal_target_handoff(&self) -> Option<CompositorMetalTargetHandoff> {
+        let (width, height) = self.metal_target_dimensions()?;
+        Some(CompositorMetalTargetHandoff {
+            iosurface_id: self.metal_target_iosurface_id()?,
+            width,
+            height,
+        })
     }
 
     #[cfg(target_os = "macos")]
@@ -85,6 +109,13 @@ impl CompositorFrameExportHandle {
     ) -> Option<Arc<crate::metal_compositor::MetalCompositorTargetPixelBuffer>> {
         self.metal_target.clone()
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CompositorMetalTargetHandoff {
+    iosurface_id: u32,
+    width: u32,
+    height: u32,
 }
 
 impl fmt::Debug for CompositorFrameExportHandle {
@@ -197,6 +228,7 @@ struct CompositorMetrics {
     dropped_frames: u64,
     frame_age_ms: u64,
     frame_time_p95_ms: f64,
+    metal_target_handoff: Option<CompositorMetalTargetHandoff>,
     sources: Vec<CompositorSourceStatus>,
 }
 
@@ -339,11 +371,14 @@ impl CompositorLiveSources {
 }
 
 fn should_blocking_refresh_live_source<P, M>(
-    _consecutive_try_lock_misses: u32,
+    consecutive_try_lock_misses: u32,
     cached_frame: Option<&FrameHandle<P, M>>,
 ) -> bool {
     cached_frame.is_some_and(|frame| {
-        frame.captured_at.elapsed() >= COMPOSITOR_LIVE_SOURCE_STALE_RECOVERY_AFTER
+        let age = frame.captured_at.elapsed();
+        age >= COMPOSITOR_LIVE_SOURCE_STALE_RECOVERY_AFTER
+            || (consecutive_try_lock_misses >= COMPOSITOR_LIVE_SOURCE_CONTENDED_RECOVERY_MISSES
+                && age >= COMPOSITOR_LIVE_SOURCE_CONTENDED_RECOVERY_AFTER)
     })
 }
 
@@ -459,6 +494,7 @@ pub async fn start_synthetic_compositor(
         target_fps,
         width: params.width.max(1),
         height: params.height.max(1),
+        run_id: Some(run_id.clone()),
         scene_revision: previous_scene_status.0,
         scene_id: previous_scene_status.1,
         scene_layout: previous_scene_status.2,
@@ -471,11 +507,14 @@ pub async fn start_synthetic_compositor(
         dropped_frames: 0,
         frame_age_ms: None,
         frame_time_p95_ms: None,
+        metal_target_iosurface_id: None,
+        metal_target_width: None,
+        metal_target_height: None,
         updated_at: Utc::now().to_rfc3339(),
         message: Some("Synthetic compositor running.".to_string()),
     };
     let (stop_tx, stop_rx) = watch::channel(false);
-    let render_task = tokio::spawn(run_synthetic_compositor_loop(
+    let render_task = spawn_compositor_render_loop(
         state.clone(),
         run_id.clone(),
         target_fps,
@@ -483,7 +522,7 @@ pub async fn start_synthetic_compositor(
         status.height,
         params.publish_yuv_frames,
         stop_rx,
-    ));
+    );
 
     {
         let mut compositor = state.compositor.lock().await;
@@ -537,6 +576,41 @@ pub async fn stop_compositor(state: &AppState) -> CompositorStatus {
     status
 }
 
+fn spawn_compositor_render_loop(
+    state: AppState,
+    run_id: String,
+    target_fps: u32,
+    width: u32,
+    height: u32,
+    publish_yuv_frames: bool,
+    stop_rx: watch::Receiver<bool>,
+) -> JoinHandle<()> {
+    tokio::task::spawn_blocking(move || {
+        let runtime = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                state.emit_log(
+                    "error",
+                    format!("Could not start dedicated compositor runtime: {error}"),
+                );
+                return;
+            }
+        };
+        runtime.block_on(run_synthetic_compositor_loop(
+            state,
+            run_id,
+            target_fps,
+            width,
+            height,
+            publish_yuv_frames,
+            stop_rx,
+        ));
+    })
+}
+
 pub async fn compositor_status(state: &AppState) -> CompositorStatus {
     state.compositor.lock().await.status.clone()
 }
@@ -557,6 +631,7 @@ pub async fn wait_for_compositor_startup_frames(
     let min_consecutive = params.min_consecutive_frames.max(1);
     let mut frames_observed = 0_u32;
     let mut last_sequence = None;
+    let mut last_accepted_evidence = None;
     let mut first_source_frame_ms = None;
     let mut first_full_resolution_frame_ms = None;
     let mut timeout_reason = "waiting for compositor frame".to_string();
@@ -570,14 +645,22 @@ pub async fn wait_for_compositor_startup_frames(
             if let Some(reason) = startup_frame_block_reason(evidence, params) {
                 frames_observed = 0;
                 last_sequence = None;
+                last_accepted_evidence = None;
                 timeout_reason = reason;
             } else {
                 if first_full_resolution_frame_ms.is_none() {
                     first_full_resolution_frame_ms = Some(started_at.elapsed().as_millis() as u64);
                 }
-                if last_sequence != Some(evidence.sequence) {
+                if last_sequence != Some(evidence.sequence)
+                    && startup_frame_advances_required_sources(
+                        last_accepted_evidence,
+                        evidence,
+                        params.requirements,
+                    )
+                {
                     frames_observed = frames_observed.saturating_add(1);
                     last_sequence = Some(evidence.sequence);
+                    last_accepted_evidence = Some(evidence);
                 }
                 if frames_observed >= min_consecutive {
                     return CompositorStartupBarrierResult {
@@ -590,7 +673,7 @@ pub async fn wait_for_compositor_startup_frames(
                     };
                 }
                 timeout_reason = format!(
-                    "only {frames_observed}/{min_consecutive} target-resolution compositor frame(s) observed"
+                    "only {frames_observed}/{min_consecutive} target-resolution compositor frame(s) with advancing required sources observed"
                 );
             }
         }
@@ -608,6 +691,21 @@ pub async fn wait_for_compositor_startup_frames(
 
         sleep(Duration::from_millis(10)).await;
     }
+}
+
+fn startup_frame_advances_required_sources(
+    previous: Option<CompositorFrameEvidence>,
+    current: CompositorFrameEvidence,
+    requirements: CompositorStartupSourceRequirements,
+) -> bool {
+    let Some(previous) = previous else {
+        return true;
+    };
+    if requirements.require_camera_source {
+        return current.camera_sequence.is_some()
+            && current.camera_sequence != previous.camera_sequence;
+    }
+    true
 }
 
 fn startup_frame_block_reason(
@@ -794,12 +892,12 @@ async fn stop_current_compositor(state: &AppState) {
 fn emit_runtime_diagnostics_event(state: &AppState, diagnostic_stats: DiagnosticStats) {
     let state = state.clone();
     let ffmpeg_snapshot = state.ffmpeg_work.snapshot();
-    let _ = tokio::task::spawn_blocking(move || {
+    std::mem::drop(tokio::task::spawn_blocking(move || {
         state.emit_event(
             "diagnostics.stats",
             apply_runtime_diagnostics_snapshot(diagnostic_stats, ffmpeg_snapshot),
         );
-    });
+    }));
 }
 
 async fn run_synthetic_compositor_loop(
@@ -930,9 +1028,21 @@ async fn run_synthetic_compositor_loop(
                 preview_surface_progress_times_ms
                     .push(surface_progress_started_at.elapsed().as_secs_f64() * 1000.0);
 
-                if preview_surface_active {
+                if preview_surface_active
+                    && should_emit_preview_surface_compositor_progress(
+                        latest_surface_status.as_ref(),
+                        frames_rendered,
+                        target_fps,
+                    )
+                {
                     let status_progress_started_at = Instant::now();
-                    match try_update_compositor_frame_progress(&state, &run_id, frames_rendered) {
+                    match try_update_compositor_frame_progress(
+                        &state,
+                        &run_id,
+                        frames_rendered,
+                        fallback_frame_age_ms,
+                        published.metal_target_handoff,
+                    ) {
                         Ok(Some(status)) => {
                             state.emit_event("compositor.status", status);
                         }
@@ -988,6 +1098,7 @@ async fn run_synthetic_compositor_loop(
                             dropped_frames,
                             frame_age_ms,
                             frame_time_p95_ms: p95,
+                            metal_target_handoff: published.metal_target_handoff,
                             sources,
                         },
                     )
@@ -1101,6 +1212,7 @@ struct CompositorPublishResult {
     fingerprint: SourceFrameFingerprint,
     compositor_backend: CompositorBackend,
     compositor_fallback_reason: Option<String>,
+    metal_target_handoff: Option<CompositorMetalTargetHandoff>,
     timings: CompositorPublishTimings,
 }
 
@@ -1119,6 +1231,28 @@ fn is_repeated_compositor_frame(
         Some(previous) => current.has_real_source() && previous == current,
         None => false,
     }
+}
+
+fn should_emit_preview_surface_compositor_progress(
+    surface_status: Option<&PreviewSurfaceStatus>,
+    frames_rendered: u64,
+    target_fps: u32,
+) -> bool {
+    let Some(surface_status) = surface_status else {
+        return false;
+    };
+    if surface_status.transport == PreviewTransport::ElectronProofSurface
+        && surface_status.frame_polling_suppressed
+    {
+        let stride = suppressed_proof_progress_stride(target_fps);
+        return frames_rendered == 1 || frames_rendered.is_multiple_of(stride);
+    }
+    true
+}
+
+fn suppressed_proof_progress_stride(target_fps: u32) -> u64 {
+    let target_fps = target_fps.max(1);
+    u64::from((target_fps / COMPOSITOR_SUPPRESSED_PROOF_PROGRESS_FPS).max(1))
 }
 
 /// Whether the Metal/GPU compositor path is requested. Metal is default-on for OBS
@@ -1664,6 +1798,7 @@ async fn publish_compositor_frame(
     let mut compositor_fallback_reason = None;
     let mut pixel_format = CompositorPixelFormat::yuv420p_cpu_buffer();
     let mut export_handle = CompositorFrameExportHandle::default();
+    let metal_target_handoff;
     let mut bytes;
     {
         let inputs = CompositorRenderInputs {
@@ -1700,6 +1835,7 @@ async fn publish_compositor_frame(
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let publish_started_at = Instant::now();
+        metal_target_handoff = export_handle.metal_target_handoff();
         store.publish_with_metadata(
             sequence,
             width,
@@ -1729,6 +1865,7 @@ async fn publish_compositor_frame(
         fingerprint,
         compositor_backend,
         compositor_fallback_reason,
+        metal_target_handoff,
         timings,
     }
 }
@@ -1902,6 +2039,8 @@ fn try_update_compositor_frame_progress(
     state: &AppState,
     run_id: &str,
     frames_rendered: u64,
+    frame_age_ms: u64,
+    metal_target_handoff: Option<CompositorMetalTargetHandoff>,
 ) -> Result<Option<CompositorStatus>, ()> {
     let Ok(mut compositor) = state.compositor.try_lock() else {
         return Err(());
@@ -1911,6 +2050,8 @@ fn try_update_compositor_frame_progress(
     }
     compositor.status.state = CompositorState::Live;
     compositor.status.frames_rendered = frames_rendered;
+    compositor.status.frame_age_ms = Some(frame_age_ms);
+    apply_compositor_status_metal_target_handoff(&mut compositor.status, metal_target_handoff);
     compositor.status.updated_at = Utc::now().to_rfc3339();
     Ok(Some(compositor.status.clone()))
 }
@@ -1931,9 +2072,28 @@ async fn update_compositor_status(
     compositor.status.dropped_frames = metrics.dropped_frames;
     compositor.status.frame_age_ms = Some(metrics.frame_age_ms);
     compositor.status.frame_time_p95_ms = Some(metrics.frame_time_p95_ms);
+    apply_compositor_status_metal_target_handoff(
+        &mut compositor.status,
+        metrics.metal_target_handoff,
+    );
     compositor.status.sources = metrics.sources;
     compositor.status.updated_at = Utc::now().to_rfc3339();
     Some(compositor.status.clone())
+}
+
+fn apply_compositor_status_metal_target_handoff(
+    status: &mut CompositorStatus,
+    handoff: Option<CompositorMetalTargetHandoff>,
+) {
+    if let Some(handoff) = handoff {
+        status.metal_target_iosurface_id = Some(handoff.iosurface_id);
+        status.metal_target_width = Some(handoff.width);
+        status.metal_target_height = Some(handoff.height);
+    } else {
+        status.metal_target_iosurface_id = None;
+        status.metal_target_width = None;
+        status.metal_target_height = None;
+    }
 }
 
 async fn compositor_source_statuses(state: &AppState) -> Vec<CompositorSourceStatus> {
@@ -2422,6 +2582,7 @@ fn stopped_status(message: Option<String>) -> CompositorStatus {
         target_fps: 0,
         width: 0,
         height: 0,
+        run_id: None,
         scene_revision: None,
         scene_id: None,
         scene_layout: None,
@@ -2434,6 +2595,9 @@ fn stopped_status(message: Option<String>) -> CompositorStatus {
         dropped_frames: 0,
         frame_age_ms: None,
         frame_time_p95_ms: None,
+        metal_target_iosurface_id: None,
+        metal_target_width: None,
+        metal_target_height: None,
         updated_at: Utc::now().to_rfc3339(),
         message,
     }
@@ -2603,6 +2767,39 @@ mod tests {
         SourceFrameFingerprint { camera, screen }
     }
 
+    fn preview_surface_status(
+        transport: PreviewTransport,
+        frame_polling_suppressed: bool,
+    ) -> PreviewSurfaceStatus {
+        PreviewSurfaceStatus {
+            state: PreviewSurfaceState::Live,
+            source: Default::default(),
+            transport,
+            backing: Default::default(),
+            target_fps: 60,
+            width: 640,
+            height: 360,
+            frames_rendered: 0,
+            presented_frame_id: None,
+            compositor_frame_lag: None,
+            dropped_frames: 0,
+            input_to_present_latency_ms: None,
+            input_to_present_latency_p50_ms: None,
+            input_to_present_latency_p95_ms: None,
+            input_to_present_latency_p99_ms: None,
+            present_fps: None,
+            interval_p95_ms: None,
+            interval_p99_ms: None,
+            frame_polling_suppressed,
+            source_pixels_present: false,
+            pending_host_command_count: 0,
+            bounds: None,
+            started_at: None,
+            updated_at: "2026-06-06T00:00:00Z".to_string(),
+            message: None,
+        }
+    }
+
     fn test_scene_snapshot(
         layout_preset: LayoutPreset,
         screen_id: Option<&str>,
@@ -2680,7 +2877,50 @@ mod tests {
     }
 
     #[test]
-    fn live_source_blocking_refresh_waits_for_stale_cache_not_healthy_lock_contention() {
+    fn suppressed_proof_surface_progress_is_throttled() {
+        let status = preview_surface_status(PreviewTransport::ElectronProofSurface, true);
+
+        assert!(should_emit_preview_surface_compositor_progress(
+            Some(&status),
+            1,
+            30
+        ));
+        assert!(!should_emit_preview_surface_compositor_progress(
+            Some(&status),
+            2,
+            30
+        ));
+        assert!(should_emit_preview_surface_compositor_progress(
+            Some(&status),
+            3,
+            30
+        ));
+    }
+
+    #[test]
+    fn native_surface_progress_stays_full_rate() {
+        let status = preview_surface_status(PreviewTransport::NativeSurface, true);
+
+        assert!(should_emit_preview_surface_compositor_progress(
+            Some(&status),
+            2,
+            30
+        ));
+    }
+
+    #[test]
+    fn active_proof_source_polling_keeps_full_rate_progress() {
+        let status = preview_surface_status(PreviewTransport::ElectronProofSurface, false);
+
+        assert!(should_emit_preview_surface_compositor_progress(
+            Some(&status),
+            2,
+            30
+        ));
+    }
+
+    #[test]
+    fn live_source_blocking_refresh_waits_for_stale_or_contended_cache() {
         assert!(!should_blocking_refresh_live_source::<
             PreviewScreenPixelFormat,
             (),
@@ -2699,6 +2939,26 @@ mod tests {
         assert!(!should_blocking_refresh_live_source(
             100,
             Some(&fresh_frame)
+        ));
+
+        let contended_frame = std::sync::Arc::new(crate::frame_store::StoredFrame {
+            sequence: 1,
+            width: 1,
+            height: 1,
+            pixel_format: PreviewScreenPixelFormat::Bgra8,
+            metadata: (),
+            bytes: vec![0, 0, 0, 255],
+            captured_at: Instant::now()
+                - COMPOSITOR_LIVE_SOURCE_CONTENDED_RECOVERY_AFTER
+                - Duration::from_millis(1),
+        });
+        assert!(!should_blocking_refresh_live_source(
+            COMPOSITOR_LIVE_SOURCE_CONTENDED_RECOVERY_MISSES - 1,
+            Some(&contended_frame)
+        ));
+        assert!(should_blocking_refresh_live_source(
+            COMPOSITOR_LIVE_SOURCE_CONTENDED_RECOVERY_MISSES,
+            Some(&contended_frame)
         ));
 
         let stale_frame = std::sync::Arc::new(crate::frame_store::StoredFrame {
@@ -3146,6 +3406,15 @@ mod tests {
         assert!(latest.metadata.has_metal_iosurface_target());
         assert_eq!(latest.metadata.metal_target_dimensions(), Some((8, 4)));
         assert!(latest.metadata.metal_target_pixel_buffer().is_some());
+        let handoff = result
+            .metal_target_handoff
+            .expect("Metal target should expose IOSurface handoff metadata");
+        assert_eq!(handoff.width, 8);
+        assert_eq!(handoff.height, 4);
+        assert_eq!(
+            latest.metadata.metal_target_iosurface_id(),
+            Some(handoff.iosurface_id)
+        );
     }
 
     #[cfg(target_os = "macos")]
@@ -3303,19 +3572,32 @@ mod tests {
             compositor.run_id = Some("run".to_string());
         }
 
-        let status = try_update_compositor_frame_progress(&state, "run", 42)
-            .expect("progress lock")
-            .expect("progress status");
+        let status = try_update_compositor_frame_progress(
+            &state,
+            "run",
+            42,
+            4,
+            Some(CompositorMetalTargetHandoff {
+                iosurface_id: 123,
+                width: 640,
+                height: 360,
+            }),
+        )
+        .expect("progress lock")
+        .expect("progress status");
 
         assert_eq!(status.state, CompositorState::Live);
         assert_eq!(status.frames_rendered, 42);
         assert_eq!(status.render_fps, Some(58.0));
         assert_eq!(status.repeated_frames, 2);
         assert_eq!(status.dropped_frames, 1);
-        assert_eq!(status.frame_age_ms, Some(9));
+        assert_eq!(status.frame_age_ms, Some(4));
         assert_eq!(status.frame_time_p95_ms, Some(12.5));
+        assert_eq!(status.metal_target_iosurface_id, Some(123));
+        assert_eq!(status.metal_target_width, Some(640));
+        assert_eq!(status.metal_target_height, Some(360));
         assert!(
-            try_update_compositor_frame_progress(&state, "stale-run", 43)
+            try_update_compositor_frame_progress(&state, "stale-run", 43, 5, None)
                 .expect("progress lock")
                 .is_none()
         );
@@ -3391,19 +3673,33 @@ mod tests {
         )
         .await;
 
-        let mut status = compositor_status(&state).await;
-        for _ in 0..30 {
-            if status.frames_rendered >= 30 && status.render_fps.unwrap_or_default() >= 30.0 {
+        let mut latest_evidence = None;
+        for _ in 0..50 {
+            latest_evidence = compositor_latest_frame_evidence(&state).await;
+            if latest_evidence
+                .as_ref()
+                .is_some_and(|evidence| evidence.sequence >= 30)
+            {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
-            status = compositor_status(&state).await;
         }
+        let status = compositor_status(&state).await;
         stop_compositor(&state).await;
+        let frames_rendered = latest_evidence
+            .as_ref()
+            .map(|evidence| evidence.sequence)
+            .unwrap_or(status.frames_rendered);
 
         assert_eq!(status.state, CompositorState::Live);
-        assert!(status.frames_rendered >= 30);
-        assert!(status.render_fps.unwrap_or_default() >= 30.0);
+        assert!(
+            frames_rendered >= 30,
+            "latest evidence {latest_evidence:?}, status {status:?}"
+        );
+        assert_eq!(
+            latest_evidence.map(|evidence| (evidence.width, evidence.height)),
+            Some((640, 360))
+        );
         assert_eq!(status.width, 640);
         assert_eq!(status.height, 360);
     }
@@ -3437,6 +3733,76 @@ mod tests {
         assert!(result.first_source_frame_ms.is_some());
         assert!(result.first_full_resolution_frame_ms.is_some());
         assert_eq!(result.timeout_reason, None);
+    }
+
+    #[tokio::test]
+    async fn startup_barrier_requires_advancing_camera_frames() {
+        let state = test_state();
+        let writer_state = state.clone();
+        tokio::spawn(async move {
+            sleep(Duration::from_millis(10)).await;
+            set_latest_frame_evidence(&writer_state, 1, 1920, 1080, Some(1), None, false).await;
+            sleep(Duration::from_millis(10)).await;
+            set_latest_frame_evidence(&writer_state, 2, 1920, 1080, Some(1), None, false).await;
+        });
+
+        let result = wait_for_compositor_startup_frames(
+            &state,
+            CompositorStartupBarrierParams {
+                width: 1920,
+                height: 1080,
+                required_scene_revision: Some(1),
+                min_consecutive_frames: 2,
+                timeout: Duration::from_millis(80),
+                requirements: CompositorStartupSourceRequirements {
+                    require_real_source: true,
+                    require_camera_source: true,
+                    require_screen_source: false,
+                },
+            },
+        )
+        .await;
+
+        assert!(!result.ready, "{result:?}");
+        assert_eq!(result.frames_observed, 1);
+        assert!(
+            result
+                .timeout_reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("advancing required sources"))
+        );
+    }
+
+    #[tokio::test]
+    async fn startup_barrier_accepts_advancing_camera_frames() {
+        let state = test_state();
+        let writer_state = state.clone();
+        tokio::spawn(async move {
+            sleep(Duration::from_millis(10)).await;
+            set_latest_frame_evidence(&writer_state, 1, 1920, 1080, Some(1), None, false).await;
+            sleep(Duration::from_millis(10)).await;
+            set_latest_frame_evidence(&writer_state, 2, 1920, 1080, Some(2), None, false).await;
+        });
+
+        let result = wait_for_compositor_startup_frames(
+            &state,
+            CompositorStartupBarrierParams {
+                width: 1920,
+                height: 1080,
+                required_scene_revision: Some(1),
+                min_consecutive_frames: 2,
+                timeout: Duration::from_millis(250),
+                requirements: CompositorStartupSourceRequirements {
+                    require_real_source: true,
+                    require_camera_source: true,
+                    require_screen_source: false,
+                },
+            },
+        )
+        .await;
+
+        assert!(result.ready, "{result:?}");
+        assert_eq!(result.frames_observed, 2);
     }
 
     #[tokio::test]

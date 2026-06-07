@@ -27,6 +27,7 @@ import {
   preparedYouTubeCompletionTargets,
   reconcileSourceSelection,
   rtmpDefaults,
+  smokePreviewCompositorCaptureConfig,
   sourceSelectionChangeMessages,
   STORAGE_KEYS,
   videoPresets,
@@ -109,6 +110,37 @@ import {
   mergeStreamHealth,
   setupChecklist
 } from '@/lib/format'
+
+const NATIVE_PREVIEW_SURFACE_PRESENT_REPORT_INTERVAL_MS = 250
+const NATIVE_PREVIEW_COMPOSITOR_POLL_INTERVAL_MS = 1000 / 60
+const NATIVE_PREVIEW_COMPOSITOR_TIMING_SAMPLE_LIMIT = 900
+
+type NativePreviewRendererTimingFields = Pick<
+  PreviewSurfaceCompositorUpdateParams,
+  | 'nativePreviewRendererPollIntervalP95Ms'
+  | 'nativePreviewRendererPollRoundTripP95Ms'
+  | 'nativePreviewRendererPresentRoundTripP95Ms'
+  | 'nativePreviewRendererPollInFlightSkips'
+>
+
+function recordNativePreviewTimingSample(samples: number[], value: number): void {
+  if (!Number.isFinite(value)) {
+    return
+  }
+  samples.push(Math.max(0, value))
+  while (samples.length > NATIVE_PREVIEW_COMPOSITOR_TIMING_SAMPLE_LIMIT) {
+    samples.shift()
+  }
+}
+
+function nativePreviewTimingPercentile(values: number[], percentileRank: number): number | undefined {
+  if (values.length === 0) {
+    return undefined
+  }
+  const sorted = [...values].sort((left, right) => left - right)
+  const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * percentileRank) - 1))
+  return sorted[index]
+}
 
 export type StudioContextValue = {
   // connection + backend state
@@ -272,6 +304,9 @@ const idleDiagnosticStats = (): DiagnosticStats => ({
   encoderBridgeRepeatedFrameBursts: 0,
   encoderBridgeMaxRepeatedFrameRun: 0,
   encoderBridgeSyntheticFrames: 0,
+  encoderBridgeSourceAgeP95Ms: undefined,
+  encoderBridgeRepeatedFrameAgeP95Ms: undefined,
+  encoderBridgeRepeatedFrameAgeMaxMs: undefined,
   encoderBridgeMetalTargetFrames: 0,
   encoderBridgeRawVideoCopiedFrames: 0,
   encoderBridgeMetalTargetCopiedFrames: 0,
@@ -287,6 +322,11 @@ const idleDiagnosticStats = (): DiagnosticStats => ({
   encoderBridgeVideoToolboxSubmitP95Ms: undefined,
   encoderBridgeVideoToolboxFifoWriteP95Ms: undefined,
   encoderBridgeWriterLoopP95Ms: undefined,
+  encoderBridgeWriterSleepP95Ms: undefined,
+  encoderBridgeWriterActiveP95Ms: undefined,
+  encoderBridgeDeadlineLagP95Ms: undefined,
+  encoderBridgeDeadlineLagMaxMs: undefined,
+  encoderBridgeLateDeadlineTicks: 0,
   compositorCpuFallbackFrames: 0,
   previewImagePollCounts: { cameraPng: 0, screenPng: 0, liveJpeg: 0, liveMjpeg: 0 },
   recordingAtRisk: false,
@@ -346,12 +386,42 @@ const idlePreviewSurfaceStatus = (): PreviewSurfaceStatus => ({
   droppedFrames: 0,
   framePollingSuppressed: false,
   sourcePixelsPresent: false,
+  pendingHostCommandCount: 0,
   updatedAt: new Date().toISOString(),
   message: 'Native preview surface is not running.'
 })
 
 const isPreviewSurfaceTransport = (transport: PreviewLiveStatus['transport']): boolean =>
   transport === 'native-surface' || transport === 'electron-proof-surface'
+
+function previewSurfaceBoundsChanged(previous: PreviewSurfaceBounds | null, next: PreviewSurfaceBounds): boolean {
+  if (!previous) {
+    return true
+  }
+
+  return (
+    Math.abs(previous.screenX - next.screenX) >= 1 ||
+    Math.abs(previous.screenY - next.screenY) >= 1 ||
+    Math.abs(previous.width - next.width) >= 1 ||
+    Math.abs(previous.height - next.height) >= 1 ||
+    Math.abs(previous.scaleFactor - next.scaleFactor) >= 0.01 ||
+    Math.abs((previous.screenHeight ?? 0) - (next.screenHeight ?? 0)) >= 1
+  )
+}
+
+function pendingCompositorStatusSupersedes(
+  pending: CompositorStatus | null,
+  current: CompositorStatus,
+  { includeSameRunFrameAdvance }: { includeSameRunFrameAdvance: boolean }
+): boolean {
+  if (!pending) {
+    return false
+  }
+  if (pending.runId && current.runId && pending.runId !== current.runId) {
+    return true
+  }
+  return includeSameRunFrameAdvance && pending.framesRendered > current.framesRendered
+}
 
 const idlePreviewCameraStatus = (): PreviewCameraStatus => ({
   state: 'device-missing',
@@ -456,9 +526,26 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
   const nativePreviewCameraKeyRef = useRef<string | null>(null)
   const nativePreviewScreenKeyRef = useRef<string | null>(null)
   const nativePreviewSurfaceSceneRevisionRef = useRef(0)
+  const nativePreviewSurfaceBoundsPendingRef = useRef<PreviewSurfaceBounds | null>(null)
+  const nativePreviewSurfaceBoundsSyncInFlightRef = useRef(false)
+  const nativePreviewSurfaceCreatedRef = useRef(false)
+  const nativePreviewSurfaceLastSyncedBoundsRef = useRef<PreviewSurfaceBounds | null>(null)
   const nativePreviewCompositorPendingRef = useRef<CompositorStatus | null>(null)
+  const nativePreviewCompositorLatestStatusRef = useRef<CompositorStatus | null>(null)
   const nativePreviewCompositorPresentingRef = useRef(false)
   const nativePreviewCompositorSuppressedPresentsRef = useRef(0)
+  const nativePreviewCompositorLastEventAtRef = useRef(0)
+  const nativePreviewCompositorPollInFlightRef = useRef(false)
+  const nativePreviewCompositorPumpTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const nativePreviewCompositorPollIntervalSamplesRef = useRef<number[]>([])
+  const nativePreviewCompositorPollRoundTripSamplesRef = useRef<number[]>([])
+  const nativePreviewCompositorPresentRoundTripSamplesRef = useRef<number[]>([])
+  const nativePreviewCompositorLastPollStartedAtRef = useRef(0)
+  const nativePreviewCompositorPollInFlightSkipsRef = useRef(0)
+  const nativePreviewSurfacePresentReportPendingRef = useRef<PreviewSurfacePresentParams | null>(null)
+  const nativePreviewSurfacePresentReportInFlightRef = useRef(false)
+  const nativePreviewSurfacePresentReportTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const nativePreviewSurfacePresentReportLastSentAtRef = useRef(0)
   const sourceReconciliationMessages = useRef<string[]>([])
   const toastedFailedTargets = useRef<Set<string>>(new Set())
   const platformLifecycleRun = useRef(0)
@@ -546,6 +633,74 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     }
   }, [applyPreviewSurfaceStatus, nativePreviewSurfaceEnabled])
 
+  const queueNativePreviewSurfacePresentReport = useCallback((
+    activeClient: BackendClient,
+    params: PreviewSurfacePresentParams
+  ) => {
+    nativePreviewSurfacePresentReportPendingRef.current = params
+
+    const flushReport = () => {
+      if (
+        nativePreviewSurfacePresentReportInFlightRef.current ||
+        !nativePreviewSurfacePresentReportPendingRef.current
+      ) {
+        return
+      }
+
+      const elapsedSinceLastSendMs = Date.now() - nativePreviewSurfacePresentReportLastSentAtRef.current
+      const delayMs = NATIVE_PREVIEW_SURFACE_PRESENT_REPORT_INTERVAL_MS - elapsedSinceLastSendMs
+      if (delayMs > 0) {
+        if (!nativePreviewSurfacePresentReportTimerRef.current) {
+          nativePreviewSurfacePresentReportTimerRef.current = setTimeout(() => {
+            nativePreviewSurfacePresentReportTimerRef.current = null
+            flushReport()
+          }, delayMs)
+        }
+        return
+      }
+
+      const nextParams = nativePreviewSurfacePresentReportPendingRef.current
+      nativePreviewSurfacePresentReportPendingRef.current = null
+      nativePreviewSurfacePresentReportInFlightRef.current = true
+      nativePreviewSurfacePresentReportLastSentAtRef.current = Date.now()
+      void activeClient
+        .request<PreviewSurfaceStatus>('preview.surface.present', nextParams)
+        .catch((error: unknown) => {
+          console.error('Native preview surface present report failed:', error)
+        })
+        .finally(() => {
+          nativePreviewSurfacePresentReportInFlightRef.current = false
+          flushReport()
+        })
+    }
+
+    flushReport()
+  }, [])
+
+  const resetNativePreviewCompositorTiming = useCallback(() => {
+    nativePreviewCompositorPollIntervalSamplesRef.current = []
+    nativePreviewCompositorPollRoundTripSamplesRef.current = []
+    nativePreviewCompositorPresentRoundTripSamplesRef.current = []
+    nativePreviewCompositorLastPollStartedAtRef.current = 0
+    nativePreviewCompositorPollInFlightSkipsRef.current = 0
+  }, [])
+
+  const nativePreviewRendererTimingStatusFields = useCallback((): NativePreviewRendererTimingFields => ({
+    nativePreviewRendererPollIntervalP95Ms: nativePreviewTimingPercentile(
+      nativePreviewCompositorPollIntervalSamplesRef.current,
+      0.95
+    ),
+    nativePreviewRendererPollRoundTripP95Ms: nativePreviewTimingPercentile(
+      nativePreviewCompositorPollRoundTripSamplesRef.current,
+      0.95
+    ),
+    nativePreviewRendererPresentRoundTripP95Ms: nativePreviewTimingPercentile(
+      nativePreviewCompositorPresentRoundTripSamplesRef.current,
+      0.95
+    ),
+    nativePreviewRendererPollInFlightSkips: nativePreviewCompositorPollInFlightSkipsRef.current
+  }), [])
+
   const queueNativePreviewCompositorPresent = useCallback((activeClient: BackendClient, status: CompositorStatus) => {
     const updateCompositor = typeof window === 'undefined' ? undefined : window.videorc?.updateNativePreviewSurfaceCompositor
     if (
@@ -574,22 +729,25 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
           nativePreviewCompositorPendingRef.current = null
           const suppressFramePolling = isActiveRecordingState(recordingRef.current.state)
           const updateParams: PreviewSurfaceCompositorUpdateParams = suppressFramePolling
-            ? { ...nextStatus, suppressFramePolling: true }
-            : nextStatus
+            ? { ...nextStatus, suppressFramePolling: true, ...nativePreviewRendererTimingStatusFields() }
+            : { ...nextStatus, ...nativePreviewRendererTimingStatusFields() }
+          const presentStartedAt = performance.now()
           const surfaceStatus = await updateCompositor(updateParams)
+          recordNativePreviewTimingSample(
+            nativePreviewCompositorPresentRoundTripSamplesRef.current,
+            performance.now() - presentStartedAt
+          )
+          const rendererTimingFields = nativePreviewRendererTimingStatusFields()
           const pendingStatus = nativePreviewCompositorPendingRef.current as CompositorStatus | null
-          if (
-            pendingStatus &&
-            pendingStatus.framesRendered > nextStatus.framesRendered
-          ) {
+          if (pendingCompositorStatusSupersedes(pendingStatus, nextStatus, { includeSameRunFrameAdvance: false })) {
             nativePreviewCompositorSuppressedPresentsRef.current += 1
             continue
           }
-
           const droppedFrames =
             surfaceStatus.droppedFrames + nativePreviewCompositorSuppressedPresentsRef.current
           const nextSurfaceStatus: PreviewSurfaceStatus = {
             ...surfaceStatus,
+            ...rendererTimingFields,
             framesRendered: Math.max(surfaceStatus.framesRendered, nextStatus.framesRendered),
             droppedFrames
           }
@@ -607,10 +765,26 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
             presentFps: surfaceStatus.presentFps,
             intervalP95Ms: surfaceStatus.intervalP95Ms,
             intervalP99Ms: surfaceStatus.intervalP99Ms,
+            ...rendererTimingFields,
+            nativePreviewMainQueueWaitP95Ms: surfaceStatus.nativePreviewMainQueueWaitP95Ms,
+            nativePreviewMainPresentP95Ms: surfaceStatus.nativePreviewMainPresentP95Ms,
+            nativePreviewMainQueuedBehindCount: surfaceStatus.nativePreviewMainQueuedBehindCount,
+            nativePreviewHelperRoundTripP95Ms: surfaceStatus.nativePreviewHelperRoundTripP95Ms,
+            nativePreviewMainStatusFetchP95Ms: surfaceStatus.nativePreviewMainStatusFetchP95Ms,
+            nativePreviewMainStatusFetchFailures: surfaceStatus.nativePreviewMainStatusFetchFailures,
+            nativePreviewMainStatusFetchSuccesses: surfaceStatus.nativePreviewMainStatusFetchSuccesses,
+            nativePreviewMainPresentedStatusAgeMs: surfaceStatus.nativePreviewMainPresentedStatusAgeMs,
+            nativePreviewMainPresentedStatusAgeP95Ms: surfaceStatus.nativePreviewMainPresentedStatusAgeP95Ms,
+            nativePreviewMainPresentedFrameAgeP95Ms: surfaceStatus.nativePreviewMainPresentedFrameAgeP95Ms,
             framePollingSuppressed: surfaceStatus.framePollingSuppressed,
             sourcePixelsPresent: surfaceStatus.sourcePixelsPresent
           }
-          await activeClient.request<PreviewSurfaceStatus>('preview.surface.present', presentParams)
+          queueNativePreviewSurfacePresentReport(activeClient, presentParams)
+          if (pendingCompositorStatusSupersedes(pendingStatus, nextStatus, { includeSameRunFrameAdvance: true })) {
+            nativePreviewCompositorSuppressedPresentsRef.current += 1
+            continue
+          }
+
         }
       } catch (error: unknown) {
         console.error('Native preview compositor present failed:', error)
@@ -621,7 +795,53 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
         }
       }
     })()
-  }, [applyPreviewSurfaceStatus, nativePreviewSurfaceEnabled])
+  }, [applyPreviewSurfaceStatus, nativePreviewRendererTimingStatusFields, nativePreviewSurfaceEnabled, queueNativePreviewSurfacePresentReport])
+
+  useEffect(() => {
+    if (!nativePreviewSurfaceEnabled || !client || wsStatus !== 'connected') {
+      return
+    }
+
+    let cancelled = false
+    const tick = () => {
+      if (cancelled) {
+        return
+      }
+      const surfaceLive = previewSurfaceStatusRef.current.state === 'live'
+      if (surfaceLive) {
+        const latestStatus = nativePreviewCompositorLatestStatusRef.current
+        const pollStartedAt = performance.now()
+        const previousPollStartedAt = nativePreviewCompositorLastPollStartedAtRef.current
+        if (previousPollStartedAt > 0) {
+          recordNativePreviewTimingSample(
+            nativePreviewCompositorPollIntervalSamplesRef.current,
+            pollStartedAt - previousPollStartedAt
+          )
+        }
+        nativePreviewCompositorLastPollStartedAtRef.current = pollStartedAt
+        if (latestStatus) {
+          queueNativePreviewCompositorPresent(client, latestStatus)
+        }
+      }
+      nativePreviewCompositorPumpTimerRef.current = setTimeout(
+        tick,
+        NATIVE_PREVIEW_COMPOSITOR_POLL_INTERVAL_MS
+      )
+    }
+
+    nativePreviewCompositorPumpTimerRef.current = setTimeout(
+      tick,
+      NATIVE_PREVIEW_COMPOSITOR_POLL_INTERVAL_MS
+    )
+    return () => {
+      cancelled = true
+      nativePreviewCompositorPollInFlightRef.current = false
+      if (nativePreviewCompositorPumpTimerRef.current) {
+        clearTimeout(nativePreviewCompositorPumpTimerRef.current)
+        nativePreviewCompositorPumpTimerRef.current = null
+      }
+    }
+  }, [client, nativePreviewSurfaceEnabled, queueNativePreviewCompositorPresent, wsStatus])
 
   const applyPreviewCameraStatus = useCallback((status: PreviewCameraStatus) => {
     previewCameraStatusRef.current = status
@@ -1017,6 +1237,8 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       }),
       nextClient.on('compositor.status', (payload) => {
         const status = payload as CompositorStatus
+        nativePreviewCompositorLastEventAtRef.current = Date.now()
+        nativePreviewCompositorLatestStatusRef.current = status
         queueNativePreviewCompositorPresent(nextClient, status)
       }),
       nextClient.on('preview.camera.status', (payload) => {
@@ -1134,8 +1356,25 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
 
     return () => {
       nativePreviewCompositorPendingRef.current = null
+      nativePreviewCompositorLatestStatusRef.current = null
       nativePreviewCompositorPresentingRef.current = false
       nativePreviewCompositorSuppressedPresentsRef.current = 0
+      nativePreviewCompositorLastEventAtRef.current = 0
+      nativePreviewCompositorPollInFlightRef.current = false
+      resetNativePreviewCompositorTiming()
+      if (nativePreviewCompositorPumpTimerRef.current) {
+        clearTimeout(nativePreviewCompositorPumpTimerRef.current)
+        nativePreviewCompositorPumpTimerRef.current = null
+      }
+      nativePreviewSurfaceCreatedRef.current = false
+      nativePreviewSurfaceLastSyncedBoundsRef.current = null
+      nativePreviewSurfacePresentReportPendingRef.current = null
+      nativePreviewSurfacePresentReportInFlightRef.current = false
+      nativePreviewSurfacePresentReportLastSentAtRef.current = 0
+      if (nativePreviewSurfacePresentReportTimerRef.current) {
+        clearTimeout(nativePreviewSurfacePresentReportTimerRef.current)
+        nativePreviewSurfacePresentReportTimerRef.current = null
+      }
       for (const unsubscribe of unsubscribers) {
         unsubscribe()
       }
@@ -1153,6 +1392,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     connection,
     nativePreviewSurfaceEnabled,
     queueNativePreviewCompositorPresent,
+    resetNativePreviewCompositorTiming,
     refreshPlatformAccountsForClient,
     refreshScreensForClient,
     refreshStreamMetadataForClient,
@@ -1175,12 +1415,17 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
   )
 
   const reloadSceneFromCaptureConfig = useCallback(async () => {
-    await loadScene({
+    const config = {
       sources: captureConfig.sources,
       layout: captureConfig.layout,
       video: captureConfig.video
-    })
-  }, [captureConfig.layout, captureConfig.sources, captureConfig.video, loadScene])
+    }
+    await loadScene(
+      runtimeInfo?.previewSmokeMode
+        ? smokePreviewCompositorCaptureConfig(config)
+        : config
+    )
+  }, [captureConfig.layout, captureConfig.sources, captureConfig.video, loadScene, runtimeInfo?.previewSmokeMode])
 
   const patchLayout = useCallback((patch: Partial<LayoutSettings>) => {
     setCaptureConfig((current) => ({ ...current, layout: { ...current.layout, ...patch } }))
@@ -1591,50 +1836,85 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       if (!window.videorc?.createNativePreviewSurface || !window.videorc?.updateNativePreviewSurfaceBounds) {
         return
       }
-      const applyHostCommands = window.videorc.applyNativePreviewHostCommands
-
-      const current = previewSurfaceStatusRef.current
-      const surfaceSource = captureConfig.sources.windowId
-        ? 'window'
-        : captureConfig.sources.screenId
-          ? 'screen'
-          : captureConfig.sources.cameraId
-            ? 'camera'
-            : 'synthetic'
-      const backendStatus =
-        current.state === 'live'
-          ? await client.request<PreviewSurfaceStatus>('preview.surface.update_bounds', { bounds })
-          : await client.request<PreviewSurfaceStatus>('preview.surface.create', {
-              bounds,
-              targetFps: 60,
-              source: surfaceSource
-            })
-      if (current.state !== 'live') {
-        nativePreviewCompositorSuppressedPresentsRef.current = 0
+      const surfaceAlreadyCreated =
+        nativePreviewSurfaceCreatedRef.current || previewSurfaceStatusRef.current.state === 'live'
+      if (
+        surfaceAlreadyCreated &&
+        !previewSurfaceBoundsChanged(nativePreviewSurfaceLastSyncedBoundsRef.current, bounds)
+      ) {
+        return
       }
-      const hostCommands = await client.request<NativePreviewHostCommand[]>('preview.surface.take_native_host_commands')
-      const hostStatus =
-        hostCommands.length > 0 && applyHostCommands
-          ? await applyHostCommands(hostCommands)
-          : current.state === 'live'
-            ? await window.videorc.updateNativePreviewSurfaceBounds(bounds)
-            : await window.videorc.createNativePreviewSurface(bounds)
-      const surfaceStatus = mergePreviewSurfaceHostStatus(backendStatus, hostStatus)
-      applyPreviewSurfaceStatus(surfaceStatus)
-      setPreviewLiveStatus({
-        state: 'live',
-        source: 'idle-preview',
-        transport: surfaceStatus.transport,
-        targetFps: surfaceStatus.targetFps,
-        width: surfaceStatus.width,
-        height: surfaceStatus.height,
-        message:
-          surfaceStatus.transport === 'native-surface'
-            ? 'Native preview surface is active.'
-            : 'Native preview surface proof mode is active.'
-      })
-      setPreviewUrl(null)
-      setPreviewLoading(false)
+      nativePreviewSurfaceBoundsPendingRef.current = bounds
+      if (nativePreviewSurfaceBoundsSyncInFlightRef.current) {
+        return
+      }
+
+      nativePreviewSurfaceBoundsSyncInFlightRef.current = true
+      try {
+        while (nativePreviewSurfaceBoundsPendingRef.current) {
+          const nextBounds = nativePreviewSurfaceBoundsPendingRef.current
+          nativePreviewSurfaceBoundsPendingRef.current = null
+          const applyHostCommands = window.videorc?.applyNativePreviewHostCommands
+          const current = previewSurfaceStatusRef.current
+          const surfaceAlreadyCreated = nativePreviewSurfaceCreatedRef.current || current.state === 'live'
+          if (
+            surfaceAlreadyCreated &&
+            !previewSurfaceBoundsChanged(nativePreviewSurfaceLastSyncedBoundsRef.current, nextBounds)
+          ) {
+            continue
+          }
+          const surfaceSource = captureConfig.sources.windowId
+            ? 'window'
+            : captureConfig.sources.screenId
+              ? 'screen'
+              : captureConfig.sources.cameraId
+                ? 'camera'
+                : 'synthetic'
+          const backendStatus =
+            surfaceAlreadyCreated
+              ? await client.request<PreviewSurfaceStatus>('preview.surface.update_bounds', { bounds: nextBounds })
+              : await client.request<PreviewSurfaceStatus>('preview.surface.create', {
+                  bounds: nextBounds,
+                  targetFps: 60,
+                  source: surfaceSource
+                })
+          if (!surfaceAlreadyCreated) {
+            nativePreviewCompositorSuppressedPresentsRef.current = 0
+            resetNativePreviewCompositorTiming()
+          }
+          nativePreviewSurfaceCreatedRef.current = backendStatus.state === 'live' || surfaceAlreadyCreated
+          const hostCommands = await client.request<NativePreviewHostCommand[]>('preview.surface.take_native_host_commands')
+          const hostStatus =
+            hostCommands.length > 0 && applyHostCommands
+              ? await applyHostCommands(hostCommands)
+              : surfaceAlreadyCreated
+                ? await window.videorc.updateNativePreviewSurfaceBounds(nextBounds)
+                : await window.videorc.createNativePreviewSurface(nextBounds)
+          nativePreviewSurfaceCreatedRef.current =
+            nativePreviewSurfaceCreatedRef.current || hostStatus.state === 'live'
+          const backendStatusAfterHostDrain =
+            hostCommands.length > 0 ? { ...backendStatus, pendingHostCommandCount: 0 } : backendStatus
+          const surfaceStatus = mergePreviewSurfaceHostStatus(backendStatusAfterHostDrain, hostStatus)
+          nativePreviewSurfaceLastSyncedBoundsRef.current = nextBounds
+          applyPreviewSurfaceStatus(surfaceStatus)
+          setPreviewLiveStatus({
+            state: 'live',
+            source: 'idle-preview',
+            transport: surfaceStatus.transport,
+            targetFps: surfaceStatus.targetFps,
+            width: surfaceStatus.width,
+            height: surfaceStatus.height,
+            message:
+              surfaceStatus.transport === 'native-surface'
+                ? 'Native preview surface is active.'
+                : 'Native preview surface proof mode is active.'
+          })
+          setPreviewUrl(null)
+          setPreviewLoading(false)
+        }
+      } finally {
+        nativePreviewSurfaceBoundsSyncInFlightRef.current = false
+      }
     },
     [
       applyPreviewSurfaceStatus,
@@ -1643,6 +1923,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       captureConfig.sources.windowId,
       client,
       nativePreviewSurfaceEnabled,
+      resetNativePreviewCompositorTiming,
       wsStatus
     ]
   )
@@ -3007,6 +3288,7 @@ function mergePreviewSurfaceHostStatus(
     intervalP99Ms: hostStatus.intervalP99Ms ?? backendStatus.intervalP99Ms,
     framePollingSuppressed: hostStatus.framePollingSuppressed || backendStatus.framePollingSuppressed,
     sourcePixelsPresent: hostStatus.sourcePixelsPresent || backendStatus.sourcePixelsPresent,
+    pendingHostCommandCount: backendStatus.pendingHostCommandCount,
     bounds: hostStatus.bounds ?? backendStatus.bounds,
     startedAt: hostStatus.startedAt ?? backendStatus.startedAt,
     updatedAt: hostStatus.updatedAt,

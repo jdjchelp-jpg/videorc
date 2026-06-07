@@ -37,6 +37,7 @@ import {
   parseFramemd5,
   parseFreezedetect,
   parseSilencedetect,
+  renderMarkdownReport,
 } from './recording-analyzer.mjs'
 
 const ffmpegPath = process.env.VIDEORC_SMOKE_FFMPEG_PATH ?? 'ffmpeg'
@@ -242,6 +243,16 @@ describe('evaluateGates', () => {
     assert.match(v.failures[0], /repeated-frame burst of 7/)
   })
 
+  it('warns on repeated-frame bursts when visible motion is not required', () => {
+    const v = evaluateGates(
+      { ...clean, maxRepeatedFrameRun: 7, repeatedBurstCount: 1 },
+      { ...DEFAULT_GATES, requireMotion: false }
+    )
+    assert.equal(v.pass, true)
+    assert.deepEqual(v.failures, [])
+    assert.match(v.warnings.join(' '), /motion not required/)
+  })
+
   it('fails dropped-frame evidence beyond tolerance', () => {
     const v = evaluateGates({ ...clean, observedFrames: 70, expectedFrames: 90 })
     assert.equal(v.pass, false)
@@ -286,6 +297,56 @@ describe('evaluateGates', () => {
     const v = evaluateGates({ ...clean, hasAudio: false, expectAudio: true })
     assert.equal(v.pass, false)
     assert.match(v.failures.join(' '), /audio expected/)
+  })
+})
+
+describe('renderMarkdownReport', () => {
+  it('prints raw finding locations for repeated bursts and freezes', () => {
+    const markdown = renderMarkdownReport({
+      file: '/tmp/example.mp4',
+      analyzedAtIso: '2026-06-06T00:00:00.000Z',
+      verdict: { pass: false, failures: ['repeated-frame burst'], warnings: [] },
+      metrics: {
+        codec: 'h264',
+        width: 1920,
+        height: 1080,
+        pixFmt: 'yuv420p',
+        encoderTag: 'test',
+        fileBytes: 1024,
+        durationSeconds: 15,
+        intendedFps: 30,
+        avgFps: 30,
+        nominalFps: 30,
+        observedFps: 30,
+        observedFrames: 450,
+        expectedFrames: 450,
+        frameDerivedDurationSeconds: 15,
+        durationStretchRatio: 1,
+        meanIntervalMs: 33.3,
+        maxFrameGapMs: 34,
+        frameJitterMs: 0.5,
+        longestFreezeMs: 100,
+        freezeCount: 1,
+        maxRepeatedFrameRun: 3,
+        repeatedBurstCount: 1,
+        hasAudio: true,
+        maxAudioGapMs: 0,
+        audioGapCount: 0,
+        longestSilenceMs: 0,
+        silenceCount: 0,
+        avSkewMs: 8,
+      },
+      findings: {
+        freezes: [{ start: 14, duration: 0.1 }],
+        repeatedBursts: [{ startIndex: 420, run: 3 }],
+        audioGaps: [],
+        silences: [],
+      },
+    })
+
+    assert.match(markdown, /## Findings/)
+    assert.match(markdown, /Freeze segments: 14\.000s for 100\.0ms/)
+    assert.match(markdown, /Repeated-frame bursts: frame 420 \(about 14\.000s\), run 3/)
   })
 })
 

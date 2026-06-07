@@ -102,6 +102,7 @@ impl<P, M> FrameStore<P, M> {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn publish_with_metadata(
         &mut self,
         sequence: u64,

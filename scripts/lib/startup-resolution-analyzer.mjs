@@ -16,6 +16,7 @@ import {
 } from './recording-analyzer.mjs'
 
 export const DEFAULT_STARTUP_GATES = Object.freeze({
+  requireMotion: true,
   seconds: 2,
   frameLimit: 60,
   maxRepeatedFrameRun: 2,
@@ -135,10 +136,14 @@ export function evaluateStartupGates(metrics, gates = DEFAULT_STARTUP_GATES) {
   }
 
   if (metrics.maxRepeatedFrameRun != null && metrics.maxRepeatedFrameRun > gates.maxRepeatedFrameRun) {
-    failures.push(
+    const message =
       `startup repeated-frame burst of ${metrics.maxRepeatedFrameRun} consecutive identical frames ` +
-        `exceeds ${gates.maxRepeatedFrameRun}`
-    )
+      `exceeds ${gates.maxRepeatedFrameRun}`
+    if (gates.requireMotion === false) {
+      warnings.push(`${message} — motion not required for this run; inspect startup dimensions and live source readiness`)
+    } else {
+      failures.push(message)
+    }
   }
 
   if ((metrics.previewSizedFrameCount ?? 0) > 0) {
@@ -567,7 +572,8 @@ export function renderStartupMarkdownReport(report) {
   }
   lines.push('## Caveats')
   lines.push('')
-  lines.push('- Resolution and repeated-frame gates observe the decoded file directly and are hard gates.')
+  lines.push('- Resolution gates observe the decoded file directly and are hard gates.')
+  lines.push('- Repeated-frame gates are hard only when visible motion is required; otherwise they are evidence for inspection.')
   lines.push('- Black-frame and cropdetect signals are evidence for inspection because real screens can be dark or static.')
   lines.push('- Synthetic filler cannot be proven from arbitrary pixels; live diagnostics remain the authoritative synthetic-frame signal.')
   lines.push('')

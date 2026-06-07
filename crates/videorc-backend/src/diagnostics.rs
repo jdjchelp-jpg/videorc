@@ -87,6 +87,9 @@ pub fn idle_diagnostics() -> DiagnosticStats {
         encoder_bridge_max_repeated_frame_run: 0,
         encoder_bridge_synthetic_frames: 0,
         encoder_bridge_source_age_ms: None,
+        encoder_bridge_source_age_p95_ms: None,
+        encoder_bridge_repeated_frame_age_p95_ms: None,
+        encoder_bridge_repeated_frame_age_max_ms: None,
         encoder_bridge_metal_target_frames: 0,
         encoder_bridge_raw_video_copied_frames: 0,
         encoder_bridge_metal_target_copied_frames: 0,
@@ -102,6 +105,11 @@ pub fn idle_diagnostics() -> DiagnosticStats {
         encoder_bridge_video_toolbox_submit_p95_ms: None,
         encoder_bridge_video_toolbox_fifo_write_p95_ms: None,
         encoder_bridge_writer_loop_p95_ms: None,
+        encoder_bridge_writer_sleep_p95_ms: None,
+        encoder_bridge_writer_active_p95_ms: None,
+        encoder_bridge_deadline_lag_p95_ms: None,
+        encoder_bridge_deadline_lag_max_ms: None,
+        encoder_bridge_late_deadline_ticks: 0,
         encoder_bridge_error: None,
         encode_backend: None,
         compositor_backend: None,
@@ -402,6 +410,9 @@ pub struct EncoderBridgeDiagnosticSnapshot {
     pub max_repeated_frame_run: u64,
     pub synthetic_fallback_frames: u64,
     pub source_to_encode_age_ms: Option<u64>,
+    pub source_to_encode_age_p95_ms: Option<f64>,
+    pub repeated_frame_age_p95_ms: Option<f64>,
+    pub repeated_frame_age_max_ms: Option<u64>,
     pub metal_target_frames: u64,
     pub raw_video_copied_frames: u64,
     pub metal_target_copied_frames: u64,
@@ -417,6 +428,11 @@ pub struct EncoderBridgeDiagnosticSnapshot {
     pub video_toolbox_submit_p95_ms: Option<f64>,
     pub video_toolbox_fifo_write_p95_ms: Option<f64>,
     pub writer_loop_p95_ms: Option<f64>,
+    pub writer_sleep_p95_ms: Option<f64>,
+    pub writer_active_p95_ms: Option<f64>,
+    pub deadline_lag_p95_ms: Option<f64>,
+    pub deadline_lag_max_ms: Option<f64>,
+    pub late_deadline_ticks: u64,
     pub error: Option<String>,
 }
 
@@ -433,6 +449,9 @@ pub fn apply_encoder_bridge_stats(
     stats.encoder_bridge_max_repeated_frame_run = bridge.max_repeated_frame_run;
     stats.encoder_bridge_synthetic_frames = bridge.synthetic_fallback_frames;
     stats.encoder_bridge_source_age_ms = bridge.source_to_encode_age_ms;
+    stats.encoder_bridge_source_age_p95_ms = bridge.source_to_encode_age_p95_ms;
+    stats.encoder_bridge_repeated_frame_age_p95_ms = bridge.repeated_frame_age_p95_ms;
+    stats.encoder_bridge_repeated_frame_age_max_ms = bridge.repeated_frame_age_max_ms;
     stats.encoder_bridge_metal_target_frames = bridge.metal_target_frames;
     stats.encoder_bridge_raw_video_copied_frames = bridge.raw_video_copied_frames;
     stats.encoder_bridge_metal_target_copied_frames = bridge.metal_target_copied_frames;
@@ -448,6 +467,11 @@ pub fn apply_encoder_bridge_stats(
     stats.encoder_bridge_video_toolbox_submit_p95_ms = bridge.video_toolbox_submit_p95_ms;
     stats.encoder_bridge_video_toolbox_fifo_write_p95_ms = bridge.video_toolbox_fifo_write_p95_ms;
     stats.encoder_bridge_writer_loop_p95_ms = bridge.writer_loop_p95_ms;
+    stats.encoder_bridge_writer_sleep_p95_ms = bridge.writer_sleep_p95_ms;
+    stats.encoder_bridge_writer_active_p95_ms = bridge.writer_active_p95_ms;
+    stats.encoder_bridge_deadline_lag_p95_ms = bridge.deadline_lag_p95_ms;
+    stats.encoder_bridge_deadline_lag_max_ms = bridge.deadline_lag_max_ms;
+    stats.encoder_bridge_late_deadline_ticks = bridge.late_deadline_ticks;
     stats.encoder_bridge_error = bridge.error;
     stats.capture_fps = stats.encoder_bridge_input_fps;
     stats.dropped_frames = bridge.dropped_frames;
@@ -1290,6 +1314,9 @@ mod tests {
                 max_repeated_frame_run: 0,
                 synthetic_fallback_frames: 0,
                 source_to_encode_age_ms: None,
+                source_to_encode_age_p95_ms: None,
+                repeated_frame_age_p95_ms: None,
+                repeated_frame_age_max_ms: None,
                 metal_target_frames: 0,
                 raw_video_copied_frames: 0,
                 metal_target_copied_frames: 0,
@@ -1305,6 +1332,11 @@ mod tests {
                 video_toolbox_submit_p95_ms: None,
                 video_toolbox_fifo_write_p95_ms: None,
                 writer_loop_p95_ms: None,
+                writer_sleep_p95_ms: None,
+                writer_active_p95_ms: None,
+                deadline_lag_p95_ms: None,
+                deadline_lag_max_ms: None,
+                late_deadline_ticks: 0,
                 error: None,
             },
             30,
@@ -1328,6 +1360,9 @@ mod tests {
                 max_repeated_frame_run: 2,
                 synthetic_fallback_frames: 1,
                 source_to_encode_age_ms: Some(40),
+                source_to_encode_age_p95_ms: Some(24.0),
+                repeated_frame_age_p95_ms: Some(35.0),
+                repeated_frame_age_max_ms: Some(38),
                 metal_target_frames: 24,
                 raw_video_copied_frames: 80,
                 metal_target_copied_frames: 24,
@@ -1343,6 +1378,11 @@ mod tests {
                 video_toolbox_submit_p95_ms: Some(2.0),
                 video_toolbox_fifo_write_p95_ms: Some(3.0),
                 writer_loop_p95_ms: Some(12.0),
+                writer_sleep_p95_ms: Some(8.0),
+                writer_active_p95_ms: Some(4.0),
+                deadline_lag_p95_ms: Some(4.0),
+                deadline_lag_max_ms: Some(9.0),
+                late_deadline_ticks: 7,
                 error: None,
             },
             30,
@@ -1354,6 +1394,9 @@ mod tests {
         assert_eq!(lagging.encoder_bridge_max_repeated_frame_run, 2);
         assert_eq!(lagging.encoder_bridge_synthetic_frames, 1);
         assert_eq!(lagging.encoder_bridge_source_age_ms, Some(40));
+        assert_eq!(lagging.encoder_bridge_source_age_p95_ms, Some(24.0));
+        assert_eq!(lagging.encoder_bridge_repeated_frame_age_p95_ms, Some(35.0));
+        assert_eq!(lagging.encoder_bridge_repeated_frame_age_max_ms, Some(38));
         assert_eq!(lagging.encoder_bridge_metal_target_frames, 24);
         assert_eq!(lagging.encoder_bridge_raw_video_copied_frames, 80);
         assert_eq!(lagging.encoder_bridge_metal_target_copied_frames, 24);
@@ -1368,6 +1411,11 @@ mod tests {
             lagging.encoder_bridge_video_toolbox_output_encode_ms,
             Some(43)
         );
+        assert_eq!(lagging.encoder_bridge_deadline_lag_p95_ms, Some(4.0));
+        assert_eq!(lagging.encoder_bridge_deadline_lag_max_ms, Some(9.0));
+        assert_eq!(lagging.encoder_bridge_writer_sleep_p95_ms, Some(8.0));
+        assert_eq!(lagging.encoder_bridge_writer_active_p95_ms, Some(4.0));
+        assert_eq!(lagging.encoder_bridge_late_deadline_ticks, 7);
         assert_eq!(lagging.bottleneck, DiagnosticBottleneck::Encoder);
     }
 }

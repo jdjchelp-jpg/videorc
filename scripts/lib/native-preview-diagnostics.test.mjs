@@ -43,6 +43,13 @@ test('native preview diagnostics summarize only steady active recording samples 
         previewInputToPresentLatencyP95Ms: 35,
         previewInputToPresentLatencyP99Ms: 48,
         previewRenderFrameTimeP95Ms: 9.6,
+        encoderBridgeRepeatedFrames: 9,
+        encoderBridgeRepeatedFrameBursts: 4,
+        encoderBridgeMaxRepeatedFrameRun: 3,
+        encoderBridgeSourceAgeMs: 27,
+        encoderBridgeSourceAgeP95Ms: 19.5,
+        encoderBridgeRepeatedFrameAgeP95Ms: 24.5,
+        encoderBridgeRepeatedFrameAgeMaxMs: 31,
         encoderBridgeMetalTargetFrames: 61,
         encoderBridgeRawVideoCopiedFrames: 90,
         encoderBridgeMetalTargetCopiedFrames: 61,
@@ -54,6 +61,15 @@ test('native preview diagnostics summarize only steady active recording samples 
         encoderBridgeVideoToolboxOutputFrames: 40,
         encoderBridgeVideoToolboxOutputBytes: 67890,
         encoderBridgeVideoToolboxOutputEncodeMs: 43,
+        encoderBridgeCompositorWaitP95Ms: 2.4,
+        encoderBridgeVideoToolboxSubmitP95Ms: 1.2,
+        encoderBridgeVideoToolboxFifoWriteP95Ms: 0.8,
+        encoderBridgeWriterLoopP95Ms: 34.5,
+        encoderBridgeWriterSleepP95Ms: 24.0,
+        encoderBridgeWriterActiveP95Ms: 10.5,
+        encoderBridgeDeadlineLagP95Ms: 5.6,
+        encoderBridgeDeadlineLagMaxMs: 12.3,
+        encoderBridgeLateDeadlineTicks: 2,
         compositorCpuFallbackFrames: 0,
         compositorFallbackReason: '',
         activeFfmpegProcesses: 1
@@ -78,7 +94,21 @@ test('native preview diagnostics summarize only steady active recording samples 
           inputToPresentLatencyP99Ms: 45,
           compositorFrameLag: 1,
           intervalP95Ms: 8.9,
-          droppedFrames: 0
+          droppedFrames: 0,
+          nativePreviewRendererPollIntervalP95Ms: 19,
+          nativePreviewRendererPollRoundTripP95Ms: 6,
+          nativePreviewRendererPresentRoundTripP95Ms: 14,
+          nativePreviewRendererPollInFlightSkips: 3,
+          nativePreviewMainQueueWaitP95Ms: 11,
+          nativePreviewMainPresentP95Ms: 13,
+          nativePreviewMainQueuedBehindCount: 2,
+          nativePreviewHelperRoundTripP95Ms: 5,
+          nativePreviewMainStatusFetchP95Ms: 4,
+          nativePreviewMainStatusFetchFailures: 1,
+          nativePreviewMainStatusFetchSuccesses: 21,
+          nativePreviewMainPresentedStatusAgeMs: 17,
+          nativePreviewMainPresentedStatusAgeP95Ms: 23,
+          nativePreviewMainPresentedFrameAgeP95Ms: 19
         }
       ]
     }
@@ -90,7 +120,28 @@ test('native preview diagnostics summarize only steady active recording samples 
   assert.equal(summary.maxPreviewInputToPresentLatencyP95Ms, 35)
   assert.equal(summary.maxPreviewInputToPresentLatencyP99Ms, 48)
   assert.equal(summary.maxPreviewCompositorFrameLag, 1)
+  assert.equal(summary.maxNativePreviewRendererPollIntervalP95Ms, 19)
+  assert.equal(summary.maxNativePreviewRendererPollRoundTripP95Ms, 6)
+  assert.equal(summary.maxNativePreviewRendererPresentRoundTripP95Ms, 14)
+  assert.equal(summary.maxNativePreviewRendererPollInFlightSkips, 3)
+  assert.equal(summary.maxNativePreviewMainQueueWaitP95Ms, 11)
+  assert.equal(summary.maxNativePreviewMainPresentP95Ms, 13)
+  assert.equal(summary.maxNativePreviewMainQueuedBehindCount, 2)
+  assert.equal(summary.maxNativePreviewHelperRoundTripP95Ms, 5)
+  assert.equal(summary.maxNativePreviewMainStatusFetchP95Ms, 4)
+  assert.equal(summary.maxNativePreviewMainStatusFetchFailures, 1)
+  assert.equal(summary.maxNativePreviewMainStatusFetchSuccesses, 21)
+  assert.equal(summary.maxNativePreviewMainPresentedStatusAgeMs, 17)
+  assert.equal(summary.maxNativePreviewMainPresentedStatusAgeP95Ms, 23)
+  assert.equal(summary.maxNativePreviewMainPresentedFrameAgeP95Ms, 19)
   assert.equal(summary.nativePreviewSamples, 2)
+  assert.equal(summary.maxEncoderBridgeRepeatedFrames, 9)
+  assert.equal(summary.maxEncoderBridgeRepeatedFrameBursts, 4)
+  assert.equal(summary.maxEncoderBridgeMaxRepeatedFrameRun, 3)
+  assert.equal(summary.maxEncoderBridgeSourceAgeMs, 27)
+  assert.equal(summary.maxEncoderBridgeSourceAgeP95Ms, 19.5)
+  assert.equal(summary.maxEncoderBridgeRepeatedFrameAgeP95Ms, 24.5)
+  assert.equal(summary.maxEncoderBridgeRepeatedFrameAgeMaxMs, 31)
   assert.equal(summary.maxEncoderBridgeMetalTargetFrames, 61)
   assert.equal(summary.maxEncoderBridgeRawVideoCopiedFrames, 90)
   assert.equal(summary.maxEncoderBridgeMetalTargetCopiedFrames, 61)
@@ -102,6 +153,15 @@ test('native preview diagnostics summarize only steady active recording samples 
   assert.equal(summary.maxEncoderBridgeVideoToolboxOutputFrames, 40)
   assert.equal(summary.maxEncoderBridgeVideoToolboxOutputBytes, 67890)
   assert.equal(summary.maxEncoderBridgeVideoToolboxOutputEncodeMs, 43)
+  assert.equal(summary.maxEncoderBridgeCompositorWaitP95Ms, 2.4)
+  assert.equal(summary.maxEncoderBridgeVideoToolboxSubmitP95Ms, 1.2)
+  assert.equal(summary.maxEncoderBridgeVideoToolboxFifoWriteP95Ms, 0.8)
+  assert.equal(summary.maxEncoderBridgeWriterLoopP95Ms, 34.5)
+  assert.equal(summary.maxEncoderBridgeWriterSleepP95Ms, 24.0)
+  assert.equal(summary.maxEncoderBridgeWriterActiveP95Ms, 10.5)
+  assert.equal(summary.maxEncoderBridgeDeadlineLagP95Ms, 5.6)
+  assert.equal(summary.maxEncoderBridgeDeadlineLagMaxMs, 12.3)
+  assert.equal(summary.maxEncoderBridgeLateDeadlineTicks, 2)
   assert.equal(summary.maxCompositorCpuFallbackFrames, 0)
   assert.equal(summary.lastCompositorFallbackReason, null)
   assert.equal(summary.steadySamples, 1)
@@ -147,6 +207,13 @@ test('native preview diagnostics fall back to active samples when warmup hides t
   assert.equal(summary.minPreviewPresentFps, 58)
   assert.equal(summary.maxPreviewInputToPresentLatencyP95Ms, 44)
   assert.equal(summary.nativePreviewSamples, 1)
+  assert.equal(summary.maxEncoderBridgeRepeatedFrames, 0)
+  assert.equal(summary.maxEncoderBridgeRepeatedFrameBursts, 0)
+  assert.equal(summary.maxEncoderBridgeMaxRepeatedFrameRun, 0)
+  assert.equal(summary.maxEncoderBridgeSourceAgeMs, 0)
+  assert.equal(summary.maxEncoderBridgeSourceAgeP95Ms, null)
+  assert.equal(summary.maxEncoderBridgeRepeatedFrameAgeP95Ms, null)
+  assert.equal(summary.maxEncoderBridgeRepeatedFrameAgeMaxMs, 0)
   assert.equal(summary.maxEncoderBridgeMetalTargetFrames, 12)
   assert.equal(summary.maxEncoderBridgeRawVideoCopiedFrames, 18)
   assert.equal(summary.maxEncoderBridgeMetalTargetCopiedFrames, 12)
@@ -158,6 +225,15 @@ test('native preview diagnostics fall back to active samples when warmup hides t
   assert.equal(summary.maxEncoderBridgeVideoToolboxOutputFrames, 0)
   assert.equal(summary.maxEncoderBridgeVideoToolboxOutputBytes, 0)
   assert.equal(summary.maxEncoderBridgeVideoToolboxOutputEncodeMs, 0)
+  assert.equal(summary.maxEncoderBridgeCompositorWaitP95Ms, null)
+  assert.equal(summary.maxEncoderBridgeVideoToolboxSubmitP95Ms, null)
+  assert.equal(summary.maxEncoderBridgeVideoToolboxFifoWriteP95Ms, null)
+  assert.equal(summary.maxEncoderBridgeWriterLoopP95Ms, null)
+  assert.equal(summary.maxEncoderBridgeWriterSleepP95Ms, null)
+  assert.equal(summary.maxEncoderBridgeWriterActiveP95Ms, null)
+  assert.equal(summary.maxEncoderBridgeDeadlineLagP95Ms, null)
+  assert.equal(summary.maxEncoderBridgeDeadlineLagMaxMs, null)
+  assert.equal(summary.maxEncoderBridgeLateDeadlineTicks, 0)
   assert.equal(summary.maxCompositorCpuFallbackFrames, 4)
   assert.equal(summary.lastCompositorFallbackReason, 'camera frame unavailable')
   assert.equal(summary.steadySamples, 0)

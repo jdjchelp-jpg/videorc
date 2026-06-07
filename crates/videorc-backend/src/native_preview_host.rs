@@ -1,7 +1,7 @@
 use crate::protocol::{PreviewSurfaceBacking, PreviewSurfaceBounds, PreviewTransport};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NativePreviewHostBounds {
     pub screen_x: f64,
@@ -42,7 +42,7 @@ impl NativePreviewHostBounds {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum NativePreviewHostCommandKind {
     Create,
@@ -50,7 +50,7 @@ pub enum NativePreviewHostCommandKind {
     Destroy,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NativePreviewHostCommand {
     pub kind: NativePreviewHostCommandKind,
@@ -61,7 +61,47 @@ pub struct NativePreviewHostCommand {
 pub struct NativePreviewHostActivation {
     pub transport: PreviewTransport,
     pub backing: PreviewSurfaceBacking,
+    pub presented_frame_id: u64,
+    pub frame_polling_suppressed: bool,
+    pub source_pixels_present: bool,
     pub message: Option<String>,
+}
+
+impl NativePreviewHostActivation {
+    pub fn cametal_layer_presented(presented_frame_id: u64) -> Self {
+        Self {
+            transport: PreviewTransport::NativeSurface,
+            backing: PreviewSurfaceBacking::CaMetalLayer,
+            presented_frame_id,
+            frame_polling_suppressed: true,
+            source_pixels_present: true,
+            message: Some(
+                "Native CAMetalLayer preview surface is presenting compositor output.".to_string(),
+            ),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativePreviewHostPresentFailure {
+    MissingOverlay,
+    IosurfaceImportFailed,
+    DrawableUnavailable,
+    CommandBufferUnavailable,
+    EncodeFailed,
+}
+
+impl NativePreviewHostPresentFailure {
+    #[allow(dead_code)]
+    pub fn reason(self) -> &'static str {
+        match self {
+            Self::MissingOverlay => "missing-overlay",
+            Self::IosurfaceImportFailed => "iosurface-import-failed",
+            Self::DrawableUnavailable => "drawable-unavailable",
+            Self::CommandBufferUnavailable => "command-buffer-unavailable",
+            Self::EncodeFailed => "encode-failed",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -142,12 +182,25 @@ mod macos {
 
     use super::{
         NativePreviewHostActivation, NativePreviewHostBounds, NativePreviewHostCommand,
-        NativePreviewHostCommandKind,
+        NativePreviewHostCommandKind, NativePreviewHostPresentFailure,
     };
     use crate::metal_compositor::{
-        MetalPreviewPresenter, MetalSceneCompositor, make_preview_layer,
+        MetalImportedIosurfaceTexture, MetalPreviewPresentFailure, MetalPreviewPresenter,
+        MetalSceneCompositor, make_preview_layer,
     };
-    use crate::protocol::{PreviewSurfaceBacking, PreviewTransport};
+
+    impl From<MetalPreviewPresentFailure> for NativePreviewHostPresentFailure {
+        fn from(failure: MetalPreviewPresentFailure) -> Self {
+            match failure {
+                MetalPreviewPresentFailure::IosurfaceImportFailed => Self::IosurfaceImportFailed,
+                MetalPreviewPresentFailure::DrawableUnavailable => Self::DrawableUnavailable,
+                MetalPreviewPresentFailure::CommandBufferUnavailable => {
+                    Self::CommandBufferUnavailable
+                }
+                MetalPreviewPresentFailure::EncodeFailed => Self::EncodeFailed,
+            }
+        }
+    }
 
     #[derive(Debug)]
     pub struct NativePreviewLayerHost {
@@ -278,52 +331,132 @@ mod macos {
         }
 
         pub fn apply_command(&mut self, command: NativePreviewHostCommand, mtm: MainThreadMarker) {
-            match command.kind {
-                NativePreviewHostCommandKind::Create
-                | NativePreviewHostCommandKind::UpdateBounds => {
-                    let Some(bounds) = command.bounds else {
-                        return;
-                    };
-                    match self.overlay.as_mut() {
-                        Some(overlay) => {
-                            overlay.set_bounds(bounds);
-                            overlay.show();
-                        }
-                        None => {
-                            let overlay =
-                                NativePreviewOverlayHost::new(&self.presenter, bounds, mtm);
-                            overlay.show();
-                            self.overlay = Some(overlay);
-                        }
-                    }
-                }
-                NativePreviewHostCommandKind::Destroy => {
-                    if let Some(overlay) = self.overlay.take() {
-                        overlay.hide();
-                    }
-                }
-            }
+            apply_overlay_command(&self.presenter, &mut self.overlay, command, mtm);
         }
 
         pub fn present_latest(
             &self,
             compositor: &MetalSceneCompositor,
+            presented_frame_id: u64,
         ) -> Option<NativePreviewHostActivation> {
             let overlay = self.overlay.as_ref()?;
             compositor
                 .present_latest_to_layer(&self.presenter, overlay.layer())
-                .then(|| NativePreviewHostActivation {
-                    transport: PreviewTransport::NativeSurface,
-                    backing: PreviewSurfaceBacking::CaMetalLayer,
-                    message: Some(
-                        "Native CAMetalLayer preview surface is presenting compositor output."
-                            .to_string(),
-                    ),
-                })
+                .then(|| NativePreviewHostActivation::cametal_layer_presented(presented_frame_id))
         }
 
         pub fn has_overlay(&self) -> bool {
             self.overlay.is_some()
+        }
+    }
+
+    /// Main-thread native preview runtime for imported compositor IOSurface handoffs.
+    ///
+    /// This is the host shape needed by an Electron native addon or backend AppKit
+    /// overlay that receives `metalTargetIosurfaceId` from compositor status. It still
+    /// only returns activation after a real layer present succeeds.
+    #[derive(Debug)]
+    pub struct NativePreviewIosurfacePresenterRunner {
+        presenter: MetalPreviewPresenter,
+        overlay: Option<NativePreviewOverlayHost>,
+        cached_texture: Option<MetalImportedIosurfaceTexture>,
+    }
+
+    impl NativePreviewIosurfacePresenterRunner {
+        pub fn new() -> Option<Self> {
+            Some(Self {
+                presenter: MetalPreviewPresenter::new_default()?,
+                overlay: None,
+                cached_texture: None,
+            })
+        }
+
+        pub fn apply_command(&mut self, command: NativePreviewHostCommand, mtm: MainThreadMarker) {
+            self.cached_texture = None;
+            apply_overlay_command(&self.presenter, &mut self.overlay, command, mtm);
+        }
+
+        pub fn present_iosurface(
+            &mut self,
+            iosurface_id: u32,
+            width: usize,
+            height: usize,
+            presented_frame_id: u64,
+        ) -> Option<NativePreviewHostActivation> {
+            self.try_present_iosurface(iosurface_id, width, height, presented_frame_id)
+                .ok()
+        }
+
+        pub fn try_present_iosurface(
+            &mut self,
+            iosurface_id: u32,
+            width: usize,
+            height: usize,
+            presented_frame_id: u64,
+        ) -> Result<NativePreviewHostActivation, NativePreviewHostPresentFailure> {
+            if self.overlay.is_none() {
+                return Err(NativePreviewHostPresentFailure::MissingOverlay);
+            }
+            let needs_import = self
+                .cached_texture
+                .as_ref()
+                .is_none_or(|texture| !texture.matches(iosurface_id, width, height));
+            if needs_import {
+                let imported = self
+                    .presenter
+                    .import_iosurface_texture_handle(iosurface_id, width, height)
+                    .ok_or(NativePreviewHostPresentFailure::IosurfaceImportFailed)?;
+                self.cached_texture = Some(imported);
+            }
+            let overlay = self
+                .overlay
+                .as_ref()
+                .ok_or(NativePreviewHostPresentFailure::MissingOverlay)?;
+            let imported = self
+                .cached_texture
+                .as_ref()
+                .ok_or(NativePreviewHostPresentFailure::IosurfaceImportFailed)?;
+            self.presenter
+                .try_present_imported_iosurface_to_layer(overlay.layer(), imported)
+                .map_err(NativePreviewHostPresentFailure::from)?;
+            Ok(NativePreviewHostActivation::cametal_layer_presented(
+                presented_frame_id,
+            ))
+        }
+
+        pub fn has_overlay(&self) -> bool {
+            self.overlay.is_some()
+        }
+    }
+
+    fn apply_overlay_command(
+        presenter: &MetalPreviewPresenter,
+        overlay: &mut Option<NativePreviewOverlayHost>,
+        command: NativePreviewHostCommand,
+        mtm: MainThreadMarker,
+    ) {
+        match command.kind {
+            NativePreviewHostCommandKind::Create | NativePreviewHostCommandKind::UpdateBounds => {
+                let Some(bounds) = command.bounds else {
+                    return;
+                };
+                match overlay.as_mut() {
+                    Some(overlay) => {
+                        overlay.set_bounds(bounds);
+                        overlay.show();
+                    }
+                    None => {
+                        let next_overlay = NativePreviewOverlayHost::new(presenter, bounds, mtm);
+                        next_overlay.show();
+                        *overlay = Some(next_overlay);
+                    }
+                }
+            }
+            NativePreviewHostCommandKind::Destroy => {
+                if let Some(overlay) = overlay.take() {
+                    overlay.hide();
+                }
+            }
         }
     }
 
@@ -342,7 +475,10 @@ mod macos {
 
 #[cfg(target_os = "macos")]
 #[allow(unused_imports)]
-pub use macos::{NativePreviewLayerHost, NativePreviewOverlayHost, NativePreviewPresenterRunner};
+pub use macos::{
+    NativePreviewIosurfacePresenterRunner, NativePreviewLayerHost, NativePreviewOverlayHost,
+    NativePreviewPresenterRunner,
+};
 
 #[cfg(test)]
 mod tests {
@@ -470,5 +606,24 @@ mod tests {
             Some(NativePreviewHostCommandKind::Destroy)
         );
         assert_eq!(lifecycle.bounds(), None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn iosurface_runner_without_overlay_never_claims_activation() {
+        let Some(mut runner) = NativePreviewIosurfacePresenterRunner::new() else {
+            eprintln!("skipping: Metal preview presenter unavailable");
+            return;
+        };
+
+        assert!(!runner.has_overlay());
+        assert_eq!(runner.present_iosurface(1, 8, 4, 12), None);
+        assert_eq!(
+            runner
+                .try_present_iosurface(1, 8, 4, 12)
+                .expect_err("missing overlay must not activate")
+                .reason(),
+            "missing-overlay"
+        );
     }
 }

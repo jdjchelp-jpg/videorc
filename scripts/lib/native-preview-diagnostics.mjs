@@ -58,6 +58,15 @@ export function summarizeNativePreviewRecordingDiagnostics(
     duplicateCaptureSamples: measuredSamples.filter(
       (sample) => Array.isArray(sample.duplicateCaptureSources) && sample.duplicateCaptureSources.length > 0
     ).length,
+    maxEncoderBridgeRepeatedFrames: maxOf(collectCounts('encoderBridgeRepeatedFrames')) ?? 0,
+    maxEncoderBridgeRepeatedFrameBursts: maxOf(collectCounts('encoderBridgeRepeatedFrameBursts')) ?? 0,
+    maxEncoderBridgeMaxRepeatedFrameRun: maxOf(collectCounts('encoderBridgeMaxRepeatedFrameRun')) ?? 0,
+    maxEncoderBridgeSourceAgeMs: maxOf(collectCounts('encoderBridgeSourceAgeMs')) ?? 0,
+    maxEncoderBridgeSourceAgeP95Ms: maxOf(collect('encoderBridgeSourceAgeP95Ms')) ?? null,
+    maxEncoderBridgeRepeatedFrameAgeP95Ms:
+      maxOf(collect('encoderBridgeRepeatedFrameAgeP95Ms')) ?? null,
+    maxEncoderBridgeRepeatedFrameAgeMaxMs:
+      maxOf(collectCounts('encoderBridgeRepeatedFrameAgeMaxMs')) ?? 0,
     maxEncoderBridgeMetalTargetFrames: maxOf(collectCounts('encoderBridgeMetalTargetFrames')) ?? 0,
     maxEncoderBridgeRawVideoCopiedFrames: maxOf(collectCounts('encoderBridgeRawVideoCopiedFrames')) ?? 0,
     maxEncoderBridgeMetalTargetCopiedFrames: maxOf(collectCounts('encoderBridgeMetalTargetCopiedFrames')) ?? 0,
@@ -75,6 +84,17 @@ export function summarizeNativePreviewRecordingDiagnostics(
       maxOf(collectCounts('encoderBridgeVideoToolboxOutputBytes')) ?? 0,
     maxEncoderBridgeVideoToolboxOutputEncodeMs:
       maxOf(collectCounts('encoderBridgeVideoToolboxOutputEncodeMs')) ?? 0,
+    maxEncoderBridgeCompositorWaitP95Ms: maxOf(collect('encoderBridgeCompositorWaitP95Ms')) ?? null,
+    maxEncoderBridgeVideoToolboxSubmitP95Ms:
+      maxOf(collect('encoderBridgeVideoToolboxSubmitP95Ms')) ?? null,
+    maxEncoderBridgeVideoToolboxFifoWriteP95Ms:
+      maxOf(collect('encoderBridgeVideoToolboxFifoWriteP95Ms')) ?? null,
+    maxEncoderBridgeWriterLoopP95Ms: maxOf(collect('encoderBridgeWriterLoopP95Ms')) ?? null,
+    maxEncoderBridgeWriterSleepP95Ms: maxOf(collect('encoderBridgeWriterSleepP95Ms')) ?? null,
+    maxEncoderBridgeWriterActiveP95Ms: maxOf(collect('encoderBridgeWriterActiveP95Ms')) ?? null,
+    maxEncoderBridgeDeadlineLagP95Ms: maxOf(collect('encoderBridgeDeadlineLagP95Ms')) ?? null,
+    maxEncoderBridgeDeadlineLagMaxMs: maxOf(collect('encoderBridgeDeadlineLagMaxMs')) ?? null,
+    maxEncoderBridgeLateDeadlineTicks: maxOf(collectCounts('encoderBridgeLateDeadlineTicks')) ?? 0,
     maxCompositorCpuFallbackFrames: maxOf(collectCounts('compositorCpuFallbackFrames')) ?? 0,
     lastCompositorFallbackReason: lastString('compositorFallbackReason'),
     nativePreviewSamples: nativeDiagnosticsSamples + nativeSurfaceSamples,
@@ -94,6 +114,55 @@ export function summarizeNativePreviewRecordingDiagnostics(
     maxPreviewCompositorFrameLag: maxOf([...collect('previewCompositorFrameLag'), ...collectSurface('compositorFrameLag')]),
     maxPreviewRenderFrameTimeP95Ms: maxOf([...collect('previewRenderFrameTimeP95Ms'), ...collectSurface('intervalP95Ms')]),
     maxPreviewDroppedFrames: maxOf([...collectCounts('previewDroppedFrames'), ...collectSurfaceCounts('droppedFrames')]) ?? 0,
+    maxNativePreviewRendererPollIntervalP95Ms:
+      maxOf([...collect('nativePreviewRendererPollIntervalP95Ms'), ...collectSurface('nativePreviewRendererPollIntervalP95Ms')]),
+    maxNativePreviewRendererPollRoundTripP95Ms:
+      maxOf([...collect('nativePreviewRendererPollRoundTripP95Ms'), ...collectSurface('nativePreviewRendererPollRoundTripP95Ms')]),
+    maxNativePreviewRendererPresentRoundTripP95Ms:
+      maxOf([...collect('nativePreviewRendererPresentRoundTripP95Ms'), ...collectSurface('nativePreviewRendererPresentRoundTripP95Ms')]),
+    maxNativePreviewRendererPollInFlightSkips:
+      maxOf([
+        ...collectCounts('nativePreviewRendererPollInFlightSkips'),
+        ...collectSurfaceCounts('nativePreviewRendererPollInFlightSkips')
+      ]) ?? 0,
+    maxNativePreviewMainQueueWaitP95Ms:
+      maxOf([...collect('nativePreviewMainQueueWaitP95Ms'), ...collectSurface('nativePreviewMainQueueWaitP95Ms')]),
+    maxNativePreviewMainPresentP95Ms:
+      maxOf([...collect('nativePreviewMainPresentP95Ms'), ...collectSurface('nativePreviewMainPresentP95Ms')]),
+    maxNativePreviewMainQueuedBehindCount:
+      maxOf([
+        ...collectCounts('nativePreviewMainQueuedBehindCount'),
+        ...collectSurfaceCounts('nativePreviewMainQueuedBehindCount')
+      ]) ?? 0,
+    maxNativePreviewHelperRoundTripP95Ms:
+      maxOf([...collect('nativePreviewHelperRoundTripP95Ms'), ...collectSurface('nativePreviewHelperRoundTripP95Ms')]),
+    maxNativePreviewMainStatusFetchP95Ms:
+      maxOf([...collect('nativePreviewMainStatusFetchP95Ms'), ...collectSurface('nativePreviewMainStatusFetchP95Ms')]),
+    maxNativePreviewMainStatusFetchFailures:
+      maxOf([
+        ...collectCounts('nativePreviewMainStatusFetchFailures'),
+        ...collectSurfaceCounts('nativePreviewMainStatusFetchFailures')
+      ]) ?? 0,
+    maxNativePreviewMainStatusFetchSuccesses:
+      maxOf([
+        ...collectCounts('nativePreviewMainStatusFetchSuccesses'),
+        ...collectSurfaceCounts('nativePreviewMainStatusFetchSuccesses')
+      ]) ?? 0,
+    maxNativePreviewMainPresentedStatusAgeMs:
+      maxOf([
+        ...collect('nativePreviewMainPresentedStatusAgeMs'),
+        ...collectSurface('nativePreviewMainPresentedStatusAgeMs')
+      ]),
+    maxNativePreviewMainPresentedStatusAgeP95Ms:
+      maxOf([
+        ...collect('nativePreviewMainPresentedStatusAgeP95Ms'),
+        ...collectSurface('nativePreviewMainPresentedStatusAgeP95Ms')
+      ]),
+    maxNativePreviewMainPresentedFrameAgeP95Ms:
+      maxOf([
+        ...collect('nativePreviewMainPresentedFrameAgeP95Ms'),
+        ...collectSurface('nativePreviewMainPresentedFrameAgeP95Ms')
+      ]),
     maxPreviewRepeatedFrames: maxOf(collectCounts('previewRepeatedFrames')) ?? 0,
     maxBackendRssBytes: maxOf(backendRssValues),
     maxActiveFfmpegProcesses: maxOf(ffmpegProcessValues) ?? 0,

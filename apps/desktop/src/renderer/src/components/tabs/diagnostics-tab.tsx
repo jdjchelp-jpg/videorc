@@ -162,8 +162,15 @@ export function DiagnosticsTab(): ReactElement {
             <DiagnosticMetric label="Repeat max run" value={diagnosticStats.encoderBridgeMaxRepeatedFrameRun.toString()} />
             <DiagnosticMetric label="Synthetic frames" value={diagnosticStats.encoderBridgeSyntheticFrames.toString()} />
             <DiagnosticMetric label="Bridge src age" value={formatMs(diagnosticStats.encoderBridgeSourceAgeMs)} />
+            <DiagnosticMetric label="Src age p95" value={formatMs(diagnosticStats.encoderBridgeSourceAgeP95Ms)} />
+            <DiagnosticMetric label="Repeat age p95" value={formatMs(diagnosticStats.encoderBridgeRepeatedFrameAgeP95Ms)} />
             <DiagnosticMetric label="Bridge wait p95" value={formatMs(diagnosticStats.encoderBridgeCompositorWaitP95Ms)} />
-            <DiagnosticMetric label="Writer loop p95" value={formatMs(diagnosticStats.encoderBridgeWriterLoopP95Ms)} />
+            <DiagnosticMetric label="Writer total p95" value={formatMs(diagnosticStats.encoderBridgeWriterLoopP95Ms)} />
+            <DiagnosticMetric label="Writer active p95" value={formatMs(diagnosticStats.encoderBridgeWriterActiveP95Ms)} />
+            <DiagnosticMetric
+              label="Deadline lag"
+              value={`${formatMs(diagnosticStats.encoderBridgeDeadlineLagP95Ms)} / ${diagnosticStats.encoderBridgeLateDeadlineTicks}`}
+            />
             <DiagnosticMetric label="Metal targets" value={diagnosticStats.encoderBridgeMetalTargetFrames.toString()} />
             <DiagnosticMetric
               label="VT probe"

@@ -10,6 +10,7 @@ import { join } from 'node:path'
 import { after, before, describe, it } from 'node:test'
 
 import {
+  DEFAULT_STARTUP_GATES,
   analyzeStartupResolution,
   evaluateStartupGates,
   normalizeStartupFrames,
@@ -129,6 +130,16 @@ describe('evaluateStartupGates', () => {
     const verdict = evaluateStartupGates({ ...clean, maxRepeatedFrameRun: 12 })
     assert.equal(verdict.pass, false)
     assert.match(verdict.failures.join(' '), /startup repeated-frame burst/)
+  })
+
+  it('warns on exact repeats when visible motion is not required', () => {
+    const verdict = evaluateStartupGates(
+      { ...clean, maxRepeatedFrameRun: 12 },
+      { ...DEFAULT_STARTUP_GATES, requireMotion: false }
+    )
+    assert.equal(verdict.pass, true)
+    assert.deepEqual(verdict.failures, [])
+    assert.match(verdict.warnings.join(' '), /motion not required/)
   })
 
   it('warns when synthetic evidence is not available from diagnostics', () => {

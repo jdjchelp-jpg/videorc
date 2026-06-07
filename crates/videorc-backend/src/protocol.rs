@@ -812,6 +812,15 @@ pub struct DiagnosticStats {
     /// Max age (ms) of a compositor frame when it was fed to the encoder.
     #[serde(default)]
     pub encoder_bridge_source_age_ms: Option<u64>,
+    /// P95 age (ms) of compositor frames when they were fed to the encoder.
+    #[serde(default)]
+    pub encoder_bridge_source_age_p95_ms: Option<f64>,
+    /// P95 age (ms) of compositor frames that were re-fed as duplicate bridge frames.
+    #[serde(default)]
+    pub encoder_bridge_repeated_frame_age_p95_ms: Option<f64>,
+    /// Max age (ms) of compositor frames that were re-fed as duplicate bridge frames.
+    #[serde(default)]
+    pub encoder_bridge_repeated_frame_age_max_ms: Option<u64>,
     /// FIFO ticks where the copied compositor frame also exposed an IOSurface-backed
     /// Metal target. This is a candidate signal for the future zero-copy encoder path.
     #[serde(default)]
@@ -860,9 +869,28 @@ pub struct DiagnosticStats {
     /// P95 time the bridge writer spent writing encoded H.264 bytes into FFmpeg.
     #[serde(default)]
     pub encoder_bridge_video_toolbox_fifo_write_p95_ms: Option<f64>,
-    /// P95 wall time for one bridge writer loop tick.
+    /// P95 wall time for one bridge writer loop tick, including intentional CFR
+    /// deadline sleep.
     #[serde(default)]
     pub encoder_bridge_writer_loop_p95_ms: Option<f64>,
+    /// P95 time a bridge writer tick spent sleeping until its scheduled CFR deadline.
+    #[serde(default)]
+    pub encoder_bridge_writer_sleep_p95_ms: Option<f64>,
+    /// P95 active bridge writer work after deadline sleep, including compositor wait,
+    /// VideoToolbox submission, and encoded-output drain.
+    #[serde(default)]
+    pub encoder_bridge_writer_active_p95_ms: Option<f64>,
+    /// P95 schedule lag for bridge writer ticks that missed their CFR deadline during
+    /// the active session.
+    #[serde(default)]
+    pub encoder_bridge_deadline_lag_p95_ms: Option<f64>,
+    /// Max bridge writer schedule lag observed during the active session.
+    #[serde(default)]
+    pub encoder_bridge_deadline_lag_max_ms: Option<f64>,
+    /// Cumulative bridge writer ticks that started more than the late-deadline threshold
+    /// after their scheduled CFR deadline.
+    #[serde(default)]
+    pub encoder_bridge_late_deadline_ticks: u64,
     pub encoder_bridge_error: Option<String>,
     /// Which encoder the active session actually requested — proves hardware vs software
     /// encode (previously unrecorded).
@@ -1233,6 +1261,11 @@ pub struct PreviewSurfaceStatus {
     pub frame_polling_suppressed: bool,
     #[serde(default)]
     pub source_pixels_present: bool,
+    /// Native/AppKit host lifecycle commands waiting for the Electron/native host to
+    /// apply. Nonzero during an active visible-preview run means the host was requested
+    /// but not actually attached.
+    #[serde(default)]
+    pub pending_host_command_count: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bounds: Option<PreviewSurfaceBounds>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1274,6 +1307,8 @@ pub struct CompositorStatus {
     pub width: u32,
     pub height: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub scene_revision: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scene_id: Option<String>,
@@ -1291,6 +1326,14 @@ pub struct CompositorStatus {
     pub dropped_frames: u64,
     pub frame_age_ms: Option<u64>,
     pub frame_time_p95_ms: Option<f64>,
+    /// IOSurface id for the latest retained Metal compositor target. This is a native
+    /// preview handoff handle, not an OBS-native claim by itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metal_target_iosurface_id: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metal_target_width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metal_target_height: Option<u32>,
     pub updated_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,

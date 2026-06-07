@@ -1359,9 +1359,7 @@ mod macos {
             } else {
                 guard.frame_store.record_buffer_allocation();
                 drop(guard);
-                let mut buffer = Vec::with_capacity(frame_bytes);
-                buffer.resize(frame_bytes, 0);
-                buffer
+                vec![0; frame_bytes]
             }
         };
         unsafe {

@@ -7,9 +7,15 @@ import { StatusBadge, type StatusTone } from '@/components/status-badge'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Empty, EmptyDescription, EmptyTitle } from '@/components/ui/empty'
+import { Input } from '@/components/ui/input'
 import { Slider } from '@/components/ui/slider'
 import { Switch } from '@/components/ui/switch'
 import { useStudio } from '@/hooks/use-studio'
+import {
+  MICROPHONE_SYNC_OFFSET_MAX_MS,
+  MICROPHONE_SYNC_OFFSET_MIN_MS,
+  normalizeMicrophoneSyncOffsetMs
+} from '@/lib/capture'
 import type { Device, DeviceStatus } from '@/lib/backend'
 import { formatDb } from '@/lib/format'
 import { cn } from '@/lib/utils'
@@ -192,22 +198,49 @@ export function SourcesTab(): ReactElement {
                 {captureConfig.audio.microphoneSyncOffsetMs} ms
               </span>
             </div>
-            <Slider
-              max={1000}
-              min={-1000}
-              step={25}
-              value={[captureConfig.audio.microphoneSyncOffsetMs]}
-              onValueChange={([microphoneSyncOffsetMs]) =>
-                setCaptureConfig((current) => ({
-                  ...current,
-                  audio: {
-                    ...current.audio,
-                    microphoneSyncOffsetMs: microphoneSyncOffsetMs ?? 0,
-                    microphoneSyncOffsetUserSet: true
-                  }
-                }))
-              }
-            />
+            <div className="grid grid-cols-[1fr_auto] items-center gap-3">
+              <Slider
+                max={MICROPHONE_SYNC_OFFSET_MAX_MS}
+                min={MICROPHONE_SYNC_OFFSET_MIN_MS}
+                step={5}
+                value={[captureConfig.audio.microphoneSyncOffsetMs]}
+                onValueChange={([microphoneSyncOffsetMs]) =>
+                  setCaptureConfig((current) => ({
+                    ...current,
+                    audio: {
+                      ...current.audio,
+                      microphoneSyncOffsetMs: normalizeMicrophoneSyncOffsetMs(
+                        microphoneSyncOffsetMs,
+                        current.audio.microphoneSyncOffsetMs
+                      ),
+                      microphoneSyncOffsetUserSet: true
+                    }
+                  }))
+                }
+              />
+              <Input
+                aria-label="Microphone sync offset milliseconds"
+                className="w-24 font-mono text-xs tabular-nums"
+                max={MICROPHONE_SYNC_OFFSET_MAX_MS}
+                min={MICROPHONE_SYNC_OFFSET_MIN_MS}
+                step={1}
+                type="number"
+                value={captureConfig.audio.microphoneSyncOffsetMs}
+                onChange={(event) =>
+                  setCaptureConfig((current) => ({
+                    ...current,
+                    audio: {
+                      ...current.audio,
+                      microphoneSyncOffsetMs: normalizeMicrophoneSyncOffsetMs(
+                        event.currentTarget.valueAsNumber,
+                        current.audio.microphoneSyncOffsetMs
+                      ),
+                      microphoneSyncOffsetUserSet: true
+                    }
+                  }))
+                }
+              />
+            </div>
           </div>
         </div>
         <div className="h-2.5 w-full overflow-hidden rounded-full bg-muted">

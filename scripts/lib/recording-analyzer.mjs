@@ -27,7 +27,7 @@ import { dirname, join } from 'node:path'
  * "Final recording gate" / "Audio gate" sections.
  */
 export const DEFAULT_GATES = Object.freeze({
-  requireMotion: true, // when false, freezedetect segments warn instead of hard-failing
+  requireMotion: true, // when false, freeze/exact-repeat segments warn instead of hard-failing
   maxFreezeMs: 100, // no freeze segment above 100ms
   maxRepeatedFrameRun: 2, // no repeated-frame burst above 2 consecutive frames
   maxAudioGapMs: 20, // no audio gap above 20ms
@@ -347,12 +347,17 @@ export function evaluateGates(metrics, gates = DEFAULT_GATES) {
     }
   }
 
-  // Repeated-frame bursts (exact decoded-frame duplicates).
+  // Repeated-frame bursts (exact decoded-frame duplicates). Like freezedetect,
+  // this is only a hard artifact gate when visible motion is guaranteed.
   if (metrics.maxRepeatedFrameRun != null && metrics.maxRepeatedFrameRun > gates.maxRepeatedFrameRun) {
-    failures.push(
+    const message =
       `repeated-frame burst of ${metrics.maxRepeatedFrameRun} consecutive identical frames ` +
-        `exceeds ${gates.maxRepeatedFrameRun} (${metrics.repeatedBurstCount} burst(s))`
-    )
+      `exceeds ${gates.maxRepeatedFrameRun} (${metrics.repeatedBurstCount} burst(s))`
+    if (gates.requireMotion === false) {
+      warnings.push(`${message} — motion not required for this run; inspect bridge repeat and pacing gates`)
+    } else {
+      failures.push(message)
+    }
   }
 
   // Frame count vs expected (dropped-frame evidence).
@@ -686,6 +691,20 @@ function fmtBytes(value) {
   return `${(value / (1024 * 1024)).toFixed(1)} MiB`
 }
 
+function fmtSeconds(value) {
+  return typeof value === 'number' && Number.isFinite(value) ? `${value.toFixed(3)}s` : 'n/a'
+}
+
+function sampledFindings(values, formatter, limit = 10) {
+  const items = Array.isArray(values) ? values : []
+  const rendered = items.slice(0, limit).map(formatter)
+  const omitted = items.length - rendered.length
+  if (omitted > 0) {
+    rendered.push(`${omitted} more`)
+  }
+  return rendered.join('; ')
+}
+
 /** Render a human-readable markdown report from an analyzeRecording() result. */
 export function renderMarkdownReport(report) {
   const { metrics: m, verdict } = report
@@ -733,6 +752,50 @@ export function renderMarkdownReport(report) {
   }
   lines.push(`- A/V skew: ${m.avSkewMs == null ? 'n/a' : `${fmt(m.avSkewMs)}ms`}`)
   lines.push('')
+  const findings = report.findings ?? {}
+  if (
+    findings.freezes?.length > 0 ||
+    findings.repeatedBursts?.length > 0 ||
+    findings.audioGaps?.length > 0 ||
+    findings.silences?.length > 0
+  ) {
+    lines.push('## Findings')
+    lines.push('')
+    if (findings.freezes?.length > 0) {
+      lines.push(
+        `- Freeze segments: ${sampledFindings(
+          findings.freezes,
+          (freeze) => `${fmtSeconds(freeze.start)} for ${fmt((freeze.duration ?? 0) * 1000)}ms`
+        )}`
+      )
+    }
+    if (findings.repeatedBursts?.length > 0) {
+      const fps = typeof m.intendedFps === 'number' && m.intendedFps > 0 ? m.intendedFps : null
+      lines.push(
+        `- Repeated-frame bursts: ${sampledFindings(findings.repeatedBursts, (burst) => {
+          const time = fps == null ? 'time n/a' : `about ${fmtSeconds(burst.startIndex / fps)}`
+          return `frame ${burst.startIndex} (${time}), run ${burst.run}`
+        })}`
+      )
+    }
+    if (findings.audioGaps?.length > 0) {
+      lines.push(
+        `- Audio PTS gaps: ${sampledFindings(
+          findings.audioGaps,
+          (gap) => `${fmtSeconds(gap.at)} gap ${fmt(gap.gapMs)}ms`
+        )}`
+      )
+    }
+    if (findings.silences?.length > 0) {
+      lines.push(
+        `- Silence segments: ${sampledFindings(
+          findings.silences,
+          (silence) => `${fmtSeconds(silence.start)} for ${fmt((silence.duration ?? 0) * 1000)}ms`
+        )}`
+      )
+    }
+    lines.push('')
+  }
   lines.push('## Caveats')
   lines.push('')
   lines.push(
