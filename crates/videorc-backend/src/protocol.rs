@@ -595,12 +595,12 @@ impl Default for AudioSettings {
 }
 
 fn default_microphone_sync_offset_ms() -> i32 {
-    // Compensate the capture pipeline's inherent latency (CoreAudio input buffering +
-    // audio FIFO + async resample) so mic audio is not late by default. The lip-sync
-    // gate measured ~166ms total latency for the built-in path (-120ms still left +46ms
-    // residual lag), so -166ms is the zero-error default; users can fine-tune it via the
-    // Sources tab Sync control.
-    -166
+    // Compensate the capture pipeline's audio latency so mic audio is not late by
+    // default. A clap test (sharp synchronized audio+video event) measured ~350ms of
+    // audio lag on the encoder-bridge recording path, consistent across claps with no
+    // drift — which is why smaller values (-120/-166) still left audio clearly behind.
+    // Users can fine-tune via the Sources tab Sync control.
+    -350
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
