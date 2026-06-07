@@ -43,6 +43,7 @@ import { Switch } from '@/components/ui/switch'
 import { useWorkspaceNav } from '@/components/workspace-nav'
 import { useStudio } from '@/hooks/use-studio'
 import type { GoLiveDestinationPreflight, StreamPlatform, StreamScreen } from '@/lib/backend'
+import { studioHealth } from '@/lib/studio-health'
 import { cn } from '@/lib/utils'
 
 export function StudioTab(): ReactElement {
@@ -80,6 +81,7 @@ export function StudioTab(): ReactElement {
     streamReady,
     wsStatus,
     health,
+    diagnosticStats,
     audioMeter,
     meterLevel,
     scene,
@@ -103,6 +105,7 @@ export function StudioTab(): ReactElement {
   } = studio
 
   const active = recording.state === 'recording' || recording.state === 'streaming'
+  const previewHealth = studioHealth(diagnosticStats, active)
   const banner = studioBlocker(studio)
   const audioSummary =
     recording.audioTracks?.map((track) => track.label).join(' + ') ?? (selectedMicrophone ? 'Microphone' : 'None')
@@ -202,9 +205,23 @@ export function StudioTab(): ReactElement {
               <span className="text-sm font-semibold capitalize">{recording.state}</span>
               <span className="text-xs text-muted-foreground">{recording.message ?? 'Idle'}</span>
             </div>
+            {previewHealth.tone !== 'neutral' ? (
+              <StatusBadge
+                label="Preview"
+                tone={previewHealth.tone}
+                value={previewHealth.value}
+              />
+            ) : null}
           </div>
           <time className="font-heading text-2xl font-semibold tabular-nums">{elapsed}</time>
         </div>
+
+        {previewHealth.tone === 'error' && previewHealth.detail ? (
+          <div className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-1.5 text-xs font-medium text-destructive">
+            <WarningCircle className="size-4 shrink-0" weight="fill" />
+            <span className="min-w-0">{previewHealth.detail}</span>
+          </div>
+        ) : null}
 
         {active ? (
           <Button size="lg" variant="destructive" disabled={!canStop} onClick={stopSession}>

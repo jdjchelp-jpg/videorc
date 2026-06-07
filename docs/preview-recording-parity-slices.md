@@ -17,7 +17,7 @@ the remaining work.
 | 1 | Native preview is the confirmed live default | ✅ already wired as default | on-device eye-check (user) |
 | 2 | Hardware VideoToolbox zero-copy = default recorder | ⏳ prepared, default-flip needs decision | regression risk + on-device (user) |
 | 3 | "Preparing recording…" UX + copyable preflight report | ⬜ todo | deterministic + smoke |
-| 4 | Studio health badge + degraded indicator | ⬜ todo | deterministic |
+| 4 | Studio health badge + degraded indicator | ✅ done | deterministic (vitest + typecheck + build) |
 | 5 | Developer-only synthetic camera source (selectable) | ⬜ todo | deterministic (cargo test) |
 | 6 | ProgramFrame contract + parity check (hardening) | ⬜ todo | deterministic (test:scripts) |
 | 7 | Visual/timing parity fixtures (hardening) | ⬜ todo | deterministic (test:scripts) |
@@ -74,6 +74,18 @@ flip + revert-if-bad, or operator flips after their own real-camera gate.
 `encode backend = hardware-videotoolbox`, `zero-copy > 0`, `raw/Metal copied = 0`, startup
 PASS, final-file PASS, encoder speed ≥ 0.98×; plus a by-eye smooth 60s playback that
 includes an image-overlay scene.
+
+## Slice 4 — Studio health badge ✅
+
+Added a compact preview-health badge to the Studio action bar plus a degraded strip. The
+derivation is extracted to `apps/desktop/src/renderer/src/lib/studio-health.ts` and
+unit-tested (`studio-health.test.ts`, 9 cases). Degraded **"Preview may not match
+recording"** triggers on compositor CPU fallback (`compositorBackend === 'cpu-fallback'`, or
+fallback frames mid-recording); warns on preview present latency over the live budget
+(p95 75 ms / p99 150 ms) or an HTTP image-polling transport; otherwise Live/Ready. Verified
+deterministically: `pnpm --filter @videorc/desktop test` (40 pass), `pnpm typecheck`,
+`pnpm build`. Operator visual check: `VIDEORC_METAL_COMPOSITOR=0 pnpm dev` → badge reads
+**Degraded** with the strip.
 
 ## Slice 8 — Real-camera product acceptance
 
