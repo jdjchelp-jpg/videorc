@@ -52,7 +52,8 @@ use crate::preview_camera::{
 use crate::preview_screen::preview_screen_latest_frame_info;
 use crate::protocol::{
     AudioSettings, AudioTrack, AudioTrackSource, CameraCorner, CameraFit, CameraShape, CameraSize,
-    CameraTransformMode, CompositorSceneUpdateParams, CompositorState, EncodeBackend, HealthLevel,
+    CameraTransformMode, CompositorBackend, CompositorSceneUpdateParams, CompositorState,
+    EncodeBackend, HealthLevel,
     LayoutPreset, LayoutSettings, PreviewCameraState, PreviewLiveParams, PreviewLiveSource,
     PreviewLiveState, PreviewLiveStatus, PreviewScreenSourceKind, PreviewScreenState,
     PreviewSnapshot, PreviewSnapshotParams, PreviewSurfaceState, PreviewTransport,
@@ -537,6 +538,18 @@ pub async fn start_session(
         )
         .await
         {
+            emit_preflight_failure_report(
+                &state,
+                &session_id,
+                "camera source cadence",
+                &error.to_string(),
+                params.output.video.width,
+                params.output.video.height,
+                params.output.video.fps,
+                startup_source_requirements.require_camera_source,
+                startup_source_requirements.require_screen_source,
+            )
+            .await;
             if let Some(fifo_path) = encoder_bridge_fifo.as_ref() {
                 let _ = std::fs::remove_file(fifo_path);
             }
@@ -556,6 +569,18 @@ pub async fn start_session(
                 startup_barrier_result = Some(result);
             }
             Err(error) => {
+                emit_preflight_failure_report(
+                    &state,
+                    &session_id,
+                    "compositor startup",
+                    &error.to_string(),
+                    params.output.video.width,
+                    params.output.video.height,
+                    params.output.video.fps,
+                    startup_source_requirements.require_camera_source,
+                    startup_source_requirements.require_screen_source,
+                )
+                .await;
                 if let Some(fifo_path) = encoder_bridge_fifo.as_ref() {
                     let _ = std::fs::remove_file(fifo_path);
                 }
@@ -2968,6 +2993,136 @@ fn optional_u64_ms(value: Option<u64>) -> String {
         .unwrap_or_else(|| "n/a".to_string())
 }
 
+/// Inputs for the copyable preflight failure report. Kept as plain data so the rendered text
+/// can be unit-tested without standing up a recording session.
+struct PreflightFailureReport<'a> {
+    owner: &'a str,
+    reason: &'a str,
+    width: u32,
+    height: u32,
+    target_fps: u32,
+    require_camera: bool,
+    require_screen: bool,
+    compositor_backend: &'a str,
+    compositor_cpu_fallback_frames: u64,
+    encode_backend: &'a str,
+    camera_frame_age_ms: Option<u64>,
+    camera_sample_pts_gap_p95_ms: Option<f64>,
+    screen_frame_age_ms: Option<u64>,
+    maintenance_active: bool,
+}
+
+/// Render a copyable, owner-tagged preflight failure report naming the source, compositor, and
+/// encoder context so a blocked start is diagnosable without reproducing it.
+fn format_preflight_failure_report(report: &PreflightFailureReport) -> String {
+    let mut lines = vec![
+        format!(
+            "Recording preflight failed: {} did not reach a healthy full-output frame before the timeout.",
+            report.owner
+        ),
+        format!("Reason: {}", report.reason),
+        format!(
+            "Output: {}x{} @ {}fps",
+            report.width, report.height, report.target_fps
+        ),
+        format!(
+            "Sources required: camera={}, screen/window={}",
+            bool_label(report.require_camera),
+            bool_label(report.require_screen)
+        ),
+        format!(
+            "Compositor: {} (CPU-fallback frames {})",
+            report.compositor_backend, report.compositor_cpu_fallback_frames
+        ),
+        format!("Encoder: {}", report.encode_backend),
+    ];
+    if report.require_camera {
+        lines.push(format!(
+            "Camera: frame age {}, sample PTS gap p95 {}",
+            optional_u64_ms(report.camera_frame_age_ms),
+            optional_ms(report.camera_sample_pts_gap_p95_ms)
+        ));
+    }
+    if report.require_screen {
+        lines.push(format!(
+            "Screen/window: frame age {}",
+            optional_u64_ms(report.screen_frame_age_ms)
+        ));
+    }
+    lines.push(format!(
+        "Maintenance job active during start: {}",
+        bool_label(report.maintenance_active)
+    ));
+    lines.push(
+        "Next: confirm the named source is delivering frames (grant capture permission or reselect \
+         the device), wait for any active maintenance job to finish, then retry. A cpu-fallback \
+         compositor points at Metal availability."
+            .to_string(),
+    );
+    lines.join("\n")
+}
+
+fn bool_label(value: bool) -> &'static str {
+    if value { "yes" } else { "no" }
+}
+
+fn compositor_backend_label(backend: Option<CompositorBackend>) -> &'static str {
+    match backend {
+        Some(CompositorBackend::Metal) => "metal",
+        Some(CompositorBackend::CpuFallback) => "cpu-fallback",
+        None => "unknown",
+    }
+}
+
+fn encode_backend_label(backend: Option<EncodeBackend>) -> &'static str {
+    match backend {
+        Some(EncodeBackend::HardwareVideotoolbox) => "hardware-videotoolbox",
+        Some(EncodeBackend::SoftwareX264) => "software-x264",
+        None => "unknown",
+    }
+}
+
+/// Build the structured preflight report from the live diagnostics snapshot and emit it as an
+/// error health event. The start path stays blocked and writes no file; this only enriches the
+/// failure surface (Diagnostics) so the failing owner is copyable.
+async fn emit_preflight_failure_report(
+    state: &AppState,
+    session_id: &str,
+    owner: &str,
+    reason: &str,
+    width: u32,
+    height: u32,
+    target_fps: u32,
+    require_camera: bool,
+    require_screen: bool,
+) {
+    let snapshot = { state.diagnostics.lock().await.clone() };
+    let maintenance = state.ffmpeg_work.snapshot();
+    let report = format_preflight_failure_report(&PreflightFailureReport {
+        owner,
+        reason,
+        width,
+        height,
+        target_fps,
+        require_camera,
+        require_screen,
+        compositor_backend: compositor_backend_label(snapshot.compositor_backend),
+        compositor_cpu_fallback_frames: snapshot.compositor_cpu_fallback_frames,
+        encode_backend: encode_backend_label(snapshot.encode_backend),
+        camera_frame_age_ms: snapshot.preview_camera_frame_age_ms,
+        camera_sample_pts_gap_p95_ms: snapshot.preview_camera_sample_pts_gap_p95_ms,
+        screen_frame_age_ms: snapshot.preview_screen_frame_age_ms,
+        maintenance_active: maintenance.maintenance_running,
+    });
+    let _ = emit_health_event(
+        state,
+        Some(session_id),
+        HealthLevel::Error,
+        "recording-preflight-report",
+        &report,
+    );
+}
+
 fn recording_startup_source_requirements(scene: &Scene) -> CompositorStartupSourceRequirements {
     let mut require_camera_source = false;
     let mut require_screen_source = false;
@@ -5095,6 +5250,75 @@ mod tests {
         StreamTargetState, default_stream_targets,
     };
     use tokio::sync::broadcast;
+
+    #[test]
+    fn preflight_failure_report_includes_owner_and_context() {
+        let report = format_preflight_failure_report(&PreflightFailureReport {
+            owner: "camera source cadence",
+            reason: "camera sample PTS cadence did not settle",
+            width: 1920,
+            height: 1080,
+            target_fps: 30,
+            require_camera: true,
+            require_screen: true,
+            compositor_backend: "metal",
+            compositor_cpu_fallback_frames: 0,
+            encode_backend: "hardware-videotoolbox",
+            camera_frame_age_ms: Some(420),
+            camera_sample_pts_gap_p95_ms: Some(180.0),
+            screen_frame_age_ms: Some(33),
+            maintenance_active: false,
+        });
+        assert!(report.contains("camera source cadence"));
+        assert!(report.contains("Reason: camera sample PTS cadence did not settle"));
+        assert!(report.contains("1920x1080 @ 30fps"));
+        assert!(report.contains("Camera: frame age 420ms"));
+        assert!(report.contains("metal"));
+        assert!(report.contains("hardware-videotoolbox"));
+    }
+
+    #[test]
+    fn preflight_failure_report_omits_camera_line_when_camera_not_required() {
+        let report = format_preflight_failure_report(&PreflightFailureReport {
+            owner: "compositor startup",
+            reason: "compositor did not produce ready frames",
+            width: 2560,
+            height: 1440,
+            target_fps: 30,
+            require_camera: false,
+            require_screen: true,
+            compositor_backend: "cpu-fallback",
+            compositor_cpu_fallback_frames: 12,
+            encode_backend: "software-x264",
+            camera_frame_age_ms: None,
+            camera_sample_pts_gap_p95_ms: None,
+            screen_frame_age_ms: Some(50),
+            maintenance_active: true,
+        });
+        assert!(!report.contains("Camera:"));
+        assert!(report.contains("Screen/window: frame age 50ms"));
+        assert!(report.contains("Maintenance job active during start: yes"));
+        assert!(report.contains("cpu-fallback"));
+    }
+
+    #[test]
+    fn preflight_backend_labels_map_enum_variants() {
+        assert_eq!(compositor_backend_label(Some(CompositorBackend::Metal)), "metal");
+        assert_eq!(
+            compositor_backend_label(Some(CompositorBackend::CpuFallback)),
+            "cpu-fallback"
+        );
+        assert_eq!(compositor_backend_label(None), "unknown");
+        assert_eq!(
+            encode_backend_label(Some(EncodeBackend::HardwareVideotoolbox)),
+            "hardware-videotoolbox"
+        );
+        assert_eq!(
+            encode_backend_label(Some(EncodeBackend::SoftwareX264)),
+            "software-x264"
+        );
+        assert_eq!(encode_backend_label(None), "unknown");
+    }
 
     fn base_params(record_enabled: bool, stream_enabled: bool) -> StartSessionParams {
         StartSessionParams {

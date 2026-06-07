@@ -2580,7 +2580,10 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       }
       const optimisticRecording = isActiveRecordingState(recordingRef.current.state)
         ? recordingRef.current
-        : { state: 'starting' as const, message: 'Starting capture session.' }
+        : {
+            state: 'starting' as const,
+            message: streamingOverride ? 'Preparing livestream…' : 'Preparing recording…'
+          }
       applyRecordingStatus(optimisticRecording)
       const nextSessionParams: StartSessionParams = streamingOverride
         ? {

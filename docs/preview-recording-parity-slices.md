@@ -16,7 +16,7 @@ the remaining work.
 |---|---|---|---|
 | 1 | Native preview is the confirmed live default | ✅ already wired as default | on-device eye-check (user) |
 | 2 | Hardware VideoToolbox zero-copy = default recorder | ⏳ prepared, default-flip needs decision | regression risk + on-device (user) |
-| 3 | "Preparing recording…" UX + copyable preflight report | ⬜ todo | deterministic + smoke |
+| 3 | "Preparing recording…" UX + copyable preflight report | ✅ done | deterministic (cargo test + typecheck) |
 | 4 | Studio health badge + degraded indicator | ✅ done | deterministic (vitest + typecheck + build) |
 | 5 | Developer-only synthetic camera source (selectable) | ⬜ todo | deterministic (cargo test) |
 | 6 | ProgramFrame contract + parity check (hardening) | ⬜ todo | deterministic (test:scripts) |
@@ -74,6 +74,27 @@ flip + revert-if-bad, or operator flips after their own real-camera gate.
 `encode backend = hardware-videotoolbox`, `zero-copy > 0`, `raw/Metal copied = 0`, startup
 PASS, final-file PASS, encoder speed ≥ 0.98×; plus a by-eye smooth 60s playback that
 includes an image-overlay scene.
+
+## Slice 3 — Preflight UX + copyable failure report ✅
+
+The hard part already existed: `await_recording_camera_cadence_ready` and
+`await_recording_startup_barrier` (`crates/videorc-backend/src/recording.rs`) already
+`bail!` and block the start with no file written on timeout. This slice added the
+user-facing surface without touching that tuned block logic:
+
+- **"Preparing recording…" label** — the renderer's optimistic start state now reads
+  *Preparing recording…* (or *Preparing livestream…*) through the whole cadence-guard +
+  startup-barrier window; preview stays live (it's independent of recording state).
+- **Copyable failure report** — on preflight failure, `emit_preflight_failure_report`
+  builds a structured, owner-tagged report (source / compositor / encoder / camera+screen
+  frame ages / maintenance) from the live diagnostics snapshot and emits it as an error
+  health event, so it surfaces (copyable) in Diagnostics — the architecturally correct home
+  per the "Studio = compact badge, full detail in Diagnostics" decision. The builder
+  (`format_preflight_failure_report`) is pure and unit-tested (3 cases).
+
+Verified: `cargo test -p videorc-backend preflight` (3 new pass), `cargo clippy -D warnings`,
+desktop `vitest` (40 pass), `typecheck`, `build`. Operator check: start with a covered
+camera lens or a disconnected source → start blocks, no file, report appears in Diagnostics.
 
 ## Slice 4 — Studio health badge ✅
 
