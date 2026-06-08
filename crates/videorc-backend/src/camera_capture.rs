@@ -288,6 +288,8 @@ mod macos {
                 kind: DeviceKind::Camera,
                 status: status.clone(),
                 detail: Some(detail),
+                width: None,
+                height: None,
             });
         }
 
@@ -447,6 +449,8 @@ mod macos {
             kind: DeviceKind::Camera,
             status: DeviceStatus::Unavailable,
             detail: Some(detail.to_string()),
+            width: None,
+            height: None,
         }
     }
 

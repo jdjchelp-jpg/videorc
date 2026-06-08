@@ -104,6 +104,8 @@ mod macos {
                             detail: Some(format!(
                                 "ScreenCaptureKit display discovery failed: {error}"
                             )),
+                            width: None,
+                            height: None,
                         },
                         Device {
                             id: "window:screencapturekit-unavailable".to_string(),
@@ -113,6 +115,8 @@ mod macos {
                             detail: Some(format!(
                                 "ScreenCaptureKit window discovery failed: {error}"
                             )),
+                            width: None,
+                            height: None,
                         },
                     ],
                     warnings: vec![format!("ScreenCaptureKit source discovery failed: {error}")],
@@ -126,6 +130,8 @@ mod macos {
                         kind: DeviceKind::Screen,
                         status: DeviceStatus::Unavailable,
                         detail: Some("ScreenCaptureKit display discovery timed out.".to_string()),
+                        width: None,
+                        height: None,
                     },
                     Device {
                         id: "window:screencapturekit-timeout".to_string(),
@@ -133,6 +139,8 @@ mod macos {
                         kind: DeviceKind::Window,
                         status: DeviceStatus::Unavailable,
                         detail: Some("ScreenCaptureKit window discovery timed out.".to_string()),
+                        width: None,
+                        height: None,
                     },
                 ],
                 warnings: vec!["ScreenCaptureKit source discovery timed out.".to_string()],
@@ -156,6 +164,8 @@ mod macos {
                 detail: Some(format!(
                     "Native ScreenCaptureKit display {display_id} ({width}x{height}). Recording currently uses the FFmpeg fallback bridge."
                 )),
+                width: Some(positive_u32(width)),
+                height: Some(positive_u32(height)),
             });
         }
 
@@ -166,6 +176,7 @@ mod macos {
                 continue;
             }
             let window_id = unsafe { window.windowID() };
+            let frame = unsafe { window.frame() };
             let app_name = window_application_name(&window);
             let title = window_title(&window);
             let name = window_name(app_name.as_deref(), title.as_deref(), window_id, index);
@@ -184,6 +195,8 @@ mod macos {
                 kind: DeviceKind::Window,
                 status: DeviceStatus::Available,
                 detail: Some(detail),
+                width: Some(frame.size.width.round().max(1.0) as u32),
+                height: Some(frame.size.height.round().max(1.0) as u32),
             });
         }
 
@@ -200,6 +213,8 @@ mod macos {
                     "ScreenCaptureKit did not return a display. macOS Screen Recording permission may be missing."
                         .to_string(),
                 ),
+                width: None,
+                height: None,
             });
         }
 
@@ -213,6 +228,8 @@ mod macos {
                 kind: DeviceKind::Window,
                 status: DeviceStatus::Unavailable,
                 detail: Some("ScreenCaptureKit did not return any on-screen windows.".to_string()),
+                width: None,
+                height: None,
             });
         }
 
@@ -229,6 +246,10 @@ mod macos {
             && layer == 0
             && (title.as_deref().is_some_and(|value| !value.is_empty())
                 || app_name.as_deref().is_some_and(|value| !value.is_empty()))
+    }
+
+    fn positive_u32(value: isize) -> u32 {
+        u32::try_from(value.max(1)).unwrap_or(u32::MAX)
     }
 
     fn window_name(

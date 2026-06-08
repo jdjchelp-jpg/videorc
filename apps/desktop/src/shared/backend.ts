@@ -28,6 +28,8 @@ export interface Device {
   kind: DeviceKind
   status: DeviceStatus
   detail?: string
+  width?: number
+  height?: number
 }
 
 export interface DeviceList {

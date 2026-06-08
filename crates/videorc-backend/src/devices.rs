@@ -41,6 +41,8 @@ pub async fn list_devices(ffmpeg_path: &str) -> DeviceList {
                 kind: DeviceKind::Screen,
                 status: DeviceStatus::Unavailable,
                 detail: Some("This spike only probes macOS devices.".to_string()),
+                width: None,
+                height: None,
             },
             Device {
                 id: "window:unsupported-platform".to_string(),
@@ -48,6 +50,8 @@ pub async fn list_devices(ffmpeg_path: &str) -> DeviceList {
                 kind: DeviceKind::Window,
                 status: DeviceStatus::Unavailable,
                 detail: Some("This spike only probes macOS devices.".to_string()),
+                width: None,
+                height: None,
             },
             system_audio_placeholder(),
         ]);
@@ -102,6 +106,8 @@ pub async fn list_devices(ffmpeg_path: &str) -> DeviceList {
                                     "FFmpeg avfoundation fallback camera path; native AVFoundation camera discovery is preferred."
                                         .to_string()
                                 }),
+                                width: None,
+                                height: None,
                             });
                         }
                     }
@@ -116,6 +122,8 @@ pub async fn list_devices(ffmpeg_path: &str) -> DeviceList {
                                     "FFmpeg avfoundation fallback; native CoreAudio probe did not return an available input."
                                         .to_string(),
                                 ),
+                                width: None,
+                                height: None,
                             });
                         }
                     }
@@ -174,6 +182,8 @@ fn avfoundation_screen_devices(av_devices: &[AvFoundationDevice]) -> Vec<Device>
                 "Capturable FFmpeg avfoundation screen source used by current preview and recording."
                     .to_string(),
             ),
+            width: None,
+            height: None,
         })
         .collect()
 }
@@ -188,6 +198,8 @@ fn missing_avfoundation_screen_device() -> Device {
             "FFmpeg did not report a screen device. macOS Screen Recording permission may be missing."
                 .to_string(),
         ),
+        width: None,
+        height: None,
     }
 }
 
@@ -198,6 +210,8 @@ fn avfoundation_probe_failed_screen_device() -> Device {
         kind: DeviceKind::Screen,
         status: DeviceStatus::Unavailable,
         detail: Some("FFmpeg avfoundation probing failed.".to_string()),
+        width: None,
+        height: None,
     }
 }
 
@@ -208,6 +222,8 @@ fn system_audio_placeholder() -> Device {
         kind: DeviceKind::SystemAudio,
         status: DeviceStatus::Unavailable,
         detail: Some("System audio capture depends on the native macOS adapter.".to_string()),
+        width: None,
+        height: None,
     }
 }
 
@@ -589,6 +605,8 @@ mod tests {
                 kind: DeviceKind::Screen,
                 status: DeviceStatus::Available,
                 detail: None,
+                width: None,
+                height: None,
             },
             Device {
                 id: "window:screencapturekit:42".to_string(),
@@ -596,6 +614,8 @@ mod tests {
                 kind: DeviceKind::Window,
                 status: DeviceStatus::Available,
                 detail: None,
+                width: None,
+                height: None,
             },
             Device {
                 id: "camera:native".to_string(),
@@ -603,6 +623,8 @@ mod tests {
                 kind: DeviceKind::Camera,
                 status: DeviceStatus::Available,
                 detail: None,
+                width: None,
+                height: None,
             },
         ]);
 
@@ -647,6 +669,8 @@ mod tests {
                 kind: DeviceKind::Screen,
                 status: DeviceStatus::Available,
                 detail: None,
+                width: None,
+                height: None,
             },
             Device {
                 id: "screen:screencapturekit:222".to_string(),
@@ -654,6 +678,8 @@ mod tests {
                 kind: DeviceKind::Screen,
                 status: DeviceStatus::Available,
                 detail: None,
+                width: None,
+                height: None,
             },
         ];
         let av_devices = vec![

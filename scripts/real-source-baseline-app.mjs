@@ -46,6 +46,7 @@ import { analyzeStartupResolution, writeStartupReports } from './lib/startup-res
 import { DEFAULT_ACCEPTANCE_GATES, evaluateAcceptance } from './lib/acceptance-gate.mjs'
 import { classifyMediaQualityMode } from './lib/media-quality-mode.mjs'
 import { classifyObsParityEvidence } from './lib/obs-parity-evidence.mjs'
+import { evaluateRequired4kSourcePreflight } from './lib/source-preflight.mjs'
 import {
   claimsNativePreview,
   formatTransportHonesty,
@@ -467,11 +468,11 @@ function assertRequiredSourcesAvailable(sources) {
 
 function assertRequiredNativeSourcesForAccepted4k(sources) {
   if (!requires4kMediaEvidence()) return
-  if (sources.screen && !sources.screen.id.startsWith(NATIVE_PREFIX.screen)) {
-    throw new Error(
-      `4K accepted evidence requires a ScreenCaptureKit screen source, got ${sources.screen.name} [${sources.screen.id}]. ` +
-        'ScreenCaptureKit discovery must complete, or force a screen:screencapturekit:* id with VIDEORC_BASELINE_SCREEN_ID.'
-    )
+  const preflight = evaluateRequired4kSourcePreflight(sources, requestedOutputSettings(), {
+    nativeScreenPrefix: NATIVE_PREFIX.screen,
+  })
+  if (!preflight.pass) {
+    throw new Error(preflight.failures.join(' '))
   }
 }
 
@@ -486,12 +487,18 @@ function requiredSourceBlocker(label, device, { disabled, override, disableHint 
 
 function reportSelection(sources, warnings) {
   const describe = (label, device) =>
-    `  ${label}: ${device ? `${device.name} [${device.id}] (${device.status})` : 'none'}`
+    `  ${label}: ${device ? `${device.name} [${device.id}] (${device.status})${formatDeviceDimensions(device)}` : 'none'}`
   console.log('Selected real sources:')
   console.log(describe('screen', sources.screen))
   console.log(describe('camera', sources.camera))
   console.log(describe('microphone', sources.microphone))
   for (const warning of warnings) console.log(`  device warning: ${warning}`)
+}
+
+function formatDeviceDimensions(device) {
+  return typeof device?.width === 'number' && typeof device?.height === 'number'
+    ? ` ${device.width}x${device.height}`
+    : ''
 }
 
 async function waitForPreviewSourceReadiness(ws, sources) {
@@ -1591,6 +1598,8 @@ function sourceManifest(source) {
   return {
     id: source.id ?? null,
     name: source.name ?? null,
+    width: source.width ?? null,
+    height: source.height ?? null,
   }
 }
 

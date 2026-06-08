@@ -358,6 +358,8 @@ pub fn list_native_microphones() -> Vec<Device> {
             kind: DeviceKind::Microphone,
             status: DeviceStatus::Unavailable,
             detail: Some(error.to_string()),
+            width: None,
+            height: None,
         }],
     }
 }
@@ -681,6 +683,8 @@ fn list_platform_microphones() -> Result<Vec<Device>> {
             } else {
                 "Native CoreAudio input".to_string()
             }),
+            width: None,
+            height: None,
         });
     }
 
