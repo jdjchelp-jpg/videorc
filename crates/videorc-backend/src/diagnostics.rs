@@ -7,9 +7,9 @@ use chrono::Utc;
 use crate::ffmpeg_work::FfmpegWorkSnapshot;
 use crate::frame_store::FrameStoreStats;
 use crate::protocol::{
-    CompositorBackend, DiagnosticBottleneck, DiagnosticStats, PermissionPane, PreviewCameraStatus,
-    PreviewImagePollCounts, PreviewScreenStatus, PreviewSurfaceBacking, PreviewTransport,
-    StreamHealth,
+    CameraCapabilityFormat, CompositorBackend, DiagnosticBottleneck, DiagnosticStats,
+    PermissionPane, PreviewCameraStatus, PreviewImagePollCounts, PreviewScreenStatus,
+    PreviewSurfaceBacking, PreviewTransport, StreamHealth,
 };
 use crate::source_registry::SourceRegistrySnapshot;
 
@@ -159,6 +159,9 @@ pub fn idle_diagnostics() -> DiagnosticStats {
         preview_camera_frame_age_ms: None,
         preview_camera_source_fps: None,
         preview_camera_dropped_frames: 0,
+        preview_camera_capability_device_id: None,
+        preview_camera_capability_formats: Vec::new(),
+        preview_camera_capability_error: None,
         preview_camera_capture_gap_p95_ms: None,
         preview_camera_capture_gap_max_ms: None,
         preview_camera_sample_pts_gap_p95_ms: None,
@@ -537,6 +540,19 @@ pub fn apply_preview_camera_source_stats(
     if status.dropped_frames > 0 {
         stats.bottleneck = DiagnosticBottleneck::Capture;
     }
+    stats.updated_at = Utc::now().to_rfc3339();
+    stats
+}
+
+pub fn apply_preview_camera_capability_stats(
+    mut stats: DiagnosticStats,
+    camera_id: Option<String>,
+    formats: Vec<CameraCapabilityFormat>,
+    error: Option<String>,
+) -> DiagnosticStats {
+    stats.preview_camera_capability_device_id = camera_id;
+    stats.preview_camera_capability_formats = formats;
+    stats.preview_camera_capability_error = error;
     stats.updated_at = Utc::now().to_rfc3339();
     stats
 }
@@ -1117,6 +1133,9 @@ mod tests {
         assert_eq!(stats.preview_camera_frame_age_ms, None);
         assert_eq!(stats.preview_camera_source_fps, None);
         assert_eq!(stats.preview_camera_dropped_frames, 0);
+        assert_eq!(stats.preview_camera_capability_device_id, None);
+        assert!(stats.preview_camera_capability_formats.is_empty());
+        assert_eq!(stats.preview_camera_capability_error, None);
         assert_eq!(stats.preview_screen_frame_age_ms, None);
         assert_eq!(stats.preview_screen_source_fps, None);
         assert_eq!(stats.preview_screen_dropped_frames, 0);
@@ -1309,6 +1328,29 @@ mod tests {
         assert_eq!(stats.preview_camera_row_copy_p95_ms, Some(4.2));
         assert_eq!(stats.preview_camera_publish_p95_ms, Some(0.8));
         assert_eq!(stats.preview_camera_frame_bytes, 3_686_400);
+    }
+
+    #[test]
+    fn preview_camera_capability_stats_record_format_matrix() {
+        let stats = apply_preview_camera_capability_stats(
+            idle_diagnostics(),
+            Some("camera:avfoundation-native:abc".to_string()),
+            vec![CameraCapabilityFormat {
+                width: 3840,
+                height: 2160,
+                min_fps: 29.97,
+                max_fps: 60.0,
+            }],
+            None,
+        );
+
+        assert_eq!(
+            stats.preview_camera_capability_device_id.as_deref(),
+            Some("camera:avfoundation-native:abc")
+        );
+        assert_eq!(stats.preview_camera_capability_formats.len(), 1);
+        assert_eq!(stats.preview_camera_capability_formats[0].width, 3840);
+        assert_eq!(stats.preview_camera_capability_error, None);
     }
 
     #[test]

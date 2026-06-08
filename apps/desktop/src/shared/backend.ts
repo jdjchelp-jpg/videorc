@@ -1036,6 +1036,13 @@ export interface PreviewCameraStatus {
   message?: string
 }
 
+export interface CameraCapabilityFormat {
+  width: number
+  height: number
+  minFps: number
+  maxFps: number
+}
+
 export type PreviewScreenState = 'starting' | 'live' | 'permission-needed' | 'source-missing' | 'failed'
 export type PreviewScreenSourceKind = 'screen' | 'window'
 
@@ -1283,6 +1290,12 @@ export interface DiagnosticStats {
   previewCameraFrameAgeMs?: number
   previewCameraSourceFps?: number
   previewCameraDroppedFrames: number
+  /** Native AVFoundation camera whose capability matrix was sampled. */
+  previewCameraCapabilityDeviceId?: string
+  /** Structured AVFoundation camera format matrix: one entry per resolution/fps range. */
+  previewCameraCapabilityFormats: CameraCapabilityFormat[]
+  /** Human-readable reason the camera capability matrix could not be sampled. */
+  previewCameraCapabilityError?: string
   /** P95 interval between AVFoundation camera sample callbacks. */
   previewCameraCaptureGapP95Ms?: number
   /** Max interval between AVFoundation camera sample callbacks. */

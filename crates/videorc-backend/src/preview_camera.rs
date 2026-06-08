@@ -10,15 +10,19 @@ use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
 use uuid::Uuid;
 
-use crate::camera_capture::parse_native_camera_id;
+use crate::camera_capture::{
+    CameraFormatSummary, camera_capability_matrix_for_id, parse_native_camera_id,
+};
 use crate::diagnostics::{
-    PreviewCameraCaptureTimingStats, apply_preview_camera_capture_timing_stats,
-    apply_preview_camera_source_stats, apply_preview_source_frame_store_stats,
+    PreviewCameraCaptureTimingStats, apply_preview_camera_capability_stats,
+    apply_preview_camera_capture_timing_stats, apply_preview_camera_source_stats,
+    apply_preview_source_frame_store_stats,
 };
 use crate::frame_store::{FrameHandle, FrameStore, FrameStoreStats};
 use crate::protocol::{
-    CameraShape, CameraSize, CameraTransformMode, LayoutPreset, LayoutSettings,
-    PreviewCameraStartParams, PreviewCameraState, PreviewCameraStatus, VideoSettings,
+    CameraCapabilityFormat, CameraShape, CameraSize, CameraTransformMode, LayoutPreset,
+    LayoutSettings, PreviewCameraStartParams, PreviewCameraState, PreviewCameraStatus,
+    VideoSettings,
 };
 use crate::source_registry::{SourceConsumerReason, SourceKey};
 use crate::source_status::SourceLifecycleStatus;
@@ -228,12 +232,14 @@ pub async fn start_preview_camera(
 ) -> PreviewCameraStatus {
     let Some(camera_id) = params.sources.camera_id.clone() else {
         stop_preview_camera(&state).await;
+        refresh_camera_capability_diagnostics(&state, None).await;
         let status = status_for_missing_camera(None, "No camera is selected.");
         set_camera_status(&state, status.clone()).await;
         return status;
     };
     let Some(unique_id) = parse_native_camera_id(&camera_id) else {
         stop_preview_camera(&state).await;
+        refresh_camera_capability_diagnostics(&state, Some(camera_id.clone())).await;
         let status = status_for_missing_camera(
             Some(camera_id),
             "Selected camera is not a native AVFoundation camera.",
@@ -241,6 +247,7 @@ pub async fn start_preview_camera(
         set_camera_status(&state, status.clone()).await;
         return status;
     };
+    refresh_camera_capability_diagnostics(&state, Some(camera_id.clone())).await;
 
     let target_fps = params.video.fps.clamp(1, 120);
     let source_key = SourceKey::camera(camera_id.clone());
@@ -560,6 +567,35 @@ pub async fn latest_preview_camera_png(
         .write_image(&rgba, width, height, image::ExtendedColorType::Rgba8)
         .ok()?;
     Some(png)
+}
+
+async fn refresh_camera_capability_diagnostics(state: &AppState, camera_id: Option<String>) {
+    let (formats, error) = match camera_id.as_deref() {
+        Some(camera_id) => match camera_capability_matrix_for_id(camera_id) {
+            Ok(formats) => (
+                formats
+                    .into_iter()
+                    .map(camera_capability_format_for_protocol)
+                    .collect(),
+                None,
+            ),
+            Err(error) => (Vec::new(), Some(error)),
+        },
+        None => (Vec::new(), None),
+    };
+
+    let mut diagnostics = state.diagnostics.lock().await;
+    *diagnostics =
+        apply_preview_camera_capability_stats(diagnostics.clone(), camera_id, formats, error);
+}
+
+fn camera_capability_format_for_protocol(format: CameraFormatSummary) -> CameraCapabilityFormat {
+    CameraCapabilityFormat {
+        width: format.width,
+        height: format.height,
+        min_fps: format.min_fps,
+        max_fps: format.max_fps,
+    }
 }
 
 fn preview_camera_png_max_width(requested_max_width: Option<u32>) -> u32 {
@@ -989,12 +1025,12 @@ mod macos {
     use objc2_core_media::{CMSampleBuffer, CMTime, CMVideoFormatDescriptionGetDimensions};
     use objc2_core_video::{
         CVPixelBuffer, CVPixelBufferGetBaseAddress, CVPixelBufferGetBaseAddressOfPlane,
-        CVPixelBufferGetBytesPerRow,
-        CVPixelBufferGetBytesPerRowOfPlane, CVPixelBufferGetHeight, CVPixelBufferGetHeightOfPlane,
-        CVPixelBufferGetPixelFormatType, CVPixelBufferGetPlaneCount, CVPixelBufferGetWidth,
-        CVPixelBufferLockBaseAddress, CVPixelBufferLockFlags, CVPixelBufferUnlockBaseAddress,
-        kCVPixelBufferHeightKey, kCVPixelBufferPixelFormatTypeKey, kCVPixelBufferWidthKey,
-        kCVPixelFormatType_32BGRA, kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+        CVPixelBufferGetBytesPerRow, CVPixelBufferGetBytesPerRowOfPlane, CVPixelBufferGetHeight,
+        CVPixelBufferGetHeightOfPlane, CVPixelBufferGetPixelFormatType, CVPixelBufferGetPlaneCount,
+        CVPixelBufferGetWidth, CVPixelBufferLockBaseAddress, CVPixelBufferLockFlags,
+        CVPixelBufferUnlockBaseAddress, kCVPixelBufferHeightKey, kCVPixelBufferPixelFormatTypeKey,
+        kCVPixelBufferWidthKey, kCVPixelFormatType_32BGRA,
+        kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
         kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange, kCVPixelFormatType_422YpCbCr8,
         kCVPixelFormatType_422YpCbCr8_yuvs,
     };
@@ -1002,10 +1038,10 @@ mod macos {
     use rayon::prelude::*;
 
     use super::*;
-    use crate::color::{ycbcr_bt709_full_to_bgr, ycbcr_bt709_video_to_bgr};
     use crate::camera_capture::{
         CameraFormatSummary, NativeCameraPermission, choose_camera_format,
     };
+    use crate::color::{ycbcr_bt709_full_to_bgr, ycbcr_bt709_video_to_bgr};
 
     struct CameraDelegateIvars {
         shared: Arc<StdMutex<PreviewCameraShared>>,
@@ -1604,7 +1640,16 @@ mod macos {
         let y = unsafe { slice::from_raw_parts(y_base.cast::<u8>(), y_stride * y_height) };
         let cbcr =
             unsafe { slice::from_raw_parts(cbcr_base.cast::<u8>(), cbcr_stride * cbcr_height) };
-        nv12_to_bgra(y, y_stride, cbcr, cbcr_stride, width, height, full_range, out);
+        nv12_to_bgra(
+            y,
+            y_stride,
+            cbcr,
+            cbcr_stride,
+            width,
+            height,
+            full_range,
+            out,
+        );
         true
     }
 

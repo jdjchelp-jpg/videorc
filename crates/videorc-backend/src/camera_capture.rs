@@ -63,6 +63,27 @@ pub fn native_camera_name_for_id(camera_id: &str) -> Option<String> {
     }
 }
 
+pub fn camera_capability_matrix_for_id(
+    camera_id: &str,
+) -> Result<Vec<CameraFormatSummary>, String> {
+    let unique_id = parse_native_camera_id(camera_id)
+        .ok_or_else(|| "Selected camera is not a native AVFoundation camera.".to_string())?;
+
+    #[cfg(target_os = "macos")]
+    {
+        macos::camera_capability_matrix_for_unique_id(&unique_id)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = unique_id;
+        Err(
+            "Native AVFoundation camera capability diagnostics are only available on macOS."
+                .to_string(),
+        )
+    }
+}
+
 pub fn native_camera_device_id(unique_id: &str) -> String {
     format!("{NATIVE_CAMERA_PREFIX}{}", encode_hex(unique_id.as_bytes()))
 }
@@ -119,6 +140,31 @@ pub fn choose_camera_format(
                 format.width, format.height, format.max_fps
             )),
         })
+}
+
+pub fn normalize_camera_formats(mut formats: Vec<CameraFormatSummary>) -> Vec<CameraFormatSummary> {
+    formats.retain(|format| {
+        format.width > 0
+            && format.height > 0
+            && format.min_fps.is_finite()
+            && format.max_fps.is_finite()
+            && format.max_fps > 0.0
+            && format.min_fps <= format.max_fps
+    });
+    formats.sort_by(|left, right| {
+        left.width
+            .cmp(&right.width)
+            .then(left.height.cmp(&right.height))
+            .then(left.min_fps.total_cmp(&right.min_fps))
+            .then(left.max_fps.total_cmp(&right.max_fps))
+    });
+    formats.dedup_by(|left, right| {
+        left.width == right.width
+            && left.height == right.height
+            && left.min_fps == right.min_fps
+            && left.max_fps == right.max_fps
+    });
+    formats
 }
 
 fn encode_hex(bytes: &[u8]) -> String {
@@ -188,7 +234,7 @@ mod macos {
             let name = unsafe { camera.localizedName() };
             let name =
                 ns_string_to_string(&name).unwrap_or_else(|| format!("Camera {}", index + 1));
-            let formats = camera_formats(&camera);
+            let formats = normalize_camera_formats(camera_formats(&camera));
             let active_format = active_camera_format_detail(&camera);
             let permission_detail = camera_permission_detail(permission);
             let detail = match (active_format, permission_detail) {
@@ -241,6 +287,20 @@ mod macos {
         let camera = unsafe { AVCaptureDevice::deviceWithUniqueID(&unique_id) }?;
         let name = unsafe { camera.localizedName() };
         ns_string_to_string(&name)
+    }
+
+    pub fn camera_capability_matrix_for_unique_id(
+        unique_id: &str,
+    ) -> Result<Vec<CameraFormatSummary>, String> {
+        let unique_id = NSString::from_str(unique_id);
+        let camera = unsafe { AVCaptureDevice::deviceWithUniqueID(&unique_id) }
+            .ok_or_else(|| "Camera device is missing.".to_string())?;
+        let formats = normalize_camera_formats(camera_formats(&camera));
+        if formats.is_empty() {
+            Err("Camera did not report usable AVFoundation video formats.".to_string())
+        } else {
+            Ok(formats)
+        }
     }
 
     fn native_camera_permission() -> NativeCameraPermission {
@@ -444,5 +504,53 @@ mod tests {
 
         assert_eq!(choice.format.width, 1280);
         assert!(choice.fallback_reason.unwrap().contains("not available"));
+    }
+
+    #[test]
+    fn normalizes_camera_format_matrix_for_diagnostics() {
+        let formats = normalize_camera_formats(vec![
+            CameraFormatSummary {
+                width: 0,
+                height: 2160,
+                min_fps: 1.0,
+                max_fps: 60.0,
+            },
+            CameraFormatSummary {
+                width: 3840,
+                height: 2160,
+                min_fps: 1.0,
+                max_fps: 60.0,
+            },
+            CameraFormatSummary {
+                width: 1920,
+                height: 1080,
+                min_fps: 1.0,
+                max_fps: 30.0,
+            },
+            CameraFormatSummary {
+                width: 3840,
+                height: 2160,
+                min_fps: 1.0,
+                max_fps: 60.0,
+            },
+        ]);
+
+        assert_eq!(
+            formats,
+            vec![
+                CameraFormatSummary {
+                    width: 1920,
+                    height: 1080,
+                    min_fps: 1.0,
+                    max_fps: 30.0,
+                },
+                CameraFormatSummary {
+                    width: 3840,
+                    height: 2160,
+                    min_fps: 1.0,
+                    max_fps: 60.0,
+                },
+            ]
+        );
     }
 }

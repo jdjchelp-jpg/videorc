@@ -555,6 +555,13 @@ function summarizeDiagnostics(events, snapshots, startedAt, stopRequestedAt, opt
   const ffmpegProcs = collect('activeFfmpegProcesses')
   const ffprobeProcs = collect('activeFfprobeProcesses')
   const screenIosurfaceSamples = collectBooleans('previewScreenIosurfaceAvailable')
+  const lastValue = (key) => {
+    for (let index = measured.length - 1; index >= 0; index -= 1) {
+      const value = measured[index]?.[key]
+      if (value !== undefined && value !== null) return value
+    }
+    return null
+  }
 
   const previewMeasurement = options.previewMeasurement?.measurement ?? null
   const previewMeasurementStatus = previewMeasurement?.status ?? null
@@ -781,6 +788,9 @@ function summarizeDiagnostics(events, snapshots, startedAt, stopRequestedAt, opt
     previewCameraRowCopyP95Ms: maxOf(collect('previewCameraRowCopyP95Ms')),
     previewCameraPublishP95Ms: maxOf(collect('previewCameraPublishP95Ms')),
     previewCameraFrameBytes: maxOf(collect('previewCameraFrameBytes')) ?? 0,
+    previewCameraCapabilityDeviceId: lastValue('previewCameraCapabilityDeviceId'),
+    previewCameraCapabilityFormats: lastValue('previewCameraCapabilityFormats') ?? [],
+    previewCameraCapabilityError: lastValue('previewCameraCapabilityError'),
     previewScreenFrameAgeMs: maxOf(collect('previewScreenFrameAgeMs')),
     previewScreenNativeWidth: maxOf(collect('previewScreenNativeWidth')),
     previewScreenNativeHeight: maxOf(collect('previewScreenNativeHeight')),
@@ -1283,6 +1293,9 @@ function append4kMediaPathEvidence(lines, { sources, diagnostics, report, startu
     `- Source native/requested/actual: camera native ${formatDimensionSummary(media.cameraSource)} / requested ${formatRequestedSource(requested)} / compositor actual ${formatDimensionSummary(media.compositorCameraSource)}`
   )
   lines.push(
+    `- Camera capability matrix: ${formatCameraCapabilityMatrix(diagnostics.previewCameraCapabilityFormats)}${diagnostics.previewCameraCapabilityError ? ` | error ${diagnostics.previewCameraCapabilityError}` : ''}`
+  )
+  lines.push(
     `- Source native/requested/actual: screen native ${formatDimensionSummary(media.screenSourceNative ?? media.screenSource)} / requested ${formatDimensionSummaryOr(media.screenSourceRequested, formatRequestedSource(requested))} / actual ${formatDimensionSummary(media.screenSourceActual ?? media.screenSource)} / compositor actual ${formatDimensionSummary(media.compositorScreenSource)}`
   )
   lines.push(
@@ -1364,6 +1377,22 @@ function formatDimensionSummaryOr(summary, fallback) {
 
 function formatBoolean(value) {
   return typeof value === 'boolean' ? (value ? 'yes' : 'no') : 'n/a'
+}
+
+function formatCameraCapabilityMatrix(formats) {
+  if (!Array.isArray(formats) || formats.length === 0) return 'not reported'
+  const ranked = [...formats].sort((left, right) => {
+    const leftPixels = (finiteNumber(left.width) ?? 0) * (finiteNumber(left.height) ?? 0)
+    const rightPixels = (finiteNumber(right.width) ?? 0) * (finiteNumber(right.height) ?? 0)
+    return rightPixels - leftPixels || (finiteNumber(right.maxFps) ?? 0) - (finiteNumber(left.maxFps) ?? 0)
+  })
+  const examples = ranked.slice(0, 8).map((format) => {
+    const minFps = finiteNumber(format.minFps)
+    const maxFps = finiteNumber(format.maxFps)
+    const fps = minFps === maxFps ? `${formatNumber(maxFps)}fps` : `${formatNumber(minFps)}-${formatNumber(maxFps)}fps`
+    return `${formatDimension(format.width, format.height)}@${fps}`
+  })
+  return `${formats.length} ranges; top ${examples.join(', ')}`
 }
 
 function formatPreviewBoundsSuffix(summary) {

@@ -1037,6 +1037,15 @@ pub struct DiagnosticStats {
     pub preview_camera_frame_age_ms: Option<u64>,
     pub preview_camera_source_fps: Option<f64>,
     pub preview_camera_dropped_frames: u64,
+    /// Native AVFoundation camera whose capability matrix was sampled.
+    #[serde(default)]
+    pub preview_camera_capability_device_id: Option<String>,
+    /// Structured AVFoundation camera format matrix: one entry per resolution/fps range.
+    #[serde(default)]
+    pub preview_camera_capability_formats: Vec<CameraCapabilityFormat>,
+    /// Human-readable reason the camera capability matrix could not be sampled.
+    #[serde(default)]
+    pub preview_camera_capability_error: Option<String>,
     /// P95 interval between AVFoundation camera sample callbacks.
     #[serde(default)]
     pub preview_camera_capture_gap_p95_ms: Option<f64>,
@@ -1496,6 +1505,15 @@ pub struct PreviewCameraStatus {
     pub updated_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CameraCapabilityFormat {
+    pub width: u32,
+    pub height: u32,
+    pub min_fps: f64,
+    pub max_fps: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
