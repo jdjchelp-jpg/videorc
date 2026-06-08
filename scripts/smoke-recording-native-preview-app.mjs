@@ -692,7 +692,8 @@ function assertStatsHealthyStrict(scenario, stats, reports = {}, options = {}) {
   assertSourceCompleteCompositorHealthy({
     scenarioLabel: scenario.label,
     stats,
-    sourceComplete: sourceCompleteScene
+    sourceComplete: sourceCompleteScene,
+    requiredLiveSourceKinds: sourceCompleteScene ? ['screen'] : []
   })
   assertEncoderBridgeVideoOutputHealthy({
     scenarioLabel: scenario.label,

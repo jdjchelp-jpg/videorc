@@ -6,6 +6,15 @@ import { assertSourceCompleteCompositorHealthy } from './native-preview-source-g
 const healthyStats = () => ({
   maxCompositorCpuFallbackFrames: 0,
   maxEncoderBridgeMetalTargetFrames: 120,
+  maxCompositorSourceImportFailures: 0,
+  maxCompositorScreenSourceIosurfaceImportFrames: 120,
+  maxCompositorScreenSourceCvpixelbufferImportFrames: 0,
+  maxCompositorScreenSourceByteUploadFrames: 0,
+  maxCompositorScreenSourceImportFailures: 0,
+  maxCompositorCameraSourceIosurfaceImportFrames: 0,
+  maxCompositorCameraSourceCvpixelbufferImportFrames: 60,
+  maxCompositorCameraSourceByteUploadFrames: 0,
+  maxCompositorCameraSourceImportFailures: 0,
   lastCompositorFallbackReason: null
 })
 
@@ -28,6 +37,7 @@ describe('assertSourceCompleteCompositorHealthy', () => {
       assertSourceCompleteCompositorHealthy({
         scenarioLabel: 'source-complete',
         sourceComplete: true,
+        requiredLiveSourceKinds: ['screen'],
         stats: healthyStats()
       })
     )
@@ -43,6 +53,7 @@ describe('assertSourceCompleteCompositorHealthy', () => {
         assertSourceCompleteCompositorHealthy({
           scenarioLabel: 'source-complete',
           sourceComplete: true,
+          requiredLiveSourceKinds: ['screen'],
           stats
         }),
       /3 CPU fallback frame\(s\): camera source "Camera"/
@@ -58,9 +69,71 @@ describe('assertSourceCompleteCompositorHealthy', () => {
         assertSourceCompleteCompositorHealthy({
           scenarioLabel: 'source-complete',
           sourceComplete: true,
+          requiredLiveSourceKinds: ['screen'],
           stats
         }),
       /never reached the Metal compositor target path/
+    )
+  })
+
+  it('fails source-complete runs that do not declare required live sources', () => {
+    assert.throws(
+      () =>
+        assertSourceCompleteCompositorHealthy({
+          scenarioLabel: 'source-complete',
+          sourceComplete: true,
+          stats: healthyStats()
+        }),
+      /declared no required live source kinds/
+    )
+  })
+
+  it('fails source-complete runs with source import failures', () => {
+    const stats = healthyStats()
+    stats.maxCompositorSourceImportFailures = 1
+
+    assert.throws(
+      () =>
+        assertSourceCompleteCompositorHealthy({
+          scenarioLabel: 'source-complete',
+          sourceComplete: true,
+          requiredLiveSourceKinds: ['screen'],
+          stats
+        }),
+      /1 source import failure/
+    )
+  })
+
+  it('fails source-complete runs when the required screen source uses byte upload', () => {
+    const stats = healthyStats()
+    stats.maxCompositorScreenSourceByteUploadFrames = 4
+
+    assert.throws(
+      () =>
+        assertSourceCompleteCompositorHealthy({
+          scenarioLabel: 'source-complete',
+          sourceComplete: true,
+          requiredLiveSourceKinds: ['screen'],
+          stats
+        }),
+      /4 screen source byte-upload frame/
+    )
+  })
+
+  it('fails source-complete runs when required source imports are missing', () => {
+    const stats = healthyStats()
+    stats.maxCompositorCameraSourceIosurfaceImportFrames = 0
+    stats.maxCompositorCameraSourceCvpixelbufferImportFrames = 0
+
+    assert.throws(
+      () =>
+        assertSourceCompleteCompositorHealthy({
+          scenarioLabel: 'source-complete',
+          sourceComplete: true,
+          requiredLiveSourceKinds: ['camera'],
+          stats
+        }),
+      /expected camera source zero-copy import frames/
     )
   })
 })

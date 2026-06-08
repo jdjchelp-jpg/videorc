@@ -72,6 +72,18 @@ test('native preview diagnostics summarize only steady active recording samples 
         encoderBridgeLateDeadlineTicks: 2,
         compositorCpuFallbackFrames: 0,
         compositorFallbackReason: '',
+        compositorSourceIosurfaceImportFrames: 12,
+        compositorSourceCvpixelbufferImportFrames: 5,
+        compositorSourceByteUploadFrames: 0,
+        compositorSourceImportFailures: 0,
+        compositorScreenSourceIosurfaceImportFrames: 12,
+        compositorScreenSourceCvpixelbufferImportFrames: 0,
+        compositorScreenSourceByteUploadFrames: 0,
+        compositorScreenSourceImportFailures: 0,
+        compositorCameraSourceIosurfaceImportFrames: 0,
+        compositorCameraSourceCvpixelbufferImportFrames: 5,
+        compositorCameraSourceByteUploadFrames: 0,
+        compositorCameraSourceImportFailures: 0,
         activeFfmpegProcesses: 1
       },
       {
@@ -163,6 +175,18 @@ test('native preview diagnostics summarize only steady active recording samples 
   assert.equal(summary.maxEncoderBridgeDeadlineLagMaxMs, 12.3)
   assert.equal(summary.maxEncoderBridgeLateDeadlineTicks, 2)
   assert.equal(summary.maxCompositorCpuFallbackFrames, 0)
+  assert.equal(summary.maxCompositorSourceIosurfaceImportFrames, 12)
+  assert.equal(summary.maxCompositorSourceCvpixelbufferImportFrames, 5)
+  assert.equal(summary.maxCompositorSourceByteUploadFrames, 0)
+  assert.equal(summary.maxCompositorSourceImportFailures, 0)
+  assert.equal(summary.maxCompositorScreenSourceIosurfaceImportFrames, 12)
+  assert.equal(summary.maxCompositorScreenSourceCvpixelbufferImportFrames, 0)
+  assert.equal(summary.maxCompositorScreenSourceByteUploadFrames, 0)
+  assert.equal(summary.maxCompositorScreenSourceImportFailures, 0)
+  assert.equal(summary.maxCompositorCameraSourceIosurfaceImportFrames, 0)
+  assert.equal(summary.maxCompositorCameraSourceCvpixelbufferImportFrames, 5)
+  assert.equal(summary.maxCompositorCameraSourceByteUploadFrames, 0)
+  assert.equal(summary.maxCompositorCameraSourceImportFailures, 0)
   assert.equal(summary.lastCompositorFallbackReason, null)
   assert.equal(summary.steadySamples, 1)
   assert.equal(summary.measuredSamples, 1)

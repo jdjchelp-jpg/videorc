@@ -96,6 +96,30 @@ export function summarizeNativePreviewRecordingDiagnostics(
     maxEncoderBridgeDeadlineLagMaxMs: maxOf(collect('encoderBridgeDeadlineLagMaxMs')) ?? null,
     maxEncoderBridgeLateDeadlineTicks: maxOf(collectCounts('encoderBridgeLateDeadlineTicks')) ?? 0,
     maxCompositorCpuFallbackFrames: maxOf(collectCounts('compositorCpuFallbackFrames')) ?? 0,
+    maxCompositorSourceIosurfaceImportFrames:
+      maxOf(collectCounts('compositorSourceIosurfaceImportFrames')) ?? 0,
+    maxCompositorSourceCvpixelbufferImportFrames:
+      maxOf(collectCounts('compositorSourceCvpixelbufferImportFrames')) ?? 0,
+    maxCompositorSourceByteUploadFrames:
+      maxOf(collectCounts('compositorSourceByteUploadFrames')) ?? 0,
+    maxCompositorSourceImportFailures:
+      maxOf(collectCounts('compositorSourceImportFailures')) ?? 0,
+    maxCompositorCameraSourceIosurfaceImportFrames:
+      maxOf(collectCounts('compositorCameraSourceIosurfaceImportFrames')) ?? 0,
+    maxCompositorCameraSourceCvpixelbufferImportFrames:
+      maxOf(collectCounts('compositorCameraSourceCvpixelbufferImportFrames')) ?? 0,
+    maxCompositorCameraSourceByteUploadFrames:
+      maxOf(collectCounts('compositorCameraSourceByteUploadFrames')) ?? 0,
+    maxCompositorCameraSourceImportFailures:
+      maxOf(collectCounts('compositorCameraSourceImportFailures')) ?? 0,
+    maxCompositorScreenSourceIosurfaceImportFrames:
+      maxOf(collectCounts('compositorScreenSourceIosurfaceImportFrames')) ?? 0,
+    maxCompositorScreenSourceCvpixelbufferImportFrames:
+      maxOf(collectCounts('compositorScreenSourceCvpixelbufferImportFrames')) ?? 0,
+    maxCompositorScreenSourceByteUploadFrames:
+      maxOf(collectCounts('compositorScreenSourceByteUploadFrames')) ?? 0,
+    maxCompositorScreenSourceImportFailures:
+      maxOf(collectCounts('compositorScreenSourceImportFailures')) ?? 0,
     lastCompositorFallbackReason: lastString('compositorFallbackReason'),
     nativePreviewSamples: nativeDiagnosticsSamples + nativeSurfaceSamples,
     minPreviewPresentFps: minOf([...collect('previewPresentFps'), ...collectSurface('presentFps')]),
