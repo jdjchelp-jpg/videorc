@@ -43,6 +43,9 @@ const COMPOSITOR_LIVE_SOURCE_REFRESH_INTERVAL: Duration = Duration::from_millis(
 const COMPOSITOR_LIVE_SOURCE_STALE_RECOVERY_AFTER: Duration = Duration::from_secs(1);
 const COMPOSITOR_LIVE_SOURCE_CONTENDED_RECOVERY_AFTER: Duration = Duration::from_millis(125);
 const COMPOSITOR_LIVE_SOURCE_CONTENDED_RECOVERY_MISSES: u32 = 3;
+const COMPOSITOR_MISSING_SOURCE_PLACEHOLDER_AFTER: Duration = Duration::from_secs(2);
+const MISSING_SOURCE_PLACEHOLDER_WIDTH: usize = 16;
+const MISSING_SOURCE_PLACEHOLDER_HEIGHT: usize = 9;
 
 pub type CompositorSlot = std::sync::Arc<tokio::sync::Mutex<CompositorRuntime>>;
 pub type CompositorFrameStore =
@@ -1474,64 +1477,119 @@ fn try_gpu_compose(
         let source_crop = source_crop_from_transform(transform);
         match source.kind {
             SceneSourceKind::Camera => {
-                let frame = inputs
+                if let Some(frame) = inputs
                     .camera_frame
-                    .ok_or_else(|| missing_scene_source_frame_reason(source))?;
-                let (dest, crop) = gpu_source_placement(
-                    frame.width,
-                    frame.height,
-                    rect,
-                    matches!(layout.camera_fit, CameraFit::Fit) && layout.camera_zoom <= 100,
-                    source_crop,
-                    inputs.width,
-                    inputs.height,
-                )
-                .ok_or("camera source placement failed")?;
-                prepared_sources.push(PreparedGpuSource {
-                    pixels: PreparedGpuSourcePixels::Borrowed(&frame.bytes),
-                    kind: crate::metal_compositor::GpuSourceKind::Camera,
-                    iosurface: frame.source_iosurface.as_ref(),
-                    pixel_buffer: frame.source_pixel_buffer.as_ref(),
-                    width: frame.width as usize,
-                    height: frame.height as usize,
-                    dest,
-                    crop,
-                    mirror: layout.camera_mirror,
-                    circle: camera_circle_mask_applies(layout),
-                });
+                    .filter(|frame| !source_frame_is_too_stale(frame.captured_at))
+                {
+                    let (dest, crop) = gpu_source_placement(
+                        frame.width,
+                        frame.height,
+                        rect,
+                        matches!(layout.camera_fit, CameraFit::Fit) && layout.camera_zoom <= 100,
+                        source_crop,
+                        inputs.width,
+                        inputs.height,
+                    )
+                    .ok_or("camera source placement failed")?;
+                    prepared_sources.push(PreparedGpuSource {
+                        pixels: PreparedGpuSourcePixels::Borrowed(&frame.bytes),
+                        kind: crate::metal_compositor::GpuSourceKind::Camera,
+                        iosurface: frame.source_iosurface.as_ref(),
+                        pixel_buffer: frame.source_pixel_buffer.as_ref(),
+                        width: frame.width as usize,
+                        height: frame.height as usize,
+                        dest,
+                        crop,
+                        mirror: layout.camera_mirror,
+                        circle: camera_circle_mask_applies(layout),
+                    });
+                } else {
+                    let placeholder =
+                        missing_source_placeholder_bgra(&source.kind, inputs.sequence);
+                    let (dest, crop) = gpu_source_placement(
+                        placeholder.width as u32,
+                        placeholder.height as u32,
+                        rect,
+                        matches!(layout.camera_fit, CameraFit::Fit) && layout.camera_zoom <= 100,
+                        source_crop,
+                        inputs.width,
+                        inputs.height,
+                    )
+                    .ok_or("camera placeholder placement failed")?;
+                    prepared_sources.push(PreparedGpuSource {
+                        pixels: PreparedGpuSourcePixels::Owned(placeholder.bytes),
+                        kind: crate::metal_compositor::GpuSourceKind::Camera,
+                        iosurface: None,
+                        pixel_buffer: None,
+                        width: placeholder.width,
+                        height: placeholder.height,
+                        dest,
+                        crop,
+                        mirror: layout.camera_mirror,
+                        circle: camera_circle_mask_applies(layout),
+                    });
+                }
             }
             SceneSourceKind::Screen | SceneSourceKind::Window => {
-                let frame = inputs
+                let source_kind = match source.kind {
+                    SceneSourceKind::Screen => crate::metal_compositor::GpuSourceKind::Screen,
+                    SceneSourceKind::Window => crate::metal_compositor::GpuSourceKind::Window,
+                    SceneSourceKind::Camera | SceneSourceKind::TestPattern => {
+                        unreachable!("screen/window branch")
+                    }
+                };
+                if let Some(frame) = inputs
                     .screen_frame
-                    .ok_or_else(|| missing_scene_source_frame_reason(source))?;
-                let (dest, crop) = gpu_source_placement(
-                    frame.width,
-                    frame.height,
-                    rect,
-                    false,
-                    source_crop,
-                    inputs.width,
-                    inputs.height,
-                )
-                .ok_or("screen source placement failed")?;
-                prepared_sources.push(PreparedGpuSource {
-                    pixels: PreparedGpuSourcePixels::Borrowed(&frame.bytes),
-                    kind: match source.kind {
-                        SceneSourceKind::Screen => crate::metal_compositor::GpuSourceKind::Screen,
-                        SceneSourceKind::Window => crate::metal_compositor::GpuSourceKind::Window,
-                        SceneSourceKind::Camera | SceneSourceKind::TestPattern => {
-                            unreachable!("screen/window branch")
-                        }
-                    },
-                    iosurface: frame.source_iosurface.as_ref(),
-                    pixel_buffer: frame.source_pixel_buffer.as_ref(),
-                    width: frame.width as usize,
-                    height: frame.height as usize,
-                    dest,
-                    crop,
-                    mirror: false,
-                    circle: false,
-                });
+                    .filter(|frame| !source_frame_is_too_stale(frame.captured_at))
+                {
+                    let (dest, crop) = gpu_source_placement(
+                        frame.width,
+                        frame.height,
+                        rect,
+                        false,
+                        source_crop,
+                        inputs.width,
+                        inputs.height,
+                    )
+                    .ok_or("screen source placement failed")?;
+                    prepared_sources.push(PreparedGpuSource {
+                        pixels: PreparedGpuSourcePixels::Borrowed(&frame.bytes),
+                        kind: source_kind,
+                        iosurface: frame.source_iosurface.as_ref(),
+                        pixel_buffer: frame.source_pixel_buffer.as_ref(),
+                        width: frame.width as usize,
+                        height: frame.height as usize,
+                        dest,
+                        crop,
+                        mirror: false,
+                        circle: false,
+                    });
+                } else {
+                    let placeholder =
+                        missing_source_placeholder_bgra(&source.kind, inputs.sequence);
+                    let (dest, crop) = gpu_source_placement(
+                        placeholder.width as u32,
+                        placeholder.height as u32,
+                        rect,
+                        false,
+                        source_crop,
+                        inputs.width,
+                        inputs.height,
+                    )
+                    .ok_or("screen placeholder placement failed")?;
+                    prepared_sources.push(PreparedGpuSource {
+                        pixels: PreparedGpuSourcePixels::Owned(placeholder.bytes),
+                        kind: source_kind,
+                        iosurface: None,
+                        pixel_buffer: None,
+                        width: placeholder.width,
+                        height: placeholder.height,
+                        dest,
+                        crop,
+                        mirror: false,
+                        circle: false,
+                    });
+                }
             }
             SceneSourceKind::TestPattern => {
                 let pattern = synthetic_test_pattern_bgra(inputs.sequence);
@@ -1651,6 +1709,49 @@ struct SyntheticTestPatternBgra {
     bytes: Vec<u8>,
     width: usize,
     height: usize,
+}
+
+struct MissingSourcePlaceholderBgra {
+    bytes: Vec<u8>,
+    width: usize,
+    height: usize,
+}
+
+fn source_frame_is_too_stale(captured_at: Instant) -> bool {
+    captured_at.elapsed() >= COMPOSITOR_MISSING_SOURCE_PLACEHOLDER_AFTER
+}
+
+fn missing_source_placeholder_bgra(
+    source_kind: &SceneSourceKind,
+    sequence: u64,
+) -> MissingSourcePlaceholderBgra {
+    let width = MISSING_SOURCE_PLACEHOLDER_WIDTH;
+    let height = MISSING_SOURCE_PLACEHOLDER_HEIGHT;
+    let mut bytes = vec![0u8; width * height * 4];
+    let accent = match source_kind {
+        SceneSourceKind::Camera => [255, 0, 255, 255],
+        SceneSourceKind::Screen | SceneSourceKind::Window => [0, 160, 255, 255],
+        SceneSourceKind::TestPattern => [255, 255, 255, 255],
+    };
+    let phase = (sequence as usize) % width;
+    for y in 0..height {
+        for x in 0..width {
+            let i = (y * width + x) * 4;
+            let border = x == 0 || y == 0 || x + 1 == width || y + 1 == height;
+            let diagonal = x == (y + phase) % width;
+            let pixel = if border || diagonal {
+                accent
+            } else {
+                [24, 24, 24, 255]
+            };
+            bytes[i..i + 4].copy_from_slice(&pixel);
+        }
+    }
+    MissingSourcePlaceholderBgra {
+        bytes,
+        width,
+        height,
+    }
 }
 
 fn synthetic_test_pattern_bgra(sequence: u64) -> SyntheticTestPatternBgra {
@@ -3531,7 +3632,7 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn metal_compose_missing_camera_frame_names_scene_source() {
+    fn metal_compose_missing_camera_frame_renders_placeholder_or_skips() {
         let Some(mut gpu) = new_gpu_compositor() else {
             eprintln!("skipping: Metal compositor unavailable");
             return;
@@ -3573,7 +3674,7 @@ mod tests {
             active_screen: None,
         };
 
-        let reason = match try_gpu_compose(
+        let frame = match try_gpu_compose(
             Some(&mut gpu),
             &CompositorRenderInputs {
                 sequence: 7,
@@ -3586,14 +3687,13 @@ mod tests {
             },
             true,
         ) {
-            Ok(_) => panic!("missing camera frame should fall back to CPU"),
-            Err(reason) => reason,
+            Ok(frame) => frame,
+            Err(reason) => panic!("missing camera frame should stay on Metal: {reason}"),
         };
 
-        assert!(reason.contains("camera source \"Face cam\""));
-        assert!(reason.contains("id=source:face-cam"));
-        assert!(reason.contains("device=camera-device-1"));
-        assert!(reason.contains("frame unavailable"));
+        assert!(frame.pixel_format.has_metal_iosurface_target());
+        assert_eq!(frame.yuv.len(), raw_yuv420p_len(8, 4));
+        assert!(frame.timings.source_texture_ms >= 0.0);
     }
 
     fn test_state() -> AppState {
