@@ -1462,7 +1462,30 @@ fn try_gpu_compose(
         return Ok(gpu_compositor_frame(gpu, output, prepare_ms));
     }
     if inputs.active_image_source.is_some() {
-        return Err("active screen image is not cached".to_string());
+        let placeholder =
+            missing_source_placeholder_bgra(&SceneSourceKind::Screen, inputs.sequence);
+        let sources = [crate::metal_compositor::GpuSource {
+            kind: crate::metal_compositor::GpuSourceKind::Image,
+            bgra: &placeholder.bytes,
+            iosurface: None,
+            pixel_buffer: None,
+            width: placeholder.width,
+            height: placeholder.height,
+            dest: [0.0, 0.0, 1.0, 1.0],
+            crop: [0.0; 4],
+            mirror: false,
+            circle: false,
+        }];
+        let prepare_ms = prepare_started_at.elapsed().as_secs_f64() * 1000.0;
+        let output = compose_gpu_sources(
+            gpu,
+            inputs.width,
+            inputs.height,
+            &sources,
+            publish_yuv_frame,
+        )
+        .ok_or("Metal compositor failed to render missing screen image placeholder")?;
+        return Ok(gpu_compositor_frame(gpu, output, prepare_ms));
     }
     let scene = snapshot
         .scene
@@ -3694,6 +3717,50 @@ mod tests {
         assert!(frame.pixel_format.has_metal_iosurface_target());
         assert_eq!(frame.yuv.len(), raw_yuv420p_len(8, 4));
         assert!(frame.timings.source_texture_ms >= 0.0);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn metal_compose_missing_active_screen_image_renders_placeholder_or_skips() {
+        let Some(mut gpu) = new_gpu_compositor() else {
+            eprintln!("skipping: Metal compositor unavailable");
+            return;
+        };
+        let snapshot = CompositorSceneSnapshot {
+            revision: 1,
+            scene: None,
+            layout: crate::protocol::default_layout_settings(),
+            active_screen: Some(test_stream_screen("missing-image")),
+        };
+        let active_image_source = CompositorImageSource {
+            image_path: "missing.png".to_string(),
+            file_revision: None,
+            width: None,
+            height: None,
+            rgba: None,
+            state: "source-missing".to_string(),
+            message: Some("Uploaded screen image file is missing.".to_string()),
+        };
+
+        let frame = match try_gpu_compose(
+            Some(&mut gpu),
+            &CompositorRenderInputs {
+                sequence: 3,
+                width: 8,
+                height: 4,
+                snapshot: Some(&snapshot),
+                active_image_source: Some(&active_image_source),
+                camera_frame: None,
+                screen_frame: None,
+            },
+            true,
+        ) {
+            Ok(frame) => frame,
+            Err(reason) => panic!("missing active screen image should stay on Metal: {reason}"),
+        };
+
+        assert!(frame.pixel_format.has_metal_iosurface_target());
+        assert_eq!(frame.yuv.len(), raw_yuv420p_len(8, 4));
     }
 
     fn test_state() -> AppState {
