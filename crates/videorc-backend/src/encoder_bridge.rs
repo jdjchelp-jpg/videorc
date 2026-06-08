@@ -1231,13 +1231,39 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
 }
 
 #[cfg(target_os = "macos")]
-struct EncoderBridgeVideoToolboxProbe {
-    enabled: bool,
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VideoToolboxBridgeEncoderConfig {
     width: usize,
     height: usize,
-    fps: i32,
+    expected_frame_rate: i32,
     max_key_frame_interval: i32,
-    bitrate_kbps: Option<u32>,
+    average_bit_rate_bps: Option<i64>,
+}
+
+#[cfg(target_os = "macos")]
+impl VideoToolboxBridgeEncoderConfig {
+    fn from_recording_profile(
+        width: u32,
+        height: u32,
+        fps: u32,
+        bitrate_kbps: Option<u32>,
+    ) -> Self {
+        let expected_frame_rate = i32::try_from(fps.max(1)).unwrap_or(i32::MAX);
+        Self {
+            width: width.max(1) as usize,
+            height: height.max(1) as usize,
+            expected_frame_rate,
+            max_key_frame_interval: expected_frame_rate.saturating_mul(2).max(1),
+            average_bit_rate_bps: bitrate_kbps
+                .map(|bitrate_kbps| i64::from(bitrate_kbps).saturating_mul(1_000)),
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+struct EncoderBridgeVideoToolboxProbe {
+    enabled: bool,
+    config: VideoToolboxBridgeEncoderConfig,
     session: Option<VideoToolboxH264Session>,
     output_tx: std_mpsc::Sender<VideoToolboxH264AsyncAnnexBFrame>,
     output_rx: std_mpsc::Receiver<VideoToolboxH264AsyncAnnexBFrame>,
@@ -1257,15 +1283,15 @@ enum VideoToolboxProbeOutcome {
 #[cfg(target_os = "macos")]
 impl EncoderBridgeVideoToolboxProbe {
     fn new(enabled: bool, width: u32, height: u32, fps: u32, bitrate_kbps: Option<u32>) -> Self {
-        let fps = i32::try_from(fps.max(1)).unwrap_or(i32::MAX);
         let (output_tx, output_rx) = std_mpsc::channel();
         Self {
             enabled,
-            width: width.max(1) as usize,
-            height: height.max(1) as usize,
-            fps,
-            max_key_frame_interval: fps.saturating_mul(2).max(1),
-            bitrate_kbps,
+            config: VideoToolboxBridgeEncoderConfig::from_recording_profile(
+                width,
+                height,
+                fps,
+                bitrate_kbps,
+            ),
             session: None,
             output_tx,
             output_rx,
@@ -1299,7 +1325,10 @@ impl EncoderBridgeVideoToolboxProbe {
                 return VideoToolboxProbeOutcome::Failed;
             }
         };
-        let timing = match VideoToolboxFrameTiming::frame_index(frame_index, self.fps) {
+        let timing = match VideoToolboxFrameTiming::frame_index(
+            frame_index,
+            self.config.expected_frame_rate,
+        ) {
             Ok(timing) => timing,
             Err(_) => {
                 self.disabled_after_error = true;
@@ -1347,7 +1376,10 @@ impl EncoderBridgeVideoToolboxProbe {
                 return VideoToolboxProbeOutcome::Failed;
             }
         };
-        let timing = match VideoToolboxFrameTiming::frame_index(frame_index_i64, self.fps) {
+        let timing = match VideoToolboxFrameTiming::frame_index(
+            frame_index_i64,
+            self.config.expected_frame_rate,
+        ) {
             Ok(timing) => timing,
             Err(_) => {
                 self.disabled_after_error = true;
@@ -1381,19 +1413,19 @@ impl EncoderBridgeVideoToolboxProbe {
     }
 
     fn prepare_session(&mut self) -> Result<()> {
-        let session = match self.bitrate_kbps {
-            Some(bitrate_kbps) => VideoToolboxH264Session::new_realtime_with_bitrate(
-                self.width,
-                self.height,
-                self.fps,
-                self.max_key_frame_interval,
-                i64::from(bitrate_kbps).saturating_mul(1_000),
+        let session = match self.config.average_bit_rate_bps {
+            Some(average_bit_rate_bps) => VideoToolboxH264Session::new_realtime_with_bitrate(
+                self.config.width,
+                self.config.height,
+                self.config.expected_frame_rate,
+                self.config.max_key_frame_interval,
+                average_bit_rate_bps,
             )?,
             None => VideoToolboxH264Session::new_realtime(
-                self.width,
-                self.height,
-                self.fps,
-                self.max_key_frame_interval,
+                self.config.width,
+                self.config.height,
+                self.config.expected_frame_rate,
+                self.config.max_key_frame_interval,
             )?,
         };
         session.prepare()?;
@@ -1907,6 +1939,30 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn videotoolbox_config_maps_4k30_recording_profile_to_realtime_h264_settings() {
+        let config =
+            VideoToolboxBridgeEncoderConfig::from_recording_profile(3840, 2160, 30, Some(30_000));
+
+        assert_eq!(config.width, 3840);
+        assert_eq!(config.height, 2160);
+        assert_eq!(config.expected_frame_rate, 30);
+        assert_eq!(config.max_key_frame_interval, 60);
+        assert_eq!(config.average_bit_rate_bps, Some(30_000_000));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn videotoolbox_config_maps_4k60_recording_profile_to_two_second_keyframes() {
+        let config =
+            VideoToolboxBridgeEncoderConfig::from_recording_profile(3840, 2160, 60, Some(50_000));
+
+        assert_eq!(config.expected_frame_rate, 60);
+        assert_eq!(config.max_key_frame_interval, 120);
+        assert_eq!(config.average_bit_rate_bps, Some(50_000_000));
+    }
+
     #[test]
     fn first_bridge_tick_consumes_ready_compositor_frame() {
         let width = 64;
@@ -2284,5 +2340,25 @@ mod tests {
         };
 
         assert!(EncoderBridgeSettings::from_params(params).is_err());
+    }
+
+    #[test]
+    fn params_accept_4k30_recording_profile_bitrate() {
+        let params = EncoderBridgeSyntheticParams {
+            ffmpeg_path: None,
+            output_path: Some("/tmp/bridge-4k30.mp4".to_string()),
+            width: Some(3840),
+            height: Some(2160),
+            fps: Some(30),
+            duration_ms: Some(2_000),
+            bitrate_kbps: Some(30_000),
+        };
+
+        let settings = EncoderBridgeSettings::from_params(params).expect("4K30 bridge settings");
+
+        assert_eq!(settings.width, 3840);
+        assert_eq!(settings.height, 2160);
+        assert_eq!(settings.fps, 30);
+        assert_eq!(settings.bitrate_kbps, 30_000);
     }
 }
