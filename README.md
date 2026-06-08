@@ -98,6 +98,7 @@ See [distribution notes](docs/distribution.md) for signing, notarization, and FF
 
 ## Architecture Docs
 
+- [Active native 4K media engine refactor](docs/native-4k-media-engine-refactor.md)
 - [ADR 0001: OBS-Parity Native Capture Architecture](docs/adr/0001-obs-parity-native-capture-architecture.md)
 - [OBS parity source map](docs/obs-parity-source-map.md)
 - [Layout presets manual test checklist](docs/layout-presets-manual-checklist.md)
