@@ -3,7 +3,12 @@ import type { ReactElement, ReactNode } from 'react'
 
 import { Alert, AlertAction, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
-import { useWorkspaceNav, type WorkspaceTab } from '@/components/workspace-nav'
+import {
+  isStudioPanel,
+  useWorkspaceNav,
+  type StudioPanel,
+  type WorkspaceTab
+} from '@/components/workspace-nav'
 
 export type BannerTone = 'warning' | 'destructive' | 'success' | 'default'
 
@@ -19,10 +24,10 @@ export function BlockingBanner({
   title: string
   description?: ReactNode
   icon?: Icon
-  jumpTo?: WorkspaceTab
+  jumpTo?: WorkspaceTab | StudioPanel
   jumpLabel?: string
 }): ReactElement {
-  const { setActive } = useWorkspaceNav()
+  const { setActive, openStudioPanel } = useWorkspaceNav()
 
   return (
     <Alert variant={tone}>
@@ -31,7 +36,11 @@ export function BlockingBanner({
       {description ? <AlertDescription>{description}</AlertDescription> : null}
       {jumpTo ? (
         <AlertAction>
-          <Button size="xs" variant="outline" onClick={() => setActive(jumpTo)}>
+          <Button
+            size="xs"
+            variant="outline"
+            onClick={() => (isStudioPanel(jumpTo) ? openStudioPanel(jumpTo) : setActive(jumpTo))}
+          >
             {jumpLabel ?? 'Open'}
             <ArrowRight data-icon="inline-end" />
           </Button>

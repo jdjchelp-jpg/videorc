@@ -234,6 +234,26 @@ export function PreviewStage({
   const lastNativeBoundsRef = useRef<PreviewSurfaceBounds | null>(null)
   const [cameraDrag, setCameraDrag] = useState<CameraDrag | null>(null)
 
+  // Navigating to a full page (Library, AI, Settings…) unmounts the stage. The native
+  // surface floats above the app, so it must hide with us — otherwise it would keep
+  // covering whatever page replaced the studio.
+  const reportBoundsRef = useRef(onNativePreviewSurfaceBounds)
+  reportBoundsRef.current = onNativePreviewSurfaceBounds
+  useEffect(() => {
+    return () => {
+      const lastBounds = lastNativeBoundsRef.current
+      const report = reportBoundsRef.current
+      if (!lastBounds || !report) {
+        return
+      }
+      void Promise.resolve(
+        report({ ...lastBounds, clipWidth: 0, clipHeight: 0, visible: false })
+      ).catch(() => {
+        // The backend may already be gone during teardown; hiding is best-effort.
+      })
+    }
+  }, [])
+
   useEffect(() => {
     if (!onPreviewSurfaceResize || !previewSurfaceRef.current) {
       return

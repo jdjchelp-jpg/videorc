@@ -5,12 +5,20 @@ import logoUrl from '@/assets/videorc-logo.png'
 import { StatusDot, type StatusDotTone } from '@/components/status-dot'
 import { ThemeToggle } from '@/components/theme-toggle'
 import { Button } from '@/components/ui/button'
-import { WORKSPACE_GROUPS, WORKSPACE_TABS, type WorkspaceTab } from '@/components/workspace-nav'
+import {
+  STUDIO_PANELS,
+  WORKSPACE_GROUPS,
+  WORKSPACE_TABS,
+  type StudioPanel,
+  type WorkspaceTab
+} from '@/components/workspace-nav'
 import { cn } from '@/lib/utils'
 
 export function Sidebar({
   active,
+  activeStudioPanel,
   onSelect,
+  onSelectStudioPanel,
   statusTone,
   statusLabel,
   live,
@@ -18,7 +26,9 @@ export function Sidebar({
   onOpenCommand
 }: {
   active: WorkspaceTab
+  activeStudioPanel: StudioPanel | null
   onSelect: (tab: WorkspaceTab) => void
+  onSelectStudioPanel: (panel: StudioPanel) => void
   statusTone: StatusDotTone
   statusLabel: string
   live: boolean
@@ -79,6 +89,37 @@ export function Sidebar({
                   </button>
                 )
               })}
+              {group.id === 'primary' ? (
+                <div className="mt-4 flex flex-col gap-0.5">
+                  <span className="px-2.5 pb-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/70">
+                    Studio
+                  </span>
+                  {STUDIO_PANELS.map((panel) => {
+                    const isOpen = activeStudioPanel === panel.id
+                    return (
+                      <button
+                        key={panel.id}
+                        type="button"
+                        aria-current={isOpen ? 'page' : undefined}
+                        data-videorc-tab-trigger={panel.legacyTabId}
+                        onClick={() => onSelectStudioPanel(panel.id)}
+                        className={cn(
+                          'flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm transition-colors',
+                          isOpen
+                            ? 'bg-sidebar-accent font-medium text-sidebar-accent-foreground'
+                            : 'text-muted-foreground hover:bg-sidebar-accent/60 hover:text-sidebar-foreground'
+                        )}
+                      >
+                        <panel.icon
+                          weight={isOpen ? 'fill' : 'regular'}
+                          className={cn('size-4 shrink-0', isOpen && 'text-primary')}
+                        />
+                        {panel.label}
+                      </button>
+                    )
+                  })}
+                </div>
+              ) : null}
             </div>
           )
         })}

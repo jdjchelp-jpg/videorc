@@ -39,7 +39,10 @@ const LAYOUT_PRESETS = [
   { id: 'side-by-side', label: 'Side-by-side', enabled: true }
 ] as const
 
-export function LayoutTab(): ReactElement {
+// `embedded` renders the tab inside the studio panel rail (plan slice C1): the studio
+// preview stage stays the single editing canvas, so the rail must not mount a second
+// PreviewStage — two mounted stages would fight over the native surface bounds.
+export function LayoutTab({ embedded = false }: { embedded?: boolean } = {}): ReactElement {
   const {
     captureConfig,
     openPreviewPermissions,
@@ -78,7 +81,7 @@ export function LayoutTab(): ReactElement {
   const showOverlayControls = layout.layoutPreset === 'screen-camera'
 
   return (
-    <div className="grid gap-4 lg:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)]">
+    <div className={embedded ? 'flex flex-col gap-4' : 'grid gap-4 lg:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)]'}>
       <div className="flex flex-col gap-4">
         <PanelSection
           description="Pick how the screen and camera are composed."
@@ -118,30 +121,32 @@ export function LayoutTab(): ReactElement {
           ) : null}
         </PanelSection>
 
-        <PanelSection icon={FrameCorners} title="Preview">
-          <PreviewStage
-            layout={layout}
-            onOpenPermissions={openPreviewPermissions}
-            onRevealPermissionTarget={revealPermissionTarget}
-            onRetry={refreshPreview}
-            onPreviewSurfaceResize={registerPreviewSurfaceResize}
-            onNativePreviewSurfaceBounds={syncNativePreviewSurfaceBounds}
-            previewCameraStatus={previewCameraStatus}
-            previewLiveStatus={previewLiveStatus}
-            previewScreenStatus={previewScreenStatus}
-            previewSurfaceStatus={previewSurfaceStatus}
-            nativePreviewSurfaceEnabled={nativePreviewSurfaceEnabled}
-            previewLoading={previewLoading}
-            previewUrl={previewUrl}
-            runtimeInfo={runtimeInfo}
-            scene={scene}
-            sceneEditMode={sceneEditMode}
-            selectedSceneSourceId={selectedSceneSourceId}
-            onSelectSceneSource={setSelectedSceneSourceId}
-            onCameraDragCommit={commitCameraTransform}
-            dragDisabled={isSessionActive || layout.layoutPreset !== 'screen-camera'}
-          />
-        </PanelSection>
+        {embedded ? null : (
+          <PanelSection icon={FrameCorners} title="Preview">
+            <PreviewStage
+              layout={layout}
+              onOpenPermissions={openPreviewPermissions}
+              onRevealPermissionTarget={revealPermissionTarget}
+              onRetry={refreshPreview}
+              onPreviewSurfaceResize={registerPreviewSurfaceResize}
+              onNativePreviewSurfaceBounds={syncNativePreviewSurfaceBounds}
+              previewCameraStatus={previewCameraStatus}
+              previewLiveStatus={previewLiveStatus}
+              previewScreenStatus={previewScreenStatus}
+              previewSurfaceStatus={previewSurfaceStatus}
+              nativePreviewSurfaceEnabled={nativePreviewSurfaceEnabled}
+              previewLoading={previewLoading}
+              previewUrl={previewUrl}
+              runtimeInfo={runtimeInfo}
+              scene={scene}
+              sceneEditMode={sceneEditMode}
+              selectedSceneSourceId={selectedSceneSourceId}
+              onSelectSceneSource={setSelectedSceneSourceId}
+              onCameraDragCommit={commitCameraTransform}
+              dragDisabled={isSessionActive || layout.layoutPreset !== 'screen-camera'}
+            />
+          </PanelSection>
+        )}
 
         <PanelSection icon={Selection} title="Scene sources">
           <Field orientation="horizontal">

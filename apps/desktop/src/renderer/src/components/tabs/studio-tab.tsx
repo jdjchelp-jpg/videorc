@@ -40,7 +40,7 @@ import { Input } from '@/components/ui/input'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
 import { Switch } from '@/components/ui/switch'
-import { useWorkspaceNav } from '@/components/workspace-nav'
+import { useWorkspaceNav, type StudioPanel, type WorkspaceTab } from '@/components/workspace-nav'
 import { useStudio } from '@/hooks/use-studio'
 import type { GoLiveDestinationPreflight, StreamPlatform, StreamScreen } from '@/lib/backend'
 import { videoProfileCompatibility } from '@/lib/capture'
@@ -49,7 +49,7 @@ import { cn } from '@/lib/utils'
 
 export function StudioTab(): ReactElement {
   const studio = useStudio()
-  const { setActive } = useWorkspaceNav()
+  const { openStudioPanel } = useWorkspaceNav()
   const {
     recording,
     elapsed,
@@ -90,6 +90,8 @@ export function StudioTab(): ReactElement {
     selectedSceneSourceId,
     setSceneEditMode,
     setSelectedSceneSourceId,
+    commitCameraTransform,
+    isSessionActive,
     screens,
     activeScreen,
     activateScreen,
@@ -190,6 +192,8 @@ export function StudioTab(): ReactElement {
         sceneEditMode={sceneEditMode}
         selectedSceneSourceId={selectedSceneSourceId}
         onSelectSceneSource={setSelectedSceneSourceId}
+        onCameraDragCommit={commitCameraTransform}
+        dragDisabled={isSessionActive || captureConfig.layout.layoutPreset !== 'screen-camera'}
       />
 
       {/* Action bar: status + the two primary buttons + output */}
@@ -288,7 +292,7 @@ export function StudioTab(): ReactElement {
               <SummaryRow label="Camera" value={selectedCamera?.name ?? 'Off'} />
               <SummaryRow label="Microphone" value={selectedMicrophone?.name ?? 'Off'} />
             </dl>
-            <Button size="sm" variant="outline" className="w-fit" onClick={() => setActive('sources')}>
+            <Button size="sm" variant="outline" className="w-fit" onClick={() => openStudioPanel('audio')}>
               Configure sources
             </Button>
           </AccordionContent>
@@ -317,7 +321,7 @@ export function StudioTab(): ReactElement {
               variant="outline"
               className="w-fit"
               data-videorc-open-tab="layout"
-              onClick={() => setActive('layout')}
+              onClick={() => openStudioPanel('layouts')}
             >
               Edit layout
             </Button>
@@ -334,7 +338,7 @@ export function StudioTab(): ReactElement {
               screens={screens}
               onActivate={(screenId) => void activateScreen(screenId)}
               onClear={() => void clearActiveScreen()}
-              onOpenScreens={() => setActive('screens')}
+              onOpenScreens={() => openStudioPanel('screens')}
             />
           </AccordionContent>
         </AccordionItem>
@@ -410,10 +414,10 @@ export function StudioTab(): ReactElement {
               ) : null}
             </div>
             <div className="flex flex-wrap gap-2">
-              <Button size="sm" variant="outline" onClick={() => setActive('recording')}>
+              <Button size="sm" variant="outline" onClick={() => openStudioPanel('recording')}>
                 Recording settings
               </Button>
-              <Button size="sm" variant="outline" onClick={() => setActive('streaming')}>
+              <Button size="sm" variant="outline" onClick={() => openStudioPanel('live')}>
                 Streaming settings
               </Button>
             </div>
@@ -772,7 +776,7 @@ function pipelineStatusLabel(status: string): string {
 
 function studioBlocker(studio: ReturnType<typeof useStudio>): {
   title: string
-  jumpTo?: 'sources' | 'recording' | 'streaming' | 'settings'
+  jumpTo?: WorkspaceTab | StudioPanel
   jumpLabel?: string
 } | null {
   const { wsStatus, outputEnabled, captureConfig, streamReady, health } = studio
@@ -784,7 +788,7 @@ function studioBlocker(studio: ReturnType<typeof useStudio>): {
     return { title: 'No output enabled', jumpTo: 'recording', jumpLabel: 'Open Recording' }
   }
   if (captureConfig.streamEnabled && !streamReady) {
-    return { title: 'Stream target incomplete', jumpTo: 'streaming', jumpLabel: 'Open Streaming' }
+    return { title: 'Stream target incomplete', jumpTo: 'live', jumpLabel: 'Open Live' }
   }
   if (health && !health.ffmpeg.available) {
     return { title: 'FFmpeg unavailable', jumpTo: 'settings', jumpLabel: 'Open Settings' }

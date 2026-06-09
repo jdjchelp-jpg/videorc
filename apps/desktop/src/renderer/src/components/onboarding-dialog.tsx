@@ -29,7 +29,7 @@ import {
 import { Field, FieldContent, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Separator } from '@/components/ui/separator'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
-import type { WorkspaceTab } from '@/components/workspace-nav'
+import type { StudioPanel, WorkspaceTab } from '@/components/workspace-nav'
 import { useStudio } from '@/hooks/use-studio'
 import { rtmpDefaults, videoPresets, type SetupStep } from '@/lib/capture'
 import { cn } from '@/lib/utils'
@@ -44,7 +44,7 @@ export function OnboardingDialog({
   onComplete
 }: {
   open: boolean
-  onComplete: (target?: WorkspaceTab) => void
+  onComplete: (target?: WorkspaceTab | StudioPanel) => void
 }): ReactElement {
   const {
     health,
@@ -74,15 +74,15 @@ export function OnboardingDialog({
   }, [captureConfig.streamEnabled, open])
 
   const step = STEPS[stepIndex]
-  const recommendedTab = useMemo<WorkspaceTab>(() => {
+  const recommendedTab = useMemo<WorkspaceTab | StudioPanel>(() => {
     if (!health?.ffmpeg.available) {
       return 'settings'
     }
     if (!selectedCaptureDevice) {
-      return 'sources'
+      return 'audio'
     }
     if (workflow === 'stream' && !streamReady) {
-      return 'streaming'
+      return 'live'
     }
     return 'studio'
   }, [health?.ffmpeg.available, selectedCaptureDevice, streamReady, workflow])
@@ -246,7 +246,7 @@ function SetupStepView({
   canSampleAudio: boolean
   audioMeterLoading: boolean
   onSampleAudio: () => Promise<void>
-  onOpenTab: (target?: WorkspaceTab) => void
+  onOpenTab: (target?: WorkspaceTab | StudioPanel) => void
 }): ReactElement {
   const warningCount = setupSteps.filter((item) => item.tone === 'warn').length
 
@@ -279,11 +279,11 @@ function SetupStepView({
       <Separator />
 
       <div className="flex flex-wrap gap-2">
-        <Button size="sm" variant="outline" onClick={() => onOpenTab('sources')}>
+        <Button size="sm" variant="outline" onClick={() => onOpenTab('audio')}>
           <Monitor data-icon="inline-start" />
           Sources
         </Button>
-        <Button size="sm" variant="outline" onClick={() => onOpenTab('streaming')}>
+        <Button size="sm" variant="outline" onClick={() => onOpenTab('live')}>
           <Broadcast data-icon="inline-start" />
           Streaming
         </Button>
@@ -343,8 +343,8 @@ function FinishStep({
   onComplete
 }: {
   workflow: Workflow
-  recommendedTab: WorkspaceTab
-  onComplete: (target?: WorkspaceTab) => void
+  recommendedTab: WorkspaceTab | StudioPanel
+  onComplete: (target?: WorkspaceTab | StudioPanel) => void
 }): ReactElement {
   return (
     <div className="flex flex-col gap-4">
@@ -356,16 +356,16 @@ function FinishStep({
 
       <div className="grid gap-2 sm:grid-cols-2">
         <DestinationButton
-          recommended={recommendedTab === 'sources'}
+          recommended={recommendedTab === 'audio'}
           icon={Monitor}
           label="Sources"
-          onClick={() => onComplete('sources')}
+          onClick={() => onComplete('audio')}
         />
         <DestinationButton
-          recommended={recommendedTab === 'streaming'}
+          recommended={recommendedTab === 'live'}
           icon={Broadcast}
           label="Streaming"
-          onClick={() => onComplete('streaming')}
+          onClick={() => onComplete('live')}
         />
         <DestinationButton
           recommended={recommendedTab === 'studio'}
