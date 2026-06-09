@@ -29,6 +29,8 @@ export interface NativePreviewRealSurfaceDriver {
   presentCompositorHandoff(
     request: NativePreviewRealSurfacePresentRequest
   ): Promise<PreviewSurfaceStatus | null>
+  /** Tear down any external host process/window the driver owns. */
+  stop?(): void
 }
 
 export const DEFAULT_NATIVE_PREVIEW_MAX_HANDOFF_AGE_MS = 250

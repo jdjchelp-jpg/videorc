@@ -1954,9 +1954,16 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
             'preview.surface.take_native_host_commands'
           )
           // The backend queues an update-bounds echo for the change we already
-          // applied; replaying it would snap the window back to a stale rect.
+          // applied; replaying it would snap the window back to a stale rect. Only
+          // matching echoes are dropped — a genuinely different backend-initiated
+          // bounds command still goes through.
           const hostCommands = directlyApplied
-            ? queuedCommands.filter((command) => command.kind !== 'update-bounds')
+            ? queuedCommands.filter(
+                (command) =>
+                  command.kind !== 'update-bounds' ||
+                  !command.bounds ||
+                  previewSurfaceBoundsChanged(command.bounds, nextBounds)
+              )
             : queuedCommands
           const hostStatus =
             hostCommands.length > 0 && applyHostCommands

@@ -80,6 +80,16 @@ const NATIVE_PREVIEW_HANDOFF_SAMPLE_LIMIT = 900
 let nativePreviewRealSurfaceDriverUnavailableReason = nativePreviewRealSurfaceDriverLoad.unavailableReason
 let nativePreviewRealSurfaceDriver: NativePreviewRealSurfaceDriver | null = nativePreviewRealSurfaceDriverLoad.driver
 let nativePreviewHelperProcessDriverResolved = false
+let nativePreviewHelperDriverRetryAtMs = 0
+const NATIVE_PREVIEW_HELPER_RETRY_COOLDOWN_MS = 5000
+// While the native CAMetalLayer recently confirmed a present, it owns the slot and
+// the Electron proof window stays hidden (no stacked surfaces at one rect).
+let nativePreviewNativePresentConfirmedAtMs = 0
+const NATIVE_PREVIEW_NATIVE_AUTHORITY_MS = 1500
+
+function nativeSurfaceOwnsPlacement(): boolean {
+  return Date.now() - nativePreviewNativePresentConfirmedAtMs < NATIVE_PREVIEW_NATIVE_AUTHORITY_MS
+}
 let nativePreviewLastRealSurfaceFallbackLogKey: string | undefined
 let nativePreviewRealSurfaceInvalidActivationCount = 0
 let nativePreviewMainQueueWaitSamplesMs: number[] = []
@@ -959,9 +969,9 @@ async function createNativePreviewSurface(bounds: PreviewSurfaceBounds): Promise
   }
   nativePreviewSurfaceWindow.setBounds(rect)
   await applyNativePreviewSurfaceCrop(placement)
-  if (placement.visible) {
+  if (placement.visible && !nativeSurfaceOwnsPlacement()) {
     nativePreviewSurfaceWindow.showInactive()
-  } else {
+  } else if (!placement.visible) {
     nativePreviewSurfaceWindow.hide()
   }
   nativePreviewSurfaceStatus = {
@@ -1010,11 +1020,11 @@ async function updateNativePreviewSurfaceBounds(bounds: PreviewSurfaceBounds): P
   const rect = placement.rect
   nativePreviewSurfaceWindow.setBounds(rect)
   await applyNativePreviewSurfaceCrop(placement)
-  if (placement.visible) {
+  if (placement.visible && !nativeSurfaceOwnsPlacement()) {
     if (!nativePreviewSurfaceWindow.isVisible()) {
       nativePreviewSurfaceWindow.showInactive()
     }
-  } else {
+  } else if (!placement.visible) {
     nativePreviewSurfaceWindow.hide()
   }
   nativePreviewSurfaceStatus = {
@@ -1053,6 +1063,22 @@ async function applyNativePreviewHostCommands(commands: NativePreviewHostCommand
   return status
 }
 
+// Disable the real driver after a failure WITHOUT orphaning its NSWindow: the helper
+// child is killed (taking the floating window with it) and the driver may resolve
+// again after a cooldown instead of staying dead for the rest of the session.
+function disableNativePreviewRealSurfaceDriver(reason: string): void {
+  const driver = nativePreviewRealSurfaceDriver
+  nativePreviewRealSurfaceDriver = null
+  nativePreviewRealSurfaceDriverUnavailableReason = reason
+  nativePreviewHelperProcessDriverResolved = false
+  nativePreviewHelperDriverRetryAtMs = Date.now() + NATIVE_PREVIEW_HELPER_RETRY_COOLDOWN_MS
+  try {
+    driver?.stop?.()
+  } catch {
+    // The helper is already unreachable; nothing left to tear down.
+  }
+}
+
 async function applyNativePreviewRealSurfaceHostCommands(
   commands: NativePreviewHostCommand[],
   options: { startIfNeeded?: boolean } = {}
@@ -1066,9 +1092,9 @@ async function applyNativePreviewRealSurfaceHostCommands(
   try {
     await driver.applyHostCommands(commands)
   } catch (error) {
-    nativePreviewRealSurfaceDriver = null
-    nativePreviewRealSurfaceDriverUnavailableReason =
+    disableNativePreviewRealSurfaceDriver(
       `Real CAMetalLayer IOSurface presenter module failed while applying host commands: ${errorMessage(error)}`
+    )
   }
 }
 
@@ -1287,12 +1313,12 @@ async function tryPresentNativePreviewRealSurfaceCompositor(
     })
   } catch (error) {
     nativePreviewRealSurfaceInvalidActivationCount = 0
-    nativePreviewRealSurfaceDriver = null
-    nativePreviewRealSurfaceDriverUnavailableReason =
+    disableNativePreviewRealSurfaceDriver(
       `Real CAMetalLayer IOSurface presenter failed while presenting compositor handoff: ${errorMessage(error)}`
+    )
     return {
       kind: 'skipped',
-      reason: realSurfaceUnavailableMessage(handoff, nativePreviewRealSurfaceDriverUnavailableReason),
+      reason: realSurfaceUnavailableMessage(handoff, nativePreviewRealSurfaceDriverUnavailableReason ?? 'unknown'),
       logKey: `error:${nativePreviewRealSurfaceDriverUnavailableReason}`
     }
   }
@@ -1321,6 +1347,14 @@ async function tryPresentNativePreviewRealSurfaceCompositor(
     droppedFrames: Math.max(driverStatus.droppedFrames ?? 0, previousDroppedFrames),
     framePollingSuppressed: nativePreviewSurfaceFramePollingSuppressed || status.suppressFramePolling === true,
     updatedAt: new Date().toISOString()
+  }
+  // Single placement authority: while the native CAMetalLayer is confirmed
+  // presenting, the Electron proof window must not stack beneath it (two surfaces at
+  // one rect made every visual bug ambiguous). It may re-show on bounds updates once
+  // the native path stops claiming presents (see surface create/update).
+  nativePreviewNativePresentConfirmedAtMs = Date.now()
+  if (nativePreviewSurfaceWindow && !nativePreviewSurfaceWindow.isDestroyed() && nativePreviewSurfaceWindow.isVisible()) {
+    nativePreviewSurfaceWindow.hide()
   }
   return { kind: 'presented', status: nativePreviewSurfaceStatus }
 }
@@ -1576,7 +1610,10 @@ function ensureNativePreviewRealSurfaceDriver(): NativePreviewRealSurfaceDriver 
   if (nativePreviewRealSurfaceDriver) {
     return nativePreviewRealSurfaceDriver
   }
-  if (configuredNativePreviewHostModulePath || nativePreviewHelperProcessDriverResolved) {
+  if (configuredNativePreviewHostModulePath) {
+    return null
+  }
+  if (nativePreviewHelperProcessDriverResolved || Date.now() < nativePreviewHelperDriverRetryAtMs) {
     return null
   }
 
@@ -2301,6 +2338,31 @@ function smokeRendererScript(command: string, params: Record<string, unknown>): 
         const tabId = String(params.tab ?? 'studio');
         const waitSelector = typeof params.waitFor === 'string' ? params.waitFor : null;
         return openTab(tabId, waitSelector);
+      }
+
+      if (${JSON.stringify(command)} === 'scroll-studio') {
+        const deltaY = Number(params.deltaY ?? 200);
+        const scroller = document.querySelector('main');
+        if (!scroller) {
+          throw new Error('Studio scroll container not found.');
+        }
+        scroller.scrollBy(0, deltaY);
+        await sleep(450);
+        const surface = document.querySelector('[data-videorc-preview-surface]');
+        const surfaceRect = surface ? surface.getBoundingClientRect() : null;
+        const scrollerRect = scroller.getBoundingClientRect();
+        return {
+          scrollTop: scroller.scrollTop,
+          surfaceRect: surfaceRect
+            ? { left: surfaceRect.left, top: surfaceRect.top, width: surfaceRect.width, height: surfaceRect.height }
+            : null,
+          scrollerRect: {
+            left: scrollerRect.left,
+            top: scrollerRect.top,
+            width: scrollerRect.width,
+            height: scrollerRect.height
+          }
+        };
       }
 
       if (${JSON.stringify(command)} === 'suspend-native-preview-surface') {

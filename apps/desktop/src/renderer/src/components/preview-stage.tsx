@@ -296,7 +296,16 @@ export function PreviewStage({
         }
         const rect = element.getBoundingClientRect()
         if (rect.width <= 0 || rect.height <= 0) {
-          // Slot not laid out yet — there is nothing to place or hide.
+          // Slot collapsed (display:none, layout transition): hide the surface
+          // instead of leaving it floating at its last on-screen rect.
+          const last = lastNativeBoundsRef.current
+          if (last && (last.visible ?? true)) {
+            const hidden = { ...last, clipWidth: 0, clipHeight: 0, visible: false }
+            lastNativeBoundsRef.current = hidden
+            void Promise.resolve(onNativePreviewSurfaceBounds(hidden)).catch(() => {
+              // Best-effort: the next laid-out report re-syncs.
+            })
+          }
           return
         }
         const bounds = computePreviewSurfaceBounds({

@@ -150,6 +150,129 @@ async function main() {
       `windows seen: ${describeAll()}`
     )
 
+    // ================= Phase 2: REAL renderer-driven behavior =====================
+    // Un-suspend the renderer so the actual studio slot drives bounds — this is the
+    // user's exact flow (scroll glue, tab switching, window moves).
+    console.log('\n--- Phase 2: renderer-driven glue ---')
+    await smokeCommand(smoke, 'resume-native-preview-surface')
+    const appBounds = await smokeCommand(smoke, 'move-window', {})
+    // Nudge the window so the renderer's placement watcher fires a fresh report.
+    await smokeCommand(smoke, 'move-window', { x: appBounds.x + 1, y: appBounds.y + 1 })
+    await sleep(2500)
+
+    const inspect = await smokeCommand(smoke, 'inspect-native-preview-runtime')
+    const win = await smokeCommand(smoke, 'move-window', {})
+    assertProbe(
+      Boolean(inspect.surfaceRect),
+      'renderer: the studio slot exists and reports a rect',
+      JSON.stringify(inspect)
+    )
+    let slotScreen = null
+    if (inspect.surfaceRect) {
+      slotScreen = {
+        x: win.x + inspect.surfaceRect.left,
+        y: win.y + inspect.surfaceRect.top,
+        width: inspect.surfaceRect.width,
+        height: inspect.surfaceRect.height
+      }
+      const found = await waitForWindowNear(slotScreen, 4000)
+      assertProbe(
+        Boolean(found),
+        `renderer: a surface window sits on the studio slot (${Math.round(slotScreen.x)},${Math.round(slotScreen.y)} ${Math.round(slotScreen.width)}x${Math.round(slotScreen.height)})`,
+        `windows seen: ${describeAll()}`
+      )
+    }
+
+    // Scroll glue: scroll the studio and require the window to follow the slot
+    // (clipped against the scroll container) within a tight settle window.
+    const scrolled = await smokeCommand(smoke, 'scroll-studio', { deltaY: 240 })
+    if (scrolled.surfaceRect && slotScreen) {
+      const clipTop = Math.max(scrolled.surfaceRect.top, scrolled.scrollerRect.top)
+      const clipBottom = Math.min(
+        scrolled.surfaceRect.top + scrolled.surfaceRect.height,
+        scrolled.scrollerRect.top + scrolled.scrollerRect.height
+      )
+      const expected = {
+        x: win.x + scrolled.surfaceRect.left,
+        y: win.y + clipTop,
+        width: scrolled.surfaceRect.width,
+        height: Math.max(1, clipBottom - clipTop)
+      }
+      const followed = await waitForWindowNear(expected, 3000)
+      assertProbe(
+        Boolean(followed),
+        `scroll glue: after scrolling 240px the surface window tracks the slot (expected ${Math.round(expected.x)},${Math.round(expected.y)} ${Math.round(expected.width)}x${Math.round(expected.height)})`,
+        `windows seen: ${describeAll()}`
+      )
+      assertProbe(
+        !(await waitForWindowNear(slotScreen, 400)),
+        'scroll glue: no surface window remains at the pre-scroll position',
+        `windows seen: ${describeAll()}`
+      )
+    } else {
+      assertProbe(false, 'scroll glue: scroll-studio returned a surface rect', JSON.stringify(scrolled))
+    }
+
+    // Tab switch: the surface must leave the screen entirely off the Studio tab.
+    await smokeCommand(smoke, 'open-tab', { tab: 'library' })
+    await sleep(1200)
+    const afterLibrary = await smokeCommand(smoke, 'inspect-native-preview-runtime')
+    assertProbe(
+      !afterLibrary.hasSurface,
+      'tabs: the studio slot unmounts on the Library tab',
+      JSON.stringify(afterLibrary)
+    )
+    const lingering = slotScreen ? await waitForWindowNear({ ...slotScreen, y: 0, x: 0, anySize: true }, 1) : null
+    const anySurfaceLeft = lastWindowDump.filter(
+      (w) =>
+        /electron/i.test(w.owner) &&
+        Math.abs(w.width - (slotScreen?.width ?? 0)) <= 4 &&
+        w.height <= (slotScreen?.height ?? 0) + 4 &&
+        w.height >= 40
+    )
+    assertProbe(
+      anySurfaceLeft.length === 0,
+      'tabs: no surface window remains on screen on the Library tab',
+      `surface-sized windows: ${JSON.stringify(anySurfaceLeft)}`
+    )
+
+    // Back to Studio: the surface returns.
+    await smokeCommand(smoke, 'open-tab', { tab: 'studio', waitFor: '[data-videorc-preview-surface]' })
+    await sleep(1800)
+    const backInspect = await smokeCommand(smoke, 'inspect-native-preview-runtime')
+    const backWin = await smokeCommand(smoke, 'move-window', {})
+    if (backInspect.surfaceRect) {
+      const backExpected = {
+        x: backWin.x + backInspect.surfaceRect.left,
+        y: backWin.y + backInspect.surfaceRect.top,
+        width: backInspect.surfaceRect.width,
+        height: backInspect.surfaceRect.height
+      }
+      const reappeared = await waitForWindowNear(backExpected, 4000)
+      assertProbe(
+        Boolean(reappeared),
+        'tabs: the surface window returns on the Studio tab',
+        `windows seen: ${describeAll()}`
+      )
+
+      // Window move: drag the app; the surface must follow the same delta.
+      const moved = await smokeCommand(smoke, 'move-window', { x: backWin.x + 137, y: backWin.y + 93 })
+      const movedExpected = {
+        x: moved.x + backInspect.surfaceRect.left,
+        y: moved.y + backInspect.surfaceRect.top,
+        width: backInspect.surfaceRect.width,
+        height: backInspect.surfaceRect.height
+      }
+      const followedMove = await waitForWindowNear(movedExpected, 4000)
+      assertProbe(
+        Boolean(followedMove),
+        `window move: surface follows the app window to (${Math.round(movedExpected.x)},${Math.round(movedExpected.y)})`,
+        `windows seen: ${describeAll()}`
+      )
+    } else {
+      assertProbe(false, 'tabs: studio slot reports a rect after returning', JSON.stringify(backInspect))
+    }
+
     console.log('\n=== Preview glue probe summary ===')
     if (failures.length === 0) {
       console.log('PASS — clip placement, hide, and recovery verified on the real pipeline.')
@@ -226,6 +349,21 @@ function matchingWindows(width, height) {
   return windowList().filter(
     (w) => Math.abs(w.width - width) <= 2 && Math.abs(w.height - height) <= 2
   )
+}
+
+async function waitForWindowNear(rect, timeoutMsLocal, tolerance = 4) {
+  const deadline = Date.now() + timeoutMsLocal
+  do {
+    const found = windowList().find(
+      (w) =>
+        (rect.anySize ||
+          (Math.abs(w.width - rect.width) <= tolerance && Math.abs(w.height - rect.height) <= tolerance)) &&
+        (rect.anySize || (Math.abs(w.x - rect.x) <= tolerance && Math.abs(w.y - rect.y) <= tolerance))
+    )
+    if (found) return found
+    await sleep(250)
+  } while (Date.now() < deadline)
+  return null
 }
 
 function describeAll() {

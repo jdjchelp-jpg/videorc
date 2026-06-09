@@ -133,11 +133,10 @@ function intersectRects(a: RectLike, b: RectLike): RectLike | null {
 }
 
 function hasClip(bounds: PreviewSurfaceBounds): boolean {
+  // null-tolerant: serialized bounds may carry explicit nulls for absent clip
+  // fields; treating null as "clip present" would collapse the clip to 0×0.
   return (
-    bounds.clipX !== undefined ||
-    bounds.clipY !== undefined ||
-    bounds.clipWidth !== undefined ||
-    bounds.clipHeight !== undefined
+    bounds.clipX != null || bounds.clipY != null || bounds.clipWidth != null || bounds.clipHeight != null
   )
 }
 

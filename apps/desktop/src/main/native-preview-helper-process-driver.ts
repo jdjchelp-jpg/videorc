@@ -74,6 +74,9 @@ interface NativePresentMetrics {
 }
 
 const NATIVE_PRESENT_SAMPLE_LIMIT = 900
+// A wedged helper must never freeze the surface mutation queue: every placement AND
+// hide for both surface windows serializes behind these requests.
+const HELPER_REQUEST_TIMEOUT_MS = 4000
 
 export function createNativePreviewHelperProcessDriver(
   options: NativePreviewHelperProcessDriverOptions
@@ -268,17 +271,45 @@ class NativePreviewHelperProcessDriver implements NativePreviewRealSurfaceDriver
     const id = `native-preview-helper:${++this.requestSerial}`
     const message = `${JSON.stringify({ id, method, ...body })}\n`
     return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        if (this.pending.delete(id)) {
+          reject(
+            new Error(`Native preview host helper request ${method} timed out after ${HELPER_REQUEST_TIMEOUT_MS}ms`)
+          )
+        }
+      }, HELPER_REQUEST_TIMEOUT_MS)
       this.pending.set(id, {
-        resolve: (payload) => resolve(payload as T),
-        reject
+        resolve: (payload) => {
+          clearTimeout(timer)
+          resolve(payload as T)
+        },
+        reject: (error) => {
+          clearTimeout(timer)
+          reject(error)
+        }
       })
       try {
         child.stdin.write(message)
       } catch (error) {
+        clearTimeout(timer)
         this.pending.delete(id)
         reject(new Error(`Native preview host helper write failed: ${errorMessage(error)}`))
       }
     })
+  }
+
+  /** Kill the helper child so its NSWindow cannot outlive a disabled driver. */
+  stop(): void {
+    const child = this.child
+    this.child = null
+    if (child) {
+      try {
+        child.kill('SIGKILL')
+      } catch {
+        // Already gone.
+      }
+    }
+    this.rejectAll('Native preview host helper was stopped.')
   }
 
   private ensureChild(): HelperChildProcess {

@@ -9,19 +9,19 @@ pub struct NativePreviewHostBounds {
     pub width: f64,
     pub height: f64,
     pub scale_factor: f64,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub screen_height: Option<f64>,
     // Visible clip rect in the same screen coordinate space; absent = fully visible.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clip_x: Option<f64>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clip_y: Option<f64>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clip_width: Option<f64>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clip_height: Option<f64>,
     // False = hide the surface entirely (slot scrolled away / document hidden).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub visible: Option<bool>,
 }
 
@@ -288,9 +288,13 @@ mod macos {
             let (drawable_width, drawable_height) = bounds.drawable_size();
             let layer = make_preview_layer(presenter.device(), drawable_width, drawable_height);
             let view = NSView::initWithFrame(NSView::alloc(mtm), view_frame(bounds));
-            view.setWantsLayer(true);
+            // Layer-HOSTING contract: setLayer must come before setWantsLayer,
+            // otherwise the view is layer-backed and AppKit owns (and may replace)
+            // the backing layer — presents then land in a detached CAMetalLayer
+            // that composites as nothing/black.
             let ca_layer: &CALayer = layer.as_super();
             view.setLayer(Some(ca_layer));
+            view.setWantsLayer(true);
             Self {
                 view,
                 layer,

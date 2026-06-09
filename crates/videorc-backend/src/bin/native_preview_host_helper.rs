@@ -171,7 +171,7 @@ mod macos {
                 Ok(Ok(line)) => line,
                 Ok(Err(error)) => return Err(error).context("native preview helper stdin failed"),
                 Err(RecvTimeoutError::Timeout) => {
-                    app.updateWindows();
+                    pump_core_animation(&app);
                     continue;
                 }
                 Err(RecvTimeoutError::Disconnected) => break,
@@ -182,10 +182,20 @@ mod macos {
                     break;
                 }
             }
-            app.updateWindows();
+            pump_core_animation(&app);
         }
 
         Ok(())
+    }
+
+    /// This helper never runs the AppKit run loop, so implicit Core Animation
+    /// transactions (layer attachment, window/layer frame changes) would never be
+    /// committed to the render server — the window then composites as an empty
+    /// (black) layer no matter how many drawables were presented. Flush explicitly
+    /// on every loop tick.
+    fn pump_core_animation(app: &NSApplication) {
+        app.updateWindows();
+        objc2_quartz_core::CATransaction::flush();
     }
 
     fn spawn_stdin_reader() -> mpsc::Receiver<io::Result<String>> {
