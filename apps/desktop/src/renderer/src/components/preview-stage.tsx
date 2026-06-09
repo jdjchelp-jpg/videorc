@@ -308,9 +308,11 @@ export function PreviewStage({
           windowScreenY: window.screenY,
           scaleFactor: window.devicePixelRatio || 1,
           screenHeight: window.screen.height,
-          // The native surface floats above every app, so it must leave the screen
-          // whenever this window is hidden, minimized, or not the focused app.
-          documentVisible: document.visibilityState === 'visible' && document.hasFocus(),
+          // Hidden/minimized window ⇒ surface leaves the screen. Deliberately NOT
+          // gated on document.hasFocus(): focus moves to DevTools or another window
+          // while the page stays visible, and a black studio is worse than a
+          // floating preview during app blur.
+          documentVisible: document.visibilityState === 'visible',
           overlayOccluded: overlayOccludesRect(rect)
         })
         if (nativeSurfaceLive && !previewSurfaceBoundsChanged(lastNativeBoundsRef.current, bounds)) {

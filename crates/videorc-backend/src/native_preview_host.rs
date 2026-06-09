@@ -346,11 +346,14 @@ mod macos {
             // The window is sized to the visible CLIP rect while the layer view keeps
             // the full slot frame (offset inside it). A content view always fills the
             // window, so the layer view must be a subview of a plain container — the
-            // window surface then crops whatever extends past the clip.
+            // window surface then crops whatever extends past the clip. The container
+            // must be layer-backed: hosting a CAMetalLayer view inside a
+            // non-layer-backed superview renders black.
             let container = NSView::initWithFrame(
                 NSView::alloc(mtm),
                 NSRect::new(NSPoint::new(0.0, 0.0), window_frame(bounds).size),
             );
+            container.setWantsLayer(true);
             container.addSubview(layer_host.view());
             window.setContentView(Some(&container));
             window.setOpaque(false);
