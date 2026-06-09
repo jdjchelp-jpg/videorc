@@ -17,8 +17,10 @@ export type WorkspaceTab = 'studio' | 'library' | 'ai' | 'diagnostics' | 'settin
 
 // Studio panels: live controls that open in a push rail BESIDE the studio so the
 // glued preview stays visible while operating (Studio Shell And Live Control Plan,
-// slice C1). The studio slot resizes; panels never overlap it.
-export type StudioPanel = 'layouts' | 'live' | 'audio' | 'recording' | 'screens'
+// slice C1). The studio slot resizes; panels never overlap it. Takeover screens live
+// inside the Layouts panel (decision 5): everything that answers "what is on program
+// output" shares one panel.
+export type StudioPanel = 'layouts' | 'live' | 'audio' | 'recording'
 
 export type WorkspaceTabGroup = 'primary' | 'system'
 
@@ -46,13 +48,11 @@ export const WORKSPACE_TABS: WorkspaceTabMeta[] = [
 ]
 
 // Sidebar order mirrors the live workflow: composition, going live, sound, output.
-// `screens` is temporary — it folds into the Layouts panel in slice C2.
 export const STUDIO_PANELS: StudioPanelMeta[] = [
   { id: 'layouts', label: 'Layouts', icon: SquaresFour, legacyTabId: 'layout' },
   { id: 'live', label: 'Live', icon: Broadcast, legacyTabId: 'streaming' },
   { id: 'audio', label: 'Audio', icon: Microphone, legacyTabId: 'sources' },
-  { id: 'recording', label: 'Recording', icon: Record, legacyTabId: 'recording' },
-  { id: 'screens', label: 'Screens', icon: Monitor, legacyTabId: 'screens' }
+  { id: 'recording', label: 'Recording', icon: Record, legacyTabId: 'recording' }
 ]
 
 export const WORKSPACE_GROUPS: { id: WorkspaceTabGroup; label?: string }[] = [

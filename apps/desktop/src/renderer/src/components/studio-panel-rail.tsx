@@ -14,8 +14,9 @@ import { STUDIO_PANELS, type StudioPanel } from '@/components/workspace-nav'
  * The studio slot resizes to make room — the rail must never overlap the preview
  * (the B3 occlusion contract assumes panels stay outside the studio rect).
  *
- * C1 hosts the existing tab content wholesale; C2/C3 reshape it panel-first and
- * fold Screens into Layouts.
+ * Panel homes follow decision 5: Layouts owns everything that answers "what is on
+ * program output" (presets, scene controls, takeover screens); Live owns
+ * destinations and metadata; Audio owns the microphone; Recording owns output.
  */
 export function StudioPanelRail({
   panel,
@@ -46,11 +47,15 @@ export function StudioPanelRail({
         </Button>
       </header>
       <div className="flex-1 overflow-y-auto px-4 py-4">
-        {panel === 'layouts' ? <LayoutTab embedded /> : null}
+        {panel === 'layouts' ? (
+          <div className="flex flex-col gap-4">
+            <LayoutTab embedded />
+            <ScreensTab />
+          </div>
+        ) : null}
         {panel === 'live' ? <StreamingTab /> : null}
         {panel === 'audio' ? <SourcesTab /> : null}
         {panel === 'recording' ? <RecordingTab /> : null}
-        {panel === 'screens' ? <ScreensTab /> : null}
       </div>
     </aside>
   )

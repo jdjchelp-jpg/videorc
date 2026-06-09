@@ -30,7 +30,8 @@ import {
 import { dayLabel, durationMsLabel } from '@/lib/format'
 
 export function RecordingTab(): ReactElement {
-  const { captureConfig, setCaptureConfig, patchVideo, applyVideoPreset, sessions, remuxSession } = useStudio()
+  const { captureConfig, setCaptureConfig, patchVideo, applyVideoPreset, sessions, remuxSession, isSessionActive } =
+    useStudio()
   const { video } = captureConfig
   const compatibility = videoProfileCompatibility(captureConfig)
   const compatibilityMessage = compatibility.blockingReason ?? compatibility.warning
@@ -43,6 +44,7 @@ export function RecordingTab(): ReactElement {
           <Switch
             aria-label="Record MKV"
             checked={captureConfig.recordEnabled}
+            disabled={isSessionActive}
             onCheckedChange={(checked) => setCaptureConfig((current) => ({ ...current, recordEnabled: checked }))}
           />
         }
@@ -50,10 +52,15 @@ export function RecordingTab(): ReactElement {
         icon={FileVideo}
         title="Recording"
       >
+        {isSessionActive ? (
+          <p className="text-sm text-muted-foreground">
+            Locked while live — output settings apply to the next session.
+          </p>
+        ) : null}
         <FieldGroup>
           <Field>
             <FieldLabel htmlFor="video-preset">Video preset</FieldLabel>
-            <Select value={video.preset} onValueChange={(value) => applyVideoPreset(value as VideoPreset)}>
+            <Select disabled={isSessionActive} value={video.preset} onValueChange={(value) => applyVideoPreset(value as VideoPreset)}>
               <SelectTrigger className="w-full" id="video-preset">
                 <SelectValue />
               </SelectTrigger>
@@ -103,6 +110,7 @@ export function RecordingTab(): ReactElement {
 
           <div className="grid grid-cols-2 gap-4">
             <NumberField
+              disabled={isSessionActive}
               label="Width"
               max={3840}
               min={640}
@@ -110,14 +118,23 @@ export function RecordingTab(): ReactElement {
               onChange={(width) => patchVideo({ width })}
             />
             <NumberField
+              disabled={isSessionActive}
               label="Height"
               max={2160}
               min={360}
               value={video.height}
               onChange={(height) => patchVideo({ height })}
             />
-            <NumberField label="FPS" max={60} min={24} value={video.fps} onChange={(fps) => patchVideo({ fps })} />
             <NumberField
+              disabled={isSessionActive}
+              label="FPS"
+              max={60}
+              min={24}
+              value={video.fps}
+              onChange={(fps) => patchVideo({ fps })}
+            />
+            <NumberField
+              disabled={isSessionActive}
               label="Bitrate kbps"
               max={50000}
               min={1000}
@@ -179,6 +196,7 @@ function NumberField({
   min,
   max,
   step,
+  disabled,
   onChange
 }: {
   label: string
@@ -186,12 +204,14 @@ function NumberField({
   min: number
   max: number
   step?: number
+  disabled?: boolean
   onChange: (value: number) => void
 }): ReactElement {
   return (
     <Field>
       <FieldLabel>{label}</FieldLabel>
       <Input
+        disabled={disabled}
         max={max}
         min={min}
         step={step}

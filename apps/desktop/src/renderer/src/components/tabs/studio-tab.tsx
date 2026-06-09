@@ -338,7 +338,7 @@ export function StudioTab(): ReactElement {
               screens={screens}
               onActivate={(screenId) => void activateScreen(screenId)}
               onClear={() => void clearActiveScreen()}
-              onOpenScreens={() => openStudioPanel('screens')}
+              onOpenScreens={() => openStudioPanel('layouts')}
             />
           </AccordionContent>
         </AccordionItem>
