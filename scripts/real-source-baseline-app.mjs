@@ -47,6 +47,7 @@ import { analyzeStartupResolution, writeStartupReports } from './lib/startup-res
 import { DEFAULT_ACCEPTANCE_GATES, evaluateAcceptance } from './lib/acceptance-gate.mjs'
 import { classifyMediaQualityMode } from './lib/media-quality-mode.mjs'
 import { classifyObsParityEvidence } from './lib/obs-parity-evidence.mjs'
+import { requiredSourceBlocker } from './lib/required-source-blockers.mjs'
 import { pickDevice } from './lib/source-selection.mjs'
 import { evaluateRequired4kSourcePreflight } from './lib/source-preflight.mjs'
 import {
@@ -454,6 +455,7 @@ function assertRequiredSourcesAvailable(sources) {
       disabled: process.env.VIDEORC_BASELINE_NO_SCREEN === '1',
       override: process.env.VIDEORC_BASELINE_SCREEN_ID,
       disableHint: 'VIDEORC_BASELINE_NO_SCREEN=1',
+      allowForcedOverride: true,
     }),
     requiredSourceBlocker('camera', sources.camera, {
       disabled: process.env.VIDEORC_BASELINE_NO_CAMERA === '1',
@@ -483,15 +485,6 @@ function assertRequiredNativeSourcesForAccepted4k(sources) {
   if (!preflight.pass) {
     throw new Error(preflight.failures.join(' '))
   }
-}
-
-function requiredSourceBlocker(label, device, { disabled, override, disableHint }) {
-  if (disabled || override) return null
-  if (!device) return `${label} missing (set ${disableHint} to omit it intentionally)`
-  if (device.status !== 'available') {
-    return `${label} ${device.name} [${device.id}] is ${device.status} (set ${disableHint} to omit it intentionally)`
-  }
-  return null
 }
 
 function reportSelection(sources, warnings) {
