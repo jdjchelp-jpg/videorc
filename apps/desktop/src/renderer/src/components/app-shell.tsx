@@ -4,11 +4,15 @@ import { CommandPalette } from '@/components/command-palette'
 import { OnboardingDialog } from '@/components/onboarding-dialog'
 import { Sidebar } from '@/components/sidebar'
 import type { StatusDotTone } from '@/components/status-dot'
-import { StudioPanelRail } from '@/components/studio-panel-rail'
 import { AiTab } from '@/components/tabs/ai-tab'
 import { DiagnosticsTab } from '@/components/tabs/diagnostics-tab'
+import { LayoutTab } from '@/components/tabs/layout-tab'
 import { LibraryTab } from '@/components/tabs/library-tab'
+import { RecordingTab } from '@/components/tabs/recording-tab'
+import { ScreensTab } from '@/components/tabs/screens-tab'
 import { SettingsTab } from '@/components/tabs/settings-tab'
+import { SourcesTab } from '@/components/tabs/sources-tab'
+import { StreamingTab } from '@/components/tabs/streaming-tab'
 import { StudioTab } from '@/components/tabs/studio-tab'
 import {
   WorkspaceNavContext,
@@ -22,36 +26,29 @@ import { ONBOARDING_VERSION, STORAGE_KEYS } from '@/lib/capture'
 export function AppShell(): ReactElement {
   const { connection, wsStatus, recording, refreshBackend } = useStudio()
   const [active, setActive] = useState<WorkspaceTab>('studio')
-  const [studioPanel, setStudioPanel] = useState<StudioPanel | null>(null)
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null)
   const [commandOpen, setCommandOpen] = useState(false)
   const [onboardingOpen, setOnboardingOpen] = useState(
     () => localStorage.getItem(STORAGE_KEYS.onboarding) !== ONBOARDING_VERSION
   )
 
-  // Opening a panel always lands in the studio: panels are live controls beside the
-  // preview, not pages. Clicking the open panel's entry again closes it.
+  // Studio control pages are ordinary tabs grouped under "Studio" in the sidebar.
+  // Studio content (and the glued preview) renders only on the Studio tab itself.
   const openStudioPanel = useCallback((panel: StudioPanel) => {
-    setActive('studio')
-    setStudioPanel((current) => (current === panel ? null : panel))
+    setActive(panel)
   }, [])
 
   const closeStudioPanel = useCallback(() => {
-    setStudioPanel(null)
+    setActive('studio')
   }, [])
 
-  const completeOnboarding = useCallback(
-    (target?: WorkspaceTab | StudioPanel) => {
-      localStorage.setItem(STORAGE_KEYS.onboarding, ONBOARDING_VERSION)
-      setOnboardingOpen(false)
-      if (isStudioPanel(target)) {
-        openStudioPanel(target)
-      } else if (target) {
-        setActive(target)
-      }
-    },
-    [openStudioPanel]
-  )
+  const completeOnboarding = useCallback((target?: WorkspaceTab) => {
+    localStorage.setItem(STORAGE_KEYS.onboarding, ONBOARDING_VERSION)
+    setOnboardingOpen(false)
+    if (target) {
+      setActive(target)
+    }
+  }, [])
 
   const resetOnboarding = useCallback(() => {
     localStorage.removeItem(STORAGE_KEYS.onboarding)
@@ -89,7 +86,7 @@ export function AppShell(): ReactElement {
       value={{
         active,
         setActive,
-        activeStudioPanel: active === 'studio' ? studioPanel : null,
+        activeStudioPanel: isStudioPanel(active) ? active : null,
         openStudioPanel,
         closeStudioPanel
       }}
@@ -97,7 +94,7 @@ export function AppShell(): ReactElement {
       <div className="flex min-h-screen bg-background text-foreground" data-videorc-active-tab={active}>
         <Sidebar
           active={active}
-          activeStudioPanel={active === 'studio' ? studioPanel : null}
+          activeStudioPanel={isStudioPanel(active) ? active : null}
           onSelect={setActive}
           onSelectStudioPanel={openStudioPanel}
           statusTone={statusTone}
@@ -107,27 +104,27 @@ export function AppShell(): ReactElement {
           onOpenCommand={() => setCommandOpen(true)}
         />
 
-        {active === 'studio' ? (
-          <main className="flex h-screen flex-1 overflow-hidden">
-            {studioPanel ? <StudioPanelRail panel={studioPanel} onClose={closeStudioPanel} /> : null}
-            <div className="flex-1 overflow-y-auto">
-              <div className="mx-auto w-full max-w-[1600px] px-8 py-6">
-                <StudioTab />
+        <main className="flex h-screen flex-1 flex-col overflow-y-auto">
+          <div className="mx-auto w-full max-w-[1600px] flex-1 px-8 py-6">
+            {active === 'studio' ? <StudioTab /> : null}
+            {active === 'layouts' ? (
+              <div className="flex flex-col gap-4">
+                <LayoutTab />
+                <SourcesTab section="devices" />
+                <ScreensTab />
               </div>
-            </div>
-          </main>
-        ) : (
-          <main className="flex h-screen flex-1 flex-col overflow-y-auto">
-            <div className="mx-auto w-full max-w-[1600px] flex-1 px-8 py-6">
-              {active === 'library' ? <LibraryTab onOpenInAi={openInAi} /> : null}
-              {active === 'ai' ? (
-                <AiTab selectedSessionId={selectedSessionId} setSelectedSessionId={setSelectedSessionId} />
-              ) : null}
-              {active === 'diagnostics' ? <DiagnosticsTab /> : null}
-              {active === 'settings' ? <SettingsTab onResetOnboarding={resetOnboarding} /> : null}
-            </div>
-          </main>
-        )}
+            ) : null}
+            {active === 'live' ? <StreamingTab /> : null}
+            {active === 'audio' ? <SourcesTab section="audio" /> : null}
+            {active === 'recording' ? <RecordingTab /> : null}
+            {active === 'library' ? <LibraryTab onOpenInAi={openInAi} /> : null}
+            {active === 'ai' ? (
+              <AiTab selectedSessionId={selectedSessionId} setSelectedSessionId={setSelectedSessionId} />
+            ) : null}
+            {active === 'diagnostics' ? <DiagnosticsTab /> : null}
+            {active === 'settings' ? <SettingsTab onResetOnboarding={resetOnboarding} /> : null}
+          </div>
+        </main>
 
         <CommandPalette open={commandOpen} onOpenChange={setCommandOpen} />
         <OnboardingDialog open={onboardingOpen} onComplete={completeOnboarding} />

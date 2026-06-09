@@ -12,15 +12,16 @@ import {
 } from '@phosphor-icons/react'
 import { createContext, useContext } from 'react'
 
-// Full pages: they replace the workspace content area.
-export type WorkspaceTab = 'studio' | 'library' | 'ai' | 'diagnostics' | 'settings'
-
-// Studio panels: live controls that open in a push rail BESIDE the studio so the
-// glued preview stays visible while operating (Studio Shell And Live Control Plan,
-// slice C1). The studio slot resizes; panels never overlap it. Takeover screens live
-// inside the Layouts panel (decision 5): everything that answers "what is on program
-// output" shares one panel.
+// Studio control pages, grouped under "Studio" in the sidebar: one click away, but
+// they are FULL pages — studio content renders only on the Studio tab (user decision
+// 2026-06-09, overriding the earlier push-rail idea). Layouts keeps its own preview
+// stage so live switching stays observable; takeover screens and device pickers live
+// on the Layouts page (decision 5: everything that answers "what is on program
+// output" shares one home).
 export type StudioPanel = 'layouts' | 'live' | 'audio' | 'recording'
+
+// Full pages: they replace the workspace content area.
+export type WorkspaceTab = 'studio' | StudioPanel | 'library' | 'ai' | 'diagnostics' | 'settings'
 
 export type WorkspaceTabGroup = 'primary' | 'system'
 

@@ -60,11 +60,11 @@ export function CommandPalette({
 
         <CommandSeparator />
 
-        <CommandGroup heading="Studio panels">
+        <CommandGroup heading="Studio">
           {STUDIO_PANELS.map((panel) => (
             <CommandItem
               key={panel.id}
-              value={`Open ${panel.label} panel`}
+              value={`Open `}
               onSelect={() => run(() => openStudioPanel(panel.id))}
             >
               <panel.icon className="size-4" />
