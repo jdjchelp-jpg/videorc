@@ -7326,8 +7326,34 @@ mod tests {
         assert_eq!(
             arg_value(&args, "-af"),
             Some(
-                "atrim=start=0.500,asetpts=PTS-STARTPTS,pan=stereo|c0=c0|c1=c0,aresample=async=1:first_pts=0"
+                "atrim=start=0.750,asetpts=PTS-STARTPTS,pan=stereo|c0=c0|c1=c0,aresample=async=1:first_pts=0"
             )
+        );
+    }
+
+    #[test]
+    fn default_microphone_sync_offset_applies_to_native_coreaudio_fifo() {
+        let mut params = base_params(true, false);
+        params.audio = AudioSettings::default();
+        let args = bridge_recording_ffmpeg_args(
+            &CaptureInputs {
+                video: VideoInput::TestPattern,
+                camera_index: None,
+                microphone: Some(MicrophoneInput::CoreAudio {
+                    device_id: 42,
+                    fifo_path: Some(PathBuf::from("/tmp/videorc-audio-test.f32le")),
+                }),
+            },
+            &params,
+            Some(Path::new("/tmp/videorc-bridge-test.mkv")),
+            Path::new("/tmp/videorc-bridge-input.ts"),
+            EncoderBridgeVideoOutput::VideoToolboxH264MpegTs,
+        )
+        .unwrap();
+
+        assert_eq!(
+            arg_value(&args, "-af"),
+            Some("atrim=start=0.750,asetpts=PTS-STARTPTS,aresample=async=1:first_pts=0")
         );
     }
 

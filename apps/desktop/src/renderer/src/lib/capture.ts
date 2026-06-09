@@ -276,7 +276,7 @@ export const defaultCaptureConfig: CaptureConfig = {
   audio: {
     microphoneGainDb: 0,
     microphoneMuted: false,
-    microphoneSyncOffsetMs: -500,
+    microphoneSyncOffsetMs: -750,
     microphoneSyncOffsetUserSet: false
   },
   video: videoPresets['tutorial-1440p30'],
