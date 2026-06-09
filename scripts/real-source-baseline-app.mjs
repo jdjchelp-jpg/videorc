@@ -27,6 +27,9 @@
 //   VIDEORC_BASELINE_SCREEN_MOTION_STIMULUS=1  launch a visible animated browser window and require motion
 //   VIDEORC_BASELINE_AV_SYNC_STIMULUS=1        launch a visible flash+click browser window for lip-sync measurement
 //   VIDEORC_BASELINE_MIC_SYNC_OFFSET_MS        microphone sync offset to pass through to the recording session
+//   VIDEORC_BASELINE_STREAM=1                  enable record+stream (RTMP) for this session
+//   VIDEORC_BASELINE_STREAM_SERVER_URL         RTMP server URL (e.g. rtmp://127.0.0.1:19501/live)
+//   VIDEORC_BASELINE_STREAM_KEY                RTMP stream key (never printed; local sinks use a dummy key)
 //   VIDEORC_SMOKE_OUTPUT_DIR        where recordings + reports land
 //   VIDEORC_BASELINE_SCREEN_ID / _CAMERA_ID / _MIC_ID   force a specific device id
 //   VIDEORC_BASELINE_NO_SCREEN / _NO_CAMERA / _NO_MIC   omit that source
@@ -70,7 +73,15 @@ const config = {
   previewMeasurementMs: Number(process.env.VIDEORC_BASELINE_PREVIEW_MEASUREMENT_MS ?? 5000),
   ffmpegPath: process.env.VIDEORC_SMOKE_FFMPEG_PATH ?? 'ffmpeg',
   ffprobePath: process.env.VIDEORC_SMOKE_FFPROBE_PATH ?? siblingFfprobe(process.env.VIDEORC_SMOKE_FFMPEG_PATH) ?? 'ffprobe',
-  bridgeVideoOutput: process.env.VIDEORC_ENCODER_BRIDGE_VIDEO_OUTPUT ?? 'videotoolbox-h264-mpegts',
+  // Stream sessions must exercise the backend's DEFAULT bridge selector (the product
+  // path under test: stream_enabled -> RawYuv420p). Only force an output when the
+  // operator set one explicitly, or for record-only runs (previous behavior).
+  bridgeVideoOutput:
+    process.env.VIDEORC_ENCODER_BRIDGE_VIDEO_OUTPUT ??
+    (process.env.VIDEORC_BASELINE_STREAM === '1' ? null : 'videotoolbox-h264-mpegts'),
+  streamEnabled: process.env.VIDEORC_BASELINE_STREAM === '1',
+  streamServerUrl: process.env.VIDEORC_BASELINE_STREAM_SERVER_URL ?? '',
+  streamKey: process.env.VIDEORC_BASELINE_STREAM_KEY ?? '',
   fallbackLivePreview: process.env.VIDEORC_BASELINE_FALLBACK_LIVE_PREVIEW === '1',
   noPreviewSurface: process.env.VIDEORC_BASELINE_NO_PREVIEW_SURFACE === '1',
   screenMotionStimulus: process.env.VIDEORC_BASELINE_SCREEN_MOTION_STIMULUS === '1',
@@ -128,7 +139,12 @@ async function main() {
       VIDEORC_DISABLE_AUTO_PREVIEW: '1',
       VIDEORC_SMOKE_COMMAND_SERVER: requiresPreviewHostCommandServer ? '1' : '0',
       VIDEORC_SMOKE_NATIVE_PREVIEW_SUSPENDED: requiresPreviewHostCommandServer ? '1' : '0',
-      VIDEORC_ENCODER_BRIDGE_VIDEO_OUTPUT: config.bridgeVideoOutput,
+      // null means "let the backend's default selector decide" (the honest product
+      // path for stream sessions); the app-launcher merges over process.env, so the
+      // key must be absent entirely, not undefined.
+      ...(config.bridgeVideoOutput
+        ? { VIDEORC_ENCODER_BRIDGE_VIDEO_OUTPUT: config.bridgeVideoOutput }
+        : {}),
     },
     onLine: (line) => {
       previewSurfaceOutputGuard.inspectLine(line)
@@ -370,7 +386,7 @@ async function main() {
       claimsNative,
       requestedOutput: requestedOutputSettings(),
       recordingEnabled: true,
-      streamEnabled: false,
+      streamEnabled: config.streamEnabled,
       acceptancePass: acceptance.pass,
     })
     const ownership = classifyObsParityEvidence({
@@ -1581,7 +1597,10 @@ function realSourceGateRequest() {
     fps: config.fps,
     bitrateKbps: config.bitrateKbps,
     recordingMs: config.recordingMs,
-    bridgeVideoOutput: config.bridgeVideoOutput,
+    bridgeVideoOutput: config.bridgeVideoOutput ?? 'backend-default',
+    streamEnabled: config.streamEnabled,
+    // Stream key is never written to evidence; mirror the backend's redaction shape.
+    streamRedactedUrl: config.streamEnabled ? `${config.streamServerUrl.replace(/\/+$/, '')}/••••` : null,
     requireMotion: config.requireMotion,
     screenMotionStimulus: config.screenMotionStimulus,
     avSyncStimulus: config.avSyncStimulus,
@@ -2188,16 +2207,23 @@ function previewSurfaceBounds() {
 }
 
 function sessionParams(sources) {
+  if (config.streamEnabled && (!config.streamServerUrl || !config.streamKey)) {
+    throw new Error(
+      'VIDEORC_BASELINE_STREAM=1 requires VIDEORC_BASELINE_STREAM_SERVER_URL and VIDEORC_BASELINE_STREAM_KEY.'
+    )
+  }
   return {
     sources,
     layout: layoutSettings(sources),
     output: {
       recordEnabled: true,
-      streamEnabled: false,
+      streamEnabled: config.streamEnabled,
       outputDirectory: config.outputDirectory,
       ffmpegPath: config.ffmpegPath,
       video: videoSettings(),
-      rtmp: { preset: 'custom', serverUrl: '', streamKey: '' },
+      rtmp: config.streamEnabled
+        ? { preset: 'custom', serverUrl: config.streamServerUrl, streamKey: config.streamKey }
+        : { preset: 'custom', serverUrl: '', streamKey: '' },
     },
     audio: {
       microphoneGainDb: 0,
