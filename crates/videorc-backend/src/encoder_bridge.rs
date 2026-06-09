@@ -36,7 +36,8 @@ use crate::video_toolbox_encoder::{
 
 const ENCODER_BRIDGE_DIAGNOSTIC_WINDOW: Duration = Duration::from_secs(2);
 const ENCODER_BRIDGE_DEADLINE_LAG_THRESHOLD: Duration = Duration::from_millis(1);
-const VIDEOTOOLBOX_FRESH_FRAME_GRACE_DIVISOR: f64 = 2.0;
+const VIDEOTOOLBOX_FRESH_FRAME_HEADROOM: Duration = Duration::from_millis(4);
+const VIDEOTOOLBOX_FIFO_WRITER_QUEUE_FRAMES: usize = 240;
 const VIDEOTOOLBOX_PROBE_ENV: &str = "VIDEORC_ENCODER_BRIDGE_VIDEOTOOLBOX_PROBE";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -174,19 +175,10 @@ fn compositor_frame_wait_budget(
     frame_interval: Duration,
 ) -> Duration {
     if video_output.uses_video_toolbox() {
-        // Keep the normal VideoToolbox tick mostly immediate, but give the compositor
-        // a small phase-alignment grace. Zero wait sampled just before a fresh Metal
-        // target publish and produced many isolated duplicate re-feeds; full-frame
-        // waits pushed the writer loop behind real time.
-        return if consecutive_repeated_frames > 0 {
-            match video_output {
-                EncoderBridgeVideoOutput::VideoToolboxH264MpegTs => frame_interval + frame_interval,
-                EncoderBridgeVideoOutput::VideoToolboxH264AnnexB => frame_interval,
-                EncoderBridgeVideoOutput::RawYuv420p => Duration::ZERO,
-            }
-        } else {
-            videotoolbox_fresh_frame_grace(frame_interval)
-        };
+        // Wait for a fresh compositor target, but never spend the whole CFR interval.
+        // VideoToolbox encoding and FIFO writes must keep a little headroom or the bridge
+        // falls behind real time and starts feeding visible duplicates.
+        return videotoolbox_fresh_frame_grace(frame_interval);
     }
     if consecutive_repeated_frames > 0 {
         frame_interval + frame_interval
@@ -196,7 +188,7 @@ fn compositor_frame_wait_budget(
 }
 
 fn videotoolbox_fresh_frame_grace(frame_interval: Duration) -> Duration {
-    Duration::from_secs_f64(frame_interval.as_secs_f64() / VIDEOTOOLBOX_FRESH_FRAME_GRACE_DIVISOR)
+    frame_interval.saturating_sub(VIDEOTOOLBOX_FRESH_FRAME_HEADROOM)
 }
 
 #[derive(Debug)]
@@ -658,7 +650,7 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
         bitrate_kbps,
         diagnostics_tx,
     } = params;
-    let mut fifo = match open_recording_fifo_writer(&fifo_path, &stop) {
+    let fifo = match open_recording_fifo_writer(&fifo_path, &stop) {
         Ok(fifo) => fifo,
         Err(error) => {
             emit_encoder_bridge_diagnostics_from_thread(
@@ -680,6 +672,17 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
             return;
         }
     };
+    #[cfg(target_os = "macos")]
+    let (mut raw_fifo, mut video_toolbox_fifo_writer) = if video_output.uses_video_toolbox() {
+        (
+            None,
+            Some(VideoToolboxFifoWriter::start(fifo, video_output)),
+        )
+    } else {
+        (Some(fifo), None)
+    };
+    #[cfg(not(target_os = "macos"))]
+    let mut raw_fifo = Some(fifo);
     let frame_interval = Duration::from_secs_f64(1.0 / f64::from(target_fps.max(1)));
     let source = SyntheticMovingSource;
     let mut bytes = vec![0; byte_len];
@@ -708,6 +711,7 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
     let mut video_toolbox_output_bytes = 0_u64;
     let mut max_video_toolbox_output_encode_ms: Option<u64> = None;
     let mut pending_video_toolbox_output_frames = 0_u64;
+    let mut pending_video_toolbox_fifo_frames = 0_u64;
     let mut compositor_wait_times_ms = Vec::with_capacity(128);
     let mut video_toolbox_submit_times_ms = Vec::with_capacity(128);
     let mut video_toolbox_fifo_write_times_ms = Vec::with_capacity(128);
@@ -725,8 +729,6 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
         target_fps,
         bitrate_kbps,
     );
-    #[cfg(target_os = "macos")]
-    let mut h264_pipe_writer = VideoToolboxH264PipeWriter::for_output(video_output);
     #[cfg(target_os = "macos")]
     if video_output.uses_video_toolbox()
         && let Err(error) = video_toolbox_probe.prepare_session()
@@ -800,7 +802,7 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
             ),
             EncoderBridgeVideoOutput::VideoToolboxH264AnnexB
             | EncoderBridgeVideoOutput::VideoToolboxH264MpegTs => {
-                next_compositor_frame(frame_store.as_ref(), previous_sequence, wait_budget)
+                next_fresh_compositor_frame(frame_store.as_ref(), previous_sequence, &stop)
             }
         };
         compositor_wait_times_ms.push(compositor_wait_started_at.elapsed().as_secs_f64() * 1000.0);
@@ -912,21 +914,25 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
         }
 
         queue_depth = if video_output.uses_video_toolbox() {
-            pending_video_toolbox_output_frames
+            pending_video_toolbox_output_frames.saturating_add(pending_video_toolbox_fifo_frames)
         } else {
             1
         };
         let write_result = match video_output {
-            EncoderBridgeVideoOutput::RawYuv420p => fifo.write_all(&bytes).map(|()| {
-                raw_video_copied_frames = raw_video_copied_frames.saturating_add(1);
-                if wrote_metal_target_frame {
-                    metal_target_frames = metal_target_frames.saturating_add(1);
-                    metal_target_copied_frames = metal_target_copied_frames.saturating_add(1);
-                }
-                if wrote_metal_target_handle {
-                    metal_target_handle_frames = metal_target_handle_frames.saturating_add(1);
-                }
-            }),
+            EncoderBridgeVideoOutput::RawYuv420p => raw_fifo
+                .as_mut()
+                .expect("raw encoder bridge FIFO must be open")
+                .write_all(&bytes)
+                .map(|()| {
+                    raw_video_copied_frames = raw_video_copied_frames.saturating_add(1);
+                    if wrote_metal_target_frame {
+                        metal_target_frames = metal_target_frames.saturating_add(1);
+                        metal_target_copied_frames = metal_target_copied_frames.saturating_add(1);
+                    }
+                    if wrote_metal_target_handle {
+                        metal_target_handle_frames = metal_target_handle_frames.saturating_add(1);
+                    }
+                }),
             EncoderBridgeVideoOutput::VideoToolboxH264AnnexB
             | EncoderBridgeVideoOutput::VideoToolboxH264MpegTs => {
                 #[cfg(target_os = "macos")]
@@ -1034,22 +1040,33 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
         if video_output.uses_video_toolbox()
             && let Err(error) = drain_video_toolbox_output_frames(
                 &mut video_toolbox_probe,
-                &mut fifo,
-                &mut h264_pipe_writer,
+                video_toolbox_fifo_writer
+                    .as_mut()
+                    .expect("VideoToolbox FIFO writer must be running"),
                 &mut pending_video_toolbox_output_frames,
-                &mut zero_copy_frames,
-                &mut video_toolbox_output_frames,
-                &mut video_toolbox_output_bytes,
+                &mut pending_video_toolbox_fifo_frames,
                 &mut video_toolbox_probe_errors,
-                &mut video_toolbox_fifo_write_times_ms,
             )
+            .and_then(|()| {
+                drain_video_toolbox_fifo_writer_results(
+                    video_toolbox_fifo_writer
+                        .as_mut()
+                        .expect("VideoToolbox FIFO writer must be running"),
+                    &mut pending_video_toolbox_fifo_frames,
+                    &mut zero_copy_frames,
+                    &mut video_toolbox_output_frames,
+                    &mut video_toolbox_output_bytes,
+                    &mut video_toolbox_fifo_write_times_ms,
+                )
+            })
         {
             emit_encoder_bridge_diagnostics_from_thread(
                 &diagnostics_tx,
                 session_id.clone(),
                 target_fps,
                 EncoderBridgeRuntimeStats {
-                    queue_depth: pending_video_toolbox_output_frames,
+                    queue_depth: pending_video_toolbox_output_frames
+                        .saturating_add(pending_video_toolbox_fifo_frames),
                     input_fps: measured_input_fps(frames_in_window, window_started_at),
                     dropped_frames: 0,
                     encoder_speed: None,
@@ -1089,12 +1106,15 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
             break;
         }
         queue_depth = if video_output.uses_video_toolbox() {
-            pending_video_toolbox_output_frames
+            pending_video_toolbox_output_frames.saturating_add(pending_video_toolbox_fifo_frames)
         } else {
             0
         };
         writer_active_times_ms.push(active_started_at.elapsed().as_secs_f64() * 1000.0);
         writer_loop_times_ms.push(loop_started_at.elapsed().as_secs_f64() * 1000.0);
+        if video_output.uses_video_toolbox() && Instant::now() > next_frame_at {
+            next_frame_at = Instant::now() + frame_interval;
+        }
         frames_in_window = frames_in_window.saturating_add(1);
         if startup_wait_sequence.is_some() {
             next_frame_at = Instant::now() + frame_interval;
@@ -1161,33 +1181,56 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
             video_toolbox_probe_errors = video_toolbox_probe_errors.saturating_add(1);
         }
         let drain_started_at = Instant::now();
-        while pending_video_toolbox_output_frames > 0
+        while (pending_video_toolbox_output_frames > 0 || pending_video_toolbox_fifo_frames > 0)
             && drain_started_at.elapsed() < Duration::from_secs(2)
         {
+            let writer = video_toolbox_fifo_writer
+                .as_mut()
+                .expect("VideoToolbox FIFO writer must be running");
             if drain_video_toolbox_output_frames(
                 &mut video_toolbox_probe,
-                &mut fifo,
-                &mut h264_pipe_writer,
+                writer,
                 &mut pending_video_toolbox_output_frames,
-                &mut zero_copy_frames,
-                &mut video_toolbox_output_frames,
-                &mut video_toolbox_output_bytes,
+                &mut pending_video_toolbox_fifo_frames,
                 &mut video_toolbox_probe_errors,
-                &mut video_toolbox_fifo_write_times_ms,
             )
+            .and_then(|()| {
+                drain_video_toolbox_fifo_writer_results(
+                    writer,
+                    &mut pending_video_toolbox_fifo_frames,
+                    &mut zero_copy_frames,
+                    &mut video_toolbox_output_frames,
+                    &mut video_toolbox_output_bytes,
+                    &mut video_toolbox_fifo_write_times_ms,
+                )
+            })
             .is_err()
             {
                 break;
             }
-            if pending_video_toolbox_output_frames > 0 {
+            if pending_video_toolbox_output_frames > 0 || pending_video_toolbox_fifo_frames > 0 {
                 thread::sleep(Duration::from_millis(2));
             }
         }
-        queue_depth = pending_video_toolbox_output_frames;
+        if let Some(writer) = video_toolbox_fifo_writer.as_mut() {
+            writer.close_and_join();
+            let _ = drain_video_toolbox_fifo_writer_results(
+                writer,
+                &mut pending_video_toolbox_fifo_frames,
+                &mut zero_copy_frames,
+                &mut video_toolbox_output_frames,
+                &mut video_toolbox_output_bytes,
+                &mut video_toolbox_fifo_write_times_ms,
+            );
+        }
+        queue_depth =
+            pending_video_toolbox_output_frames.saturating_add(pending_video_toolbox_fifo_frames);
     }
 
-    let _ = fifo.flush();
-    drop(fifo);
+    if let Some(mut fifo) = raw_fifo.take() {
+        let _ = fifo.flush();
+        drop(fifo);
+    }
     emit_encoder_bridge_diagnostics_from_thread(
         &diagnostics_tx,
         session_id,
@@ -1435,6 +1478,99 @@ impl EncoderBridgeVideoToolboxProbe {
 }
 
 #[cfg(target_os = "macos")]
+struct VideoToolboxFifoWriter {
+    frame_tx: Option<std_mpsc::SyncSender<VideoToolboxH264AnnexBFrame>>,
+    result_rx: std_mpsc::Receiver<VideoToolboxFifoWriterResult>,
+    join: Option<thread::JoinHandle<()>>,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug)]
+enum VideoToolboxFifoWriterResult {
+    FrameWritten { encoded_bytes: u64, write_ms: f64 },
+    Error(String),
+}
+
+#[cfg(target_os = "macos")]
+impl VideoToolboxFifoWriter {
+    fn start(fifo: File, video_output: EncoderBridgeVideoOutput) -> Self {
+        let (frame_tx, frame_rx) = std_mpsc::sync_channel(VIDEOTOOLBOX_FIFO_WRITER_QUEUE_FRAMES);
+        let (result_tx, result_rx) = std_mpsc::channel();
+        let join = thread::Builder::new()
+            .name("videorc-recording-h264-fifo-writer".to_string())
+            .spawn(move || {
+                run_video_toolbox_fifo_writer_loop(
+                    fifo,
+                    VideoToolboxH264PipeWriter::for_output(video_output),
+                    frame_rx,
+                    result_tx,
+                );
+            })
+            .expect("could not start VideoToolbox FIFO writer thread");
+        Self {
+            frame_tx: Some(frame_tx),
+            result_rx,
+            join: Some(join),
+        }
+    }
+
+    fn enqueue(&self, frame: VideoToolboxH264AnnexBFrame) -> io::Result<()> {
+        let tx = self
+            .frame_tx
+            .as_ref()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "H.264 FIFO writer closed"))?;
+        tx.send(frame)
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "H.264 FIFO writer stopped"))
+    }
+
+    fn try_recv_result(&mut self) -> Option<VideoToolboxFifoWriterResult> {
+        self.result_rx.try_recv().ok()
+    }
+
+    fn close_and_join(&mut self) {
+        self.frame_tx.take();
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for VideoToolboxFifoWriter {
+    fn drop(&mut self) {
+        self.close_and_join();
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn run_video_toolbox_fifo_writer_loop<W: StdWrite>(
+    mut sink: W,
+    mut h264_pipe_writer: VideoToolboxH264PipeWriter,
+    frame_rx: std_mpsc::Receiver<VideoToolboxH264AnnexBFrame>,
+    result_tx: std_mpsc::Sender<VideoToolboxFifoWriterResult>,
+) {
+    while let Ok(frame) = frame_rx.recv() {
+        let encoded_bytes = frame.bytes.len() as u64;
+        let write_started_at = Instant::now();
+        match h264_pipe_writer.write_frame(&mut sink, &frame) {
+            Ok(()) => {
+                let _ = result_tx.send(VideoToolboxFifoWriterResult::FrameWritten {
+                    encoded_bytes,
+                    write_ms: write_started_at.elapsed().as_secs_f64() * 1000.0,
+                });
+            }
+            Err(error) => {
+                let _ = result_tx.send(VideoToolboxFifoWriterResult::Error(error.to_string()));
+                return;
+            }
+        }
+    }
+    if let Err(error) = sink.flush() {
+        let _ = result_tx.send(VideoToolboxFifoWriterResult::Error(error.to_string()));
+    }
+}
+
+#[cfg(target_os = "macos")]
 enum VideoToolboxH264PipeWriter {
     AnnexB,
     MpegTs {
@@ -1488,14 +1624,10 @@ impl VideoToolboxH264PipeWriter {
 #[allow(clippy::too_many_arguments)]
 fn drain_video_toolbox_output_frames(
     video_toolbox: &mut EncoderBridgeVideoToolboxProbe,
-    fifo: &mut File,
-    h264_pipe_writer: &mut VideoToolboxH264PipeWriter,
+    fifo_writer: &mut VideoToolboxFifoWriter,
     pending_video_toolbox_output_frames: &mut u64,
-    zero_copy_frames: &mut u64,
-    video_toolbox_output_frames: &mut u64,
-    video_toolbox_output_bytes: &mut u64,
+    pending_video_toolbox_fifo_frames: &mut u64,
     video_toolbox_probe_errors: &mut u64,
-    video_toolbox_fifo_write_times_ms: &mut Vec<f64>,
 ) -> io::Result<()> {
     while let Some(message) = video_toolbox.try_recv_output() {
         let _frame_index = message.frame_index;
@@ -1503,18 +1635,44 @@ fn drain_video_toolbox_output_frames(
             pending_video_toolbox_output_frames.saturating_sub(1);
         match message.result {
             Ok(frame) => {
-                let encoded_bytes = frame.bytes.len() as u64;
-                let write_started_at = Instant::now();
-                h264_pipe_writer.write_frame(fifo, &frame)?;
-                video_toolbox_fifo_write_times_ms
-                    .push(write_started_at.elapsed().as_secs_f64() * 1000.0);
+                fifo_writer.enqueue(frame)?;
+                *pending_video_toolbox_fifo_frames =
+                    pending_video_toolbox_fifo_frames.saturating_add(1);
+            }
+            Err(error) => {
+                *video_toolbox_probe_errors = video_toolbox_probe_errors.saturating_add(1);
+                return Err(io::Error::other(error));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+#[allow(clippy::too_many_arguments)]
+fn drain_video_toolbox_fifo_writer_results(
+    fifo_writer: &mut VideoToolboxFifoWriter,
+    pending_video_toolbox_fifo_frames: &mut u64,
+    zero_copy_frames: &mut u64,
+    video_toolbox_output_frames: &mut u64,
+    video_toolbox_output_bytes: &mut u64,
+    video_toolbox_fifo_write_times_ms: &mut Vec<f64>,
+) -> io::Result<()> {
+    while let Some(result) = fifo_writer.try_recv_result() {
+        match result {
+            VideoToolboxFifoWriterResult::FrameWritten {
+                encoded_bytes,
+                write_ms,
+            } => {
+                *pending_video_toolbox_fifo_frames =
+                    pending_video_toolbox_fifo_frames.saturating_sub(1);
                 *zero_copy_frames = zero_copy_frames.saturating_add(1);
                 *video_toolbox_output_frames = video_toolbox_output_frames.saturating_add(1);
                 *video_toolbox_output_bytes =
                     video_toolbox_output_bytes.saturating_add(encoded_bytes);
+                video_toolbox_fifo_write_times_ms.push(write_ms);
             }
-            Err(error) => {
-                *video_toolbox_probe_errors = video_toolbox_probe_errors.saturating_add(1);
+            VideoToolboxFifoWriterResult::Error(error) => {
                 return Err(io::Error::other(error));
             }
         }
@@ -1604,6 +1762,7 @@ fn copy_next_compositor_frame(
     }
 }
 
+#[cfg(test)]
 fn next_compositor_frame(
     frame_store: Option<&CompositorFrameStore>,
     previous_sequence: Option<u64>,
@@ -1626,6 +1785,29 @@ fn next_compositor_frame(
         let remaining = wait_budget.saturating_sub(started_at.elapsed());
         thread::sleep(remaining.min(Duration::from_millis(2)));
     }
+}
+
+fn next_fresh_compositor_frame(
+    frame_store: Option<&CompositorFrameStore>,
+    previous_sequence: Option<u64>,
+    stop: &AtomicBool,
+) -> Option<FedCompositorFrame> {
+    if previous_sequence.is_none() {
+        return latest_compositor_frame(frame_store);
+    }
+    frame_store?;
+
+    while !stop.load(Ordering::Relaxed) {
+        let frame = latest_compositor_frame(frame_store);
+        if frame
+            .as_ref()
+            .is_some_and(|frame| Some(frame.sequence) != previous_sequence)
+        {
+            return frame;
+        }
+        thread::sleep(Duration::from_millis(2));
+    }
+    None
 }
 
 fn open_recording_fifo_writer(path: &Path, stop: &AtomicBool) -> io::Result<File> {
@@ -1887,10 +2069,11 @@ mod tests {
     }
 
     #[test]
-    fn videotoolbox_bridge_uses_small_normal_tick_grace() {
+    fn videotoolbox_bridge_keeps_bounded_fresh_frame_grace() {
         let frame_interval = Duration::from_millis(33);
         let normal_grace = videotoolbox_fresh_frame_grace(frame_interval);
 
+        assert_eq!(normal_grace, Duration::from_millis(29));
         assert_eq!(
             compositor_frame_wait_budget(
                 EncoderBridgeVideoOutput::VideoToolboxH264MpegTs,
@@ -1913,7 +2096,7 @@ mod tests {
                 1,
                 frame_interval
             ),
-            frame_interval
+            normal_grace
         );
         assert_eq!(
             compositor_frame_wait_budget(
@@ -1921,7 +2104,7 @@ mod tests {
                 1,
                 frame_interval
             ),
-            frame_interval + frame_interval
+            normal_grace
         );
     }
 
@@ -2184,6 +2367,43 @@ mod tests {
         assert_eq!(bytes, expected);
     }
 
+    #[test]
+    fn videotoolbox_bridge_waits_for_fresh_compositor_sequence() {
+        let width = 8;
+        let height = 8;
+        let frame_store = Arc::new(std::sync::Mutex::new(crate::frame_store::FrameStore::new(
+            2,
+        )));
+        publish_test_compositor_frame(
+            &frame_store,
+            21,
+            width,
+            height,
+            &vec![5; raw_yuv420p_len(width, height).unwrap()],
+        );
+
+        let publisher = {
+            let frame_store = Arc::clone(&frame_store);
+            thread::spawn(move || {
+                thread::sleep(Duration::from_millis(5));
+                publish_test_compositor_frame(
+                    &frame_store,
+                    22,
+                    width,
+                    height,
+                    &vec![6; raw_yuv420p_len(width, height).unwrap()],
+                );
+            })
+        };
+        let stop = AtomicBool::new(false);
+
+        let fed = next_fresh_compositor_frame(Some(&frame_store), Some(21), &stop)
+            .expect("fresh compositor frame");
+        publisher.join().expect("publisher");
+
+        assert_eq!(fed.sequence, 22);
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn mpeg_ts_pipe_writer_coalesces_access_unit_to_single_fifo_write() {
@@ -2206,6 +2426,50 @@ mod tests {
         assert_eq!(sink.bytes.len() % 188, 0);
         assert!(sink.bytes.len() > frame.bytes.len());
         assert_eq!(sink.bytes[0], 0x47);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn videotoolbox_fifo_writer_reports_written_frames() {
+        let (frame_tx, frame_rx) = std_mpsc::sync_channel(2);
+        let (result_tx, result_rx) = std_mpsc::channel();
+        for frame_index in 0..2 {
+            frame_tx
+                .send(VideoToolboxH264AnnexBFrame {
+                    timing: VideoToolboxFrameTiming::new(frame_index, 30, 1, 30),
+                    bytes: vec![0x44; 64],
+                    nal_types: vec![1],
+                    is_idr: false,
+                })
+                .expect("queue frame");
+        }
+        drop(frame_tx);
+
+        run_video_toolbox_fifo_writer_loop(
+            CountingSink::default(),
+            VideoToolboxH264PipeWriter::for_output(
+                EncoderBridgeVideoOutput::VideoToolboxH264AnnexB,
+            ),
+            frame_rx,
+            result_tx,
+        );
+
+        let results = result_rx.try_iter().collect::<Vec<_>>();
+        assert_eq!(results.len(), 2);
+        for result in results {
+            match result {
+                VideoToolboxFifoWriterResult::FrameWritten {
+                    encoded_bytes,
+                    write_ms,
+                } => {
+                    assert_eq!(encoded_bytes, 64);
+                    assert!(write_ms >= 0.0);
+                }
+                VideoToolboxFifoWriterResult::Error(error) => {
+                    panic!("unexpected FIFO writer error: {error}");
+                }
+            }
+        }
     }
 
     #[cfg(target_os = "macos")]

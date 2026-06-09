@@ -21,12 +21,12 @@ use crate::diagnostics::{
 };
 use crate::frame_store::{FrameHandle, FrameStore};
 use crate::preview_camera::{
-    PreviewCameraFrameSource, PreviewCameraPixelFormat, preview_camera_frame_source,
-    preview_camera_latest_frame_info, preview_camera_status,
+    PreviewCameraFrameInfo, PreviewCameraFrameSource, PreviewCameraPixelFormat,
+    preview_camera_frame_source, try_preview_camera_frame_source,
 };
 use crate::preview_screen::{
-    PreviewScreenFrameSource, PreviewScreenPixelFormat, preview_screen_frame_source,
-    preview_screen_latest_frame_info, preview_screen_status,
+    PreviewScreenFrameInfo, PreviewScreenFrameSource, PreviewScreenPixelFormat,
+    preview_screen_frame_source, try_preview_screen_frame_source,
 };
 use crate::protocol::{
     CameraFit, CameraShape, CompositorBackend, CompositorSceneSourceFit, CompositorSceneSourceKind,
@@ -41,8 +41,8 @@ use crate::state::AppState;
 const COMPOSITOR_DIAGNOSTIC_WINDOW: Duration = Duration::from_secs(2);
 const COMPOSITOR_LIVE_SOURCE_REFRESH_INTERVAL: Duration = Duration::from_millis(250);
 const COMPOSITOR_LIVE_SOURCE_STALE_RECOVERY_AFTER: Duration = Duration::from_secs(1);
-const COMPOSITOR_LIVE_SOURCE_CONTENDED_RECOVERY_AFTER: Duration = Duration::from_millis(125);
-const COMPOSITOR_LIVE_SOURCE_CONTENDED_RECOVERY_MISSES: u32 = 3;
+const COMPOSITOR_LIVE_SOURCE_CONTENDED_RECOVERY_AFTER: Duration = Duration::from_millis(67);
+const COMPOSITOR_LIVE_SOURCE_CONTENDED_RECOVERY_MISSES: u32 = 1;
 const COMPOSITOR_MISSING_SOURCE_PLACEHOLDER_AFTER: Duration = Duration::from_secs(2);
 const MISSING_SOURCE_PLACEHOLDER_WIDTH: usize = 16;
 const MISSING_SOURCE_PLACEHOLDER_HEIGHT: usize = 9;
@@ -268,6 +268,40 @@ impl LiveSourceFetchState {
     }
 }
 
+#[derive(Clone)]
+struct CompositorRenderCache {
+    frame_store: CompositorFrameStore,
+    snapshot: Option<CompositorSceneSnapshot>,
+    active_image_source: Option<CompositorImageSource>,
+}
+
+impl CompositorRenderCache {
+    async fn refresh_initial(state: &AppState) -> Self {
+        let compositor = state.compositor.lock().await;
+        Self::from_runtime(&compositor)
+    }
+
+    fn refresh_nonblocking(&mut self, state: &AppState) {
+        if let Ok(compositor) = state.compositor.try_lock() {
+            *self = Self::from_runtime(&compositor);
+        }
+    }
+
+    fn from_runtime(compositor: &CompositorRuntime) -> Self {
+        let active_image_source = compositor
+            .scene
+            .as_ref()
+            .and_then(|snapshot| snapshot.active_screen.as_ref())
+            .and_then(|screen| compositor.image_sources.get(&screen.id))
+            .cloned();
+        Self {
+            frame_store: compositor.frame_store.clone(),
+            snapshot: compositor.scene.clone(),
+            active_image_source,
+        }
+    }
+}
+
 impl CompositorLiveSources {
     async fn refresh(state: &AppState) -> Self {
         Self::default().refresh_sources(state).await
@@ -288,6 +322,24 @@ impl CompositorLiveSources {
         }
         self.camera = camera;
         self.screen = screen;
+        self
+    }
+
+    fn refresh_sources_nonblocking(mut self, state: &AppState) -> Self {
+        if let Ok(camera) = try_preview_camera_frame_source(state) {
+            if !same_camera_source(self.camera.as_ref(), camera.as_ref()) {
+                self.last_camera_frame = None;
+                self.camera_fetch = LiveSourceFetchState::default();
+            }
+            self.camera = camera;
+        }
+        if let Ok(screen) = try_preview_screen_frame_source(state) {
+            if !same_screen_source(self.screen.as_ref(), screen.as_ref()) {
+                self.last_screen_frame = None;
+                self.screen_fetch = LiveSourceFetchState::default();
+            }
+            self.screen = screen;
+        }
         self
     }
 
@@ -517,6 +569,17 @@ pub async fn start_synthetic_compositor(
         message: Some("Synthetic compositor running.".to_string()),
     };
     let (stop_tx, stop_rx) = watch::channel(false);
+
+    {
+        let mut compositor = state.compositor.lock().await;
+        compositor.frame_store = Arc::new(StdMutex::new(FrameStore::new(2)));
+        compositor.latest_frame_evidence = None;
+        compositor.status = status.clone();
+        compositor.run_id = Some(run_id.clone());
+        compositor.stop_tx = Some(stop_tx);
+        compositor.render_task = None;
+    }
+
     let render_task = spawn_compositor_render_loop(
         state.clone(),
         run_id.clone(),
@@ -529,12 +592,11 @@ pub async fn start_synthetic_compositor(
 
     {
         let mut compositor = state.compositor.lock().await;
-        compositor.frame_store = Arc::new(StdMutex::new(FrameStore::new(2)));
-        compositor.latest_frame_evidence = None;
-        compositor.status = status.clone();
-        compositor.run_id = Some(run_id);
-        compositor.stop_tx = Some(stop_tx);
-        compositor.render_task = Some(render_task);
+        if compositor.run_id.as_deref() == Some(run_id.as_str()) {
+            compositor.render_task = Some(render_task);
+        } else {
+            render_task.abort();
+        }
     }
 
     state.emit_event("compositor.status", status.clone());
@@ -919,6 +981,7 @@ async fn run_synthetic_compositor_loop(
     // built once and reused per frame. Held across the loop's awaits (it is Send).
     let mut gpu_compositor = new_gpu_compositor();
     let mut live_sources = CompositorLiveSources::refresh(&state).await;
+    let mut render_cache = CompositorRenderCache::refresh_initial(&state).await;
     let mut next_live_source_refresh_at = Instant::now() + COMPOSITOR_LIVE_SOURCE_REFRESH_INTERVAL;
 
     let mut frames_rendered = 0_u64;
@@ -947,6 +1010,7 @@ async fn run_synthetic_compositor_loop(
     let mut compositor_status_lock_contentions = 0_u64;
     let mut preview_surface_active = false;
     let mut latest_surface_status: Option<PreviewSurfaceStatus> = None;
+    let mut latest_source_statuses: Vec<CompositorSourceStatus> = Vec::new();
     let mut cpu_fallback_frames = 0_u64;
     let mut source_import_stats = CompositorSourceImportStats::default();
 
@@ -972,7 +1036,7 @@ async fn run_synthetic_compositor_loop(
                 previous_tick_at = Some(ticked_at);
                 if ticked_at >= next_live_source_refresh_at {
                     let refresh_started_at = Instant::now();
-                    live_sources = live_sources.refresh_sources(&state).await;
+                    live_sources = live_sources.refresh_sources_nonblocking(&state);
                     live_source_refresh_times_ms
                         .push(refresh_started_at.elapsed().as_secs_f64() * 1000.0);
                     next_live_source_refresh_at =
@@ -989,6 +1053,7 @@ async fn run_synthetic_compositor_loop(
                         width,
                         height,
                         &mut live_sources,
+                        &mut render_cache,
                         gpu_compositor.as_mut(),
                         publish_yuv_frames,
                     )
@@ -1088,12 +1153,17 @@ async fn run_synthetic_compositor_loop(
                         frame_time_p95(&preview_surface_progress_times_ms);
                     let compositor_status_progress_p95 =
                         frame_time_p95(&compositor_status_progress_times_ms);
-                    let sources = compositor_source_statuses(&state).await;
+                    if let Some(sources) =
+                        try_compositor_source_statuses(&state, &live_sources)
+                    {
+                        latest_source_statuses = sources;
+                    }
+                    let sources = latest_source_statuses.clone();
                     let frame_age_ms = compositor_frame_age_ms(
                         &sources,
                         fallback_frame_age_ms,
                     );
-                    let status = update_compositor_status(
+                    let status = match try_update_compositor_status(
                         &state,
                         &run_id,
                         CompositorMetrics {
@@ -1106,10 +1176,31 @@ async fn run_synthetic_compositor_loop(
                             metal_target_handoff: published.metal_target_handoff,
                             sources,
                         },
-                    )
-                    .await;
-                    let Some(status) = status else {
-                        break;
+                    ) {
+                        Ok(Some(status)) => status,
+                        Ok(None) => break,
+                        Err(()) => {
+                            compositor_status_lock_contentions =
+                                compositor_status_lock_contentions.saturating_add(1);
+                            window_started_at = Instant::now();
+                            frames_in_window = 0;
+                            frame_times_ms.clear();
+                            source_fetch_times_ms.clear();
+                            scene_snapshot_times_ms.clear();
+                            camera_frame_fetch_times_ms.clear();
+                            screen_frame_fetch_times_ms.clear();
+                            gpu_prepare_times_ms.clear();
+                            gpu_source_texture_times_ms.clear();
+                            source_import_times_ms.clear();
+                            gpu_command_wait_times_ms.clear();
+                            gpu_total_times_ms.clear();
+                            frame_store_publish_times_ms.clear();
+                            tick_gap_times_ms.clear();
+                            live_source_refresh_times_ms.clear();
+                            preview_surface_progress_times_ms.clear();
+                            compositor_status_progress_times_ms.clear();
+                            continue;
+                        }
                     };
                     let preview_transport = surface_status
                         .as_ref()
@@ -1120,7 +1211,26 @@ async fn run_synthetic_compositor_loop(
                         .map(|status| status.backing)
                         .unwrap_or_default();
                     let diagnostic_stats = {
-                        let mut diagnostics = state.diagnostics.lock().await;
+                        let Ok(mut diagnostics) = state.diagnostics.try_lock() else {
+                            window_started_at = Instant::now();
+                            frames_in_window = 0;
+                            frame_times_ms.clear();
+                            source_fetch_times_ms.clear();
+                            scene_snapshot_times_ms.clear();
+                            camera_frame_fetch_times_ms.clear();
+                            screen_frame_fetch_times_ms.clear();
+                            gpu_prepare_times_ms.clear();
+                            gpu_source_texture_times_ms.clear();
+                            source_import_times_ms.clear();
+                            gpu_command_wait_times_ms.clear();
+                            gpu_total_times_ms.clear();
+                            frame_store_publish_times_ms.clear();
+                            tick_gap_times_ms.clear();
+                            live_source_refresh_times_ms.clear();
+                            preview_surface_progress_times_ms.clear();
+                            compositor_status_progress_times_ms.clear();
+                            continue;
+                        };
                         let next = apply_compositor_stats(
                             diagnostics.clone(),
                             target_fps,
@@ -1918,25 +2028,16 @@ async fn publish_compositor_frame(
     width: u32,
     height: u32,
     live_sources: &mut CompositorLiveSources,
+    render_cache: &mut CompositorRenderCache,
     gpu: Option<&mut GpuCompositor>,
     publish_yuv_frame: bool,
 ) -> CompositorPublishResult {
     let source_fetch_started_at = Instant::now();
     let scene_snapshot_started_at = Instant::now();
-    let (frame_store, snapshot, active_image_source) = {
-        let compositor = state.compositor.lock().await;
-        let active_image_source = compositor
-            .scene
-            .as_ref()
-            .and_then(|snapshot| snapshot.active_screen.as_ref())
-            .and_then(|screen| compositor.image_sources.get(&screen.id))
-            .cloned();
-        (
-            compositor.frame_store.clone(),
-            compositor.scene.clone(),
-            active_image_source,
-        )
-    };
+    render_cache.refresh_nonblocking(state);
+    let frame_store = render_cache.frame_store.clone();
+    let snapshot = render_cache.snapshot.clone();
+    let active_image_source = render_cache.active_image_source.clone();
     let scene_snapshot_ms = scene_snapshot_started_at.elapsed().as_secs_f64() * 1000.0;
     let (camera_frame, camera_frame_fetch_ms) =
         if scene_needs_live_camera_frame(snapshot.as_ref(), active_image_source.as_ref()) {
@@ -2038,8 +2139,9 @@ async fn publish_compositor_frame(
         has_image_source,
         published_at: captured_at,
     };
-    let mut compositor = state.compositor.lock().await;
-    compositor.latest_frame_evidence = Some(evidence);
+    if let Ok(mut compositor) = state.compositor.try_lock() {
+        compositor.latest_frame_evidence = Some(evidence);
+    }
     CompositorPublishResult {
         fallback_frame_age_ms: captured_at.elapsed().as_millis() as u64,
         fingerprint,
@@ -2236,14 +2338,16 @@ fn try_update_compositor_frame_progress(
     Ok(Some(compositor.status.clone()))
 }
 
-async fn update_compositor_status(
+fn try_update_compositor_status(
     state: &AppState,
     run_id: &str,
     metrics: CompositorMetrics,
-) -> Option<CompositorStatus> {
-    let mut compositor = state.compositor.lock().await;
+) -> Result<Option<CompositorStatus>, ()> {
+    let Ok(mut compositor) = state.compositor.try_lock() else {
+        return Err(());
+    };
     if compositor.run_id.as_deref() != Some(run_id) {
-        return None;
+        return Ok(None);
     }
     compositor.status.state = CompositorState::Live;
     compositor.status.render_fps = Some(metrics.render_fps);
@@ -2258,7 +2362,7 @@ async fn update_compositor_status(
     );
     compositor.status.sources = metrics.sources;
     compositor.status.updated_at = Utc::now().to_rfc3339();
-    Some(compositor.status.clone())
+    Ok(Some(compositor.status.clone()))
 }
 
 fn apply_compositor_status_metal_target_handoff(
@@ -2276,11 +2380,31 @@ fn apply_compositor_status_metal_target_handoff(
     }
 }
 
-async fn compositor_source_statuses(state: &AppState) -> Vec<CompositorSourceStatus> {
-    let camera = preview_camera_status(state).await;
-    let camera_frame = preview_camera_latest_frame_info(state).await;
-    let screen = preview_screen_status(state).await;
-    let screen_frame = preview_screen_latest_frame_info(state).await;
+fn try_compositor_source_statuses(
+    state: &AppState,
+    live_sources: &CompositorLiveSources,
+) -> Option<Vec<CompositorSourceStatus>> {
+    let camera = state.preview_camera.try_lock().ok()?.status.clone();
+    let camera_frame = live_sources
+        .last_camera_frame
+        .as_ref()
+        .map(|(frame, _layout)| PreviewCameraFrameInfo {
+            sequence: frame.sequence,
+            width: frame.width,
+            height: frame.height,
+            frame_age_ms: frame.captured_at.elapsed().as_millis() as u64,
+        });
+    let screen = state.preview_screen.try_lock().ok()?.status.clone();
+    let screen_frame =
+        live_sources
+            .last_screen_frame
+            .as_ref()
+            .map(|frame| PreviewScreenFrameInfo {
+                sequence: frame.sequence,
+                width: frame.width,
+                height: frame.height,
+                frame_age_ms: frame.captured_at.elapsed().as_millis() as u64,
+            });
 
     let mut sources = Vec::with_capacity(2);
     if camera.camera_id.is_some() || camera.state == PreviewCameraState::Live {
@@ -2317,7 +2441,7 @@ async fn compositor_source_statuses(state: &AppState) -> Vec<CompositorSourceSta
             message: screen.message,
         });
     }
-    sources
+    Some(sources)
 }
 
 fn compositor_frame_age_ms(sources: &[CompositorSourceStatus], fallback: u64) -> u64 {
@@ -3642,9 +3766,18 @@ mod tests {
         }
 
         let mut live_sources = CompositorLiveSources::default();
-        let result =
-            publish_compositor_frame(&state, 7, 8, 4, &mut live_sources, Some(&mut gpu), true)
-                .await;
+        let mut render_cache = CompositorRenderCache::refresh_initial(&state).await;
+        let result = publish_compositor_frame(
+            &state,
+            7,
+            8,
+            4,
+            &mut live_sources,
+            &mut render_cache,
+            Some(&mut gpu),
+            true,
+        )
+        .await;
         if result.compositor_backend != CompositorBackend::Metal {
             eprintln!("skipping: Metal compositor did not render this frame");
             return;
@@ -3709,9 +3842,18 @@ mod tests {
         }
 
         let mut live_sources = CompositorLiveSources::default();
-        let result =
-            publish_compositor_frame(&state, 7, 8, 4, &mut live_sources, Some(&mut gpu), false)
-                .await;
+        let mut render_cache = CompositorRenderCache::refresh_initial(&state).await;
+        let result = publish_compositor_frame(
+            &state,
+            7,
+            8,
+            4,
+            &mut live_sources,
+            &mut render_cache,
+            Some(&mut gpu),
+            false,
+        )
+        .await;
         if result.compositor_backend != CompositorBackend::Metal {
             eprintln!("skipping: Metal compositor did not render this frame");
             return;

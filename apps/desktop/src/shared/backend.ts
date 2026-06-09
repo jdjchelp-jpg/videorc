@@ -1315,9 +1315,9 @@ export interface DiagnosticStats {
   compositorCameraSourceTryLockMisses: number
   /** Compositor ticks where screen/window source try-lock was busy and the cached screen/window frame was reused. */
   compositorScreenSourceTryLockMisses: number
-  /** Bounded blocking camera refreshes after repeated misses or visibly stale cached camera frames. */
+  /** Bounded blocking camera refreshes after source-store contention or visibly stale cached camera frames. */
   compositorCameraSourceBlockingRefreshes: number
-  /** Bounded blocking screen/window refreshes after repeated misses or visibly stale cached screen/window frames. */
+  /** Bounded blocking screen/window refreshes after source-store contention or visibly stale cached screen/window frames. */
   compositorScreenSourceBlockingRefreshes: number
   previewRepeatedFrames: number
   previewSurfaceResizeCount: number
@@ -1391,7 +1391,7 @@ export interface DiagnosticStats {
   previewScreenActualWidth?: number
   /** Actual latest ScreenCaptureKit frame height received from CoreVideo. */
   previewScreenActualHeight?: number
-  /** Whether the latest ScreenCaptureKit frame retained an IOSurface for zero-copy import. */
+  /** Whether the latest ScreenCaptureKit frame retained a zero-copy source handle. */
   previewScreenIosurfaceAvailable?: boolean
   /** P95 interval between ScreenCaptureKit screen sample callbacks. */
   previewScreenCaptureGapP95Ms?: number

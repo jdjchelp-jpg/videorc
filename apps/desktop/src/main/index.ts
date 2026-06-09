@@ -130,7 +130,8 @@ function createWindow(): void {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false,
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      backgroundThrottling: false
     }
   })
 
@@ -393,6 +394,8 @@ function nativePreviewSurfaceHtml(initialScene: PreviewSurfaceSceneState | null)
 
       body {
         --stripe-size: 52px;
+        -webkit-app-region: drag;
+        user-select: none;
         background:
           radial-gradient(circle at var(--dot-x, 10%) 50%, rgba(255, 255, 255, 0.42), transparent 20%),
           linear-gradient(135deg, rgba(29, 78, 216, 0.62), rgba(5, 150, 105, 0.58)),
@@ -813,7 +816,7 @@ async function createNativePreviewSurfaceWindow(): Promise<void> {
       skipTaskbar: true,
       hasShadow: false,
       resizable: false,
-      movable: false,
+      movable: true,
       show: false,
       backgroundColor: '#00000000',
       webPreferences: {
@@ -824,7 +827,7 @@ async function createNativePreviewSurfaceWindow(): Promise<void> {
       }
     })
     nativePreviewSurfaceWindow = surfaceWindow
-    surfaceWindow.setIgnoreMouseEvents(true, { forward: true })
+    surfaceWindow.setIgnoreMouseEvents(false)
     surfaceWindow.on('closed', () => {
       if (nativePreviewSurfaceWindow === surfaceWindow) {
         nativePreviewSurfaceWindow = null
@@ -1915,6 +1918,8 @@ async function runSmokePreviewMotionCommand(command: string, params: Record<stri
       throw new Error('Native preview surface is not ready for measurement.')
     }
     const durationMs = typeof params.durationMs === 'number' ? params.durationMs : 2500
+    resetNativePreviewMainHandoffMetrics()
+    nativePreviewRealSurfaceDriver?.resetMetrics?.()
     await new Promise((resolveMeasure) => setTimeout(resolveMeasure, durationMs))
     if (nativePreviewSurfaceStatusIsRealSurface(nativePreviewSurfaceStatus)) {
       return nativePreviewSurfaceStatusMetrics(nativePreviewSurfaceStatus)

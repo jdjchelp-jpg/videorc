@@ -32,11 +32,52 @@ const PREVIEW_SCREEN_CAPTURE_QUEUE_DEPTH: u32 = 3;
 const PREVIEW_SCREEN_TIMING_WINDOW: usize = 180;
 const SCREEN_CAPTUREKIT_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(12);
 const SCREEN_CAPTUREKIT_STREAM_START_TIMEOUT: Duration = Duration::from_secs(30);
+const SCREEN_CAPTURE_CPU_COPY_ENV: &str = "VIDEORC_SCREEN_CAPTURE_CPU_COPY";
 
 fn native_screen_preview_thread_startup_timeout() -> Duration {
     SCREEN_CAPTUREKIT_DISCOVERY_TIMEOUT
         .saturating_add(SCREEN_CAPTUREKIT_STREAM_START_TIMEOUT)
         .saturating_add(Duration::from_secs(5))
+}
+
+fn native_preview_surface_env_enabled() -> bool {
+    truthy_env_value(
+        std::env::var("VIDEORC_NATIVE_PREVIEW_SURFACE")
+            .ok()
+            .as_deref(),
+    )
+}
+
+fn forced_screen_capture_cpu_copy_enabled() -> bool {
+    truthy_env_value(std::env::var(SCREEN_CAPTURE_CPU_COPY_ENV).ok().as_deref())
+}
+
+fn truthy_env_value(value: Option<&str>) -> bool {
+    matches!(
+        value.map(|value| value.trim().to_ascii_lowercase()),
+        Some(value) if matches!(value.as_str(), "1" | "true" | "yes" | "on")
+    )
+}
+
+fn should_skip_screen_capture_cpu_copy_for_config(
+    zero_copy_source_handle_available: bool,
+    source_zerocopy_enabled: bool,
+    native_preview_surface_enabled: bool,
+    forced_cpu_copy_enabled: bool,
+) -> bool {
+    zero_copy_source_handle_available
+        && source_zerocopy_enabled
+        && native_preview_surface_enabled
+        && !forced_cpu_copy_enabled
+}
+
+fn should_skip_screen_capture_cpu_copy(zero_copy_source_handle_available: bool) -> bool {
+    should_skip_screen_capture_cpu_copy_for_config(
+        zero_copy_source_handle_available,
+        crate::metal_compositor::source_zerocopy_enabled(),
+        native_preview_surface_env_enabled(),
+        forced_screen_capture_cpu_copy_enabled(),
+    )
 }
 
 pub type PreviewScreenSlot = Arc<tokio::sync::Mutex<PreviewScreenRuntime>>;
@@ -538,6 +579,19 @@ pub async fn preview_screen_frame_source(state: &AppState) -> Option<PreviewScre
     })
 }
 
+pub fn try_preview_screen_frame_source(
+    state: &AppState,
+) -> Result<Option<PreviewScreenFrameSource>, ()> {
+    let slot = state.preview_screen.try_lock().map_err(|_| ())?;
+    let Some(active) = slot.active.as_ref() else {
+        return Ok(None);
+    };
+    Ok(Some(PreviewScreenFrameSource {
+        shared: Arc::clone(&active.shared),
+        source_key: slot.source_key.clone(),
+    }))
+}
+
 pub async fn latest_preview_screen_png(
     state: &AppState,
     requested_max_width: Option<u32>,
@@ -553,6 +607,10 @@ pub async fn latest_preview_screen_png(
         guard.frame_store.latest()?
     };
 
+    let expected_len = frame.width as usize * frame.height as usize * 4;
+    if frame.bytes.len() < expected_len {
+        return None;
+    }
     let mut rgba = Vec::with_capacity(frame.bytes.len());
     for pixel in frame.bytes.chunks_exact(4) {
         rgba.extend_from_slice(&[pixel[2], pixel[1], pixel[0], pixel[3]]);
@@ -821,7 +879,8 @@ async fn poll_screen_metrics(
                 slot.status.height = Some(frame.height);
                 slot.status.actual_width = Some(frame.width);
                 slot.status.actual_height = Some(frame.height);
-                slot.status.iosurface_available = Some(frame.source_iosurface.is_some());
+                slot.status.iosurface_available =
+                    Some(frame.source_iosurface.is_some() || frame.source_pixel_buffer.is_some());
                 slot.status.sequence = Some(frame.sequence);
                 let _frame_bytes = frame.bytes.len();
                 slot.status.frame_age_ms = Some(frame.captured_at.elapsed().as_millis() as u64);
@@ -1468,28 +1527,9 @@ mod macos {
             return;
         }
 
-        let lock_started_at = Instant::now();
-        let lock_result = unsafe {
-            CVPixelBufferLockBaseAddress(&pixel_buffer, CVPixelBufferLockFlags::ReadOnly)
-        };
-        let pixel_buffer_lock_ms = lock_started_at.elapsed().as_secs_f64() * 1000.0;
-        if lock_result != 0 {
-            let mut guard = shared
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            guard.dropped_frames = guard.dropped_frames.saturating_add(1);
-            return;
-        }
-
         let width = CVPixelBufferGetWidth(&pixel_buffer) as u32;
         let height = CVPixelBufferGetHeight(&pixel_buffer) as u32;
-        let bytes_per_row = CVPixelBufferGetBytesPerRow(&pixel_buffer);
-        let base_address = CVPixelBufferGetBaseAddress(&pixel_buffer);
-
-        if base_address.is_null() || width == 0 || height == 0 {
-            unsafe {
-                CVPixelBufferUnlockBaseAddress(&pixel_buffer, CVPixelBufferLockFlags::ReadOnly)
-            };
+        if width == 0 || height == 0 {
             let mut guard = shared
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1501,71 +1541,118 @@ mod macos {
         let height_usize = height as usize;
         let row_bytes = width_usize * 4;
         let frame_bytes = row_bytes * height_usize;
-        let mut bytes = {
-            let mut guard = shared
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if let Some(buffer) = guard.frame_store.checkout_spare_buffer(frame_bytes) {
-                buffer
-            } else {
-                guard.frame_store.record_buffer_allocation();
-                drop(guard);
-                vec![0; frame_bytes]
-            }
-        };
-        unsafe {
-            let copy_started_at = Instant::now();
-            let source = base_address.cast::<u8>();
-            for row in 0..height_usize {
-                let source_row = source.add(row * bytes_per_row);
-                let target_row = &mut bytes[row * row_bytes..(row + 1) * row_bytes];
-                target_row.copy_from_slice(slice::from_raw_parts(source_row, row_bytes));
-            }
-            let row_copy_ms = copy_started_at.elapsed().as_secs_f64() * 1000.0;
-            CVPixelBufferUnlockBaseAddress(&pixel_buffer, CVPixelBufferLockFlags::ReadOnly);
 
-            let publish_started_at = Instant::now();
-            let mut guard = shared
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let now = Instant::now();
-            guard.frames_captured = guard.frames_captured.saturating_add(1);
-            guard.frames_in_window = guard.frames_in_window.saturating_add(1);
-            let window_started = *guard.window_started_at.get_or_insert(now);
-            let elapsed = window_started.elapsed();
-            if elapsed >= Duration::from_millis(500) {
-                guard.source_fps =
-                    Some(guard.frames_in_window as f64 / elapsed.as_secs_f64().max(0.001));
-                guard.frames_in_window = 0;
-                guard.window_started_at = Some(now);
-            }
-            let sequence = guard.frames_captured;
-            // Zero-copy: retain the capture IOSurface so the compositor can import it as a Metal
-            // texture instead of re-uploading these bytes. Opt-in until validated on-device; the
-            // BGRA `bytes` above remain the fallback and the encoder/source-readiness path.
-            let source_iosurface = if crate::metal_compositor::source_zerocopy_enabled() {
-                CVPixelBufferGetIOSurface(Some(&pixel_buffer))
-                    .map(crate::frame_store::RetainedIoSurface::new)
-            } else {
-                None
+        // Zero-copy native preview and recording use retained CoreVideo storage directly.
+        // Avoiding the extra 4K BGRA row copy keeps ScreenCaptureKit callbacks short under
+        // recording load; `bytes` stays only as a diagnostic/fallback path.
+        let source_zerocopy_enabled = crate::metal_compositor::source_zerocopy_enabled();
+        let source_iosurface = if source_zerocopy_enabled {
+            CVPixelBufferGetIOSurface(Some(&pixel_buffer))
+                .map(crate::frame_store::RetainedIoSurface::new)
+        } else {
+            None
+        };
+        let source_pixel_buffer = if source_zerocopy_enabled {
+            Some(crate::frame_store::RetainedPixelBuffer::new(
+                pixel_buffer.clone(),
+            ))
+        } else {
+            None
+        };
+        let skip_cpu_copy = should_skip_screen_capture_cpu_copy(
+            source_iosurface.is_some() || source_pixel_buffer.is_some(),
+        );
+        let (bytes, pixel_buffer_lock_ms, row_copy_ms) = if skip_cpu_copy {
+            (Vec::new(), 0.0, 0.0)
+        } else {
+            let lock_started_at = Instant::now();
+            let lock_result = unsafe {
+                CVPixelBufferLockBaseAddress(&pixel_buffer, CVPixelBufferLockFlags::ReadOnly)
             };
-            guard.frame_store.publish_with_iosurface(
-                sequence,
-                width,
-                height,
-                PreviewScreenPixelFormat::Bgra8,
-                now,
+            let pixel_buffer_lock_ms = lock_started_at.elapsed().as_secs_f64() * 1000.0;
+            if lock_result != 0 {
+                let mut guard = shared
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                guard.dropped_frames = guard.dropped_frames.saturating_add(1);
+                return;
+            }
+
+            let bytes_per_row = CVPixelBufferGetBytesPerRow(&pixel_buffer);
+            let base_address = CVPixelBufferGetBaseAddress(&pixel_buffer);
+            if base_address.is_null() {
+                unsafe {
+                    CVPixelBufferUnlockBaseAddress(&pixel_buffer, CVPixelBufferLockFlags::ReadOnly)
+                };
+                let mut guard = shared
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                guard.dropped_frames = guard.dropped_frames.saturating_add(1);
+                return;
+            }
+
+            let mut bytes = {
+                let mut guard = shared
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if let Some(buffer) = guard.frame_store.checkout_spare_buffer(frame_bytes) {
+                    buffer
+                } else {
+                    guard.frame_store.record_buffer_allocation();
+                    drop(guard);
+                    vec![0; frame_bytes]
+                }
+            };
+            let copy_started_at = Instant::now();
+            unsafe {
+                let source = base_address.cast::<u8>();
+                for row in 0..height_usize {
+                    let source_row = source.add(row * bytes_per_row);
+                    let target_row = &mut bytes[row * row_bytes..(row + 1) * row_bytes];
+                    target_row.copy_from_slice(slice::from_raw_parts(source_row, row_bytes));
+                }
+                CVPixelBufferUnlockBaseAddress(&pixel_buffer, CVPixelBufferLockFlags::ReadOnly);
+            }
+            (
                 bytes,
-                source_iosurface,
-            );
-            let publish_ms = publish_started_at.elapsed().as_secs_f64() * 1000.0;
-            guard.capture_timings.record_valid_frame(
                 pixel_buffer_lock_ms,
-                row_copy_ms,
-                publish_ms,
-                frame_bytes as u64,
-            );
+                copy_started_at.elapsed().as_secs_f64() * 1000.0,
+            )
+        };
+
+        let publish_started_at = Instant::now();
+        let mut guard = shared
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let now = Instant::now();
+        guard.frames_captured = guard.frames_captured.saturating_add(1);
+        guard.frames_in_window = guard.frames_in_window.saturating_add(1);
+        let window_started = *guard.window_started_at.get_or_insert(now);
+        let elapsed = window_started.elapsed();
+        if elapsed >= Duration::from_millis(500) {
+            guard.source_fps =
+                Some(guard.frames_in_window as f64 / elapsed.as_secs_f64().max(0.001));
+            guard.frames_in_window = 0;
+            guard.window_started_at = Some(now);
         }
+        let sequence = guard.frames_captured;
+        guard.frame_store.publish_with_source_handles(
+            sequence,
+            width,
+            height,
+            PreviewScreenPixelFormat::Bgra8,
+            now,
+            bytes,
+            source_iosurface,
+            source_pixel_buffer,
+        );
+        let publish_ms = publish_started_at.elapsed().as_secs_f64() * 1000.0;
+        guard.capture_timings.record_valid_frame(
+            pixel_buffer_lock_ms,
+            row_copy_ms,
+            publish_ms,
+            frame_bytes as u64,
+        );
     }
 
     fn sample_buffer_is_complete(_sample_buffer: &CMSampleBuffer) -> bool {
@@ -1915,6 +2002,25 @@ mod tests {
         assert!(!request.exclude_current_process_windows);
         assert!(request.preserves_aspect_ratio);
         assert!(request.scales_to_fit);
+    }
+
+    #[test]
+    fn screen_capture_cpu_copy_is_skipped_only_for_native_zero_copy_source_handle() {
+        assert!(should_skip_screen_capture_cpu_copy_for_config(
+            true, true, true, false
+        ));
+        assert!(!should_skip_screen_capture_cpu_copy_for_config(
+            false, true, true, false
+        ));
+        assert!(!should_skip_screen_capture_cpu_copy_for_config(
+            true, false, true, false
+        ));
+        assert!(!should_skip_screen_capture_cpu_copy_for_config(
+            true, true, false, false
+        ));
+        assert!(!should_skip_screen_capture_cpu_copy_for_config(
+            true, true, true, true
+        ));
     }
 
     #[tokio::test]

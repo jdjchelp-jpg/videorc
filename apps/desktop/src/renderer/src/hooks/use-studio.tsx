@@ -1253,6 +1253,9 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
         const status = payload as CompositorStatus
         nativePreviewCompositorLastEventAtRef.current = Date.now()
         nativePreviewCompositorLatestStatusRef.current = status
+        if (isActiveRecordingState(recordingRef.current.state)) {
+          return
+        }
         queueNativePreviewCompositorPresent(nextClient, status)
       }),
       nextClient.on('preview.camera.status', (payload) => {

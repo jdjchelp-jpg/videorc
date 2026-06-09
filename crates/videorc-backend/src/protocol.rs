@@ -608,11 +608,10 @@ impl Default for AudioSettings {
 
 fn default_microphone_sync_offset_ms() -> i32 {
     // Compensate the capture pipeline's audio latency so mic audio is not late by
-    // default. A clap test (sharp synchronized audio+video event) measured ~350ms of
-    // audio lag on the encoder-bridge recording path, consistent across claps with no
-    // drift — which is why smaller values (-120/-166) still left audio clearly behind.
-    // Users can fine-tune via the Sources tab Sync control.
-    -350
+    // default. A recorded lip-sync sample on the native 4K/encoder-bridge path still had
+    // perceptibly late mic audio with the older -350ms compensation, so bias the default
+    // another 150ms earlier. Users can fine-tune via the Sources tab Sync control.
+    -500
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1065,12 +1064,12 @@ pub struct DiagnosticStats {
     /// tick.
     #[serde(default)]
     pub compositor_screen_source_try_lock_misses: u64,
-    /// Cumulative bounded blocking camera source refreshes after repeated try-lock
-    /// misses or a visibly stale cached camera frame.
+    /// Cumulative bounded blocking camera source refreshes after source-store
+    /// contention or a visibly stale cached camera frame.
     #[serde(default)]
     pub compositor_camera_source_blocking_refreshes: u64,
-    /// Cumulative bounded blocking screen/window source refreshes after repeated
-    /// try-lock misses or a visibly stale cached screen/window frame.
+    /// Cumulative bounded blocking screen/window source refreshes after
+    /// source-store contention or a visibly stale cached screen/window frame.
     #[serde(default)]
     pub compositor_screen_source_blocking_refreshes: u64,
     pub preview_repeated_frames: u64,
@@ -1176,7 +1175,7 @@ pub struct DiagnosticStats {
     /// Actual latest ScreenCaptureKit frame height received from CoreVideo.
     #[serde(default)]
     pub preview_screen_actual_height: Option<u32>,
-    /// Whether the latest ScreenCaptureKit frame retained an IOSurface for zero-copy import.
+    /// Whether the latest ScreenCaptureKit frame retained a zero-copy source handle.
     #[serde(default)]
     pub preview_screen_iosurface_available: Option<bool>,
     /// P95 interval between ScreenCaptureKit screen sample callbacks.

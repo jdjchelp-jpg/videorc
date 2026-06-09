@@ -552,8 +552,12 @@ function previewPollingIntervalMs(status: PreviewLiveStatus): number {
     return 250
   }
 
-  const targetFps = status.targetFps && Number.isFinite(status.targetFps) ? status.targetFps : 4
-  return clampRange(Math.round(1000 / Math.max(1, targetFps)), 80, 250)
+  // The in-place (embedded) preview re-fetches the latest composited JPEG on this
+  // interval. The previous floor of 80ms + a default of 4fps capped it at 4-12fps,
+  // which read as a laggy preview even when capture was running at 60fps. Aim for
+  // ~30fps (a 1080p JPEG decode is cheap) so the embedded preview stays fluid.
+  const targetFps = status.targetFps && Number.isFinite(status.targetFps) ? status.targetFps : 30
+  return clampRange(Math.round(1000 / Math.max(1, targetFps)), 33, 100)
 }
 
 type PreviewBadgeState = {

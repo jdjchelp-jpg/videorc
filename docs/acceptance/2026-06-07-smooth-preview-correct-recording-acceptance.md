@@ -84,7 +84,7 @@ zero-copy path.
 - [ ] **Layout move** — drag the camera overlay mid-recording; preview and recording change
       together; final file matches the preview (crop, mirror, color).
 - [ ] **Mouth/voice sync** — clap once on camera; final mouth/hand/audio sync feels right
-      (verify the −350 ms mic offset on your hardware).
+      (verify the −500 ms mic offset on your hardware).
 
 ### Optional: deterministic frame fixture (slice 5/7)
 

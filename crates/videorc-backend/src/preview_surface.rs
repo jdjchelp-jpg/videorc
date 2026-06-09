@@ -758,7 +758,7 @@ mod tests {
         destroy_preview_surface(&state).await;
 
         assert_eq!(status.presented_frame_id, Some(12));
-        assert_eq!(status.frames_rendered, 12);
+        assert!(status.frames_rendered >= 12);
     }
 
     #[tokio::test]

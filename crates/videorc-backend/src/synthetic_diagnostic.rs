@@ -103,9 +103,25 @@ pub fn overlay_frame_markers(
             }
         }
     }
-    draw_text(bytes, width, height, &format!("{sequence}"), 1, strip_h + 1, (255, 245, 80));
+    draw_text(
+        bytes,
+        width,
+        height,
+        &format!("{sequence}"),
+        1,
+        strip_h + 1,
+        (255, 245, 80),
+    );
     let tc = timecode(sequence, fps);
-    draw_text(bytes, width, height, &tc, 1, strip_h + 2 + GLYPH_HEIGHT, (120, 230, 255));
+    draw_text(
+        bytes,
+        width,
+        height,
+        &tc,
+        1,
+        strip_h + 2 + GLYPH_HEIGHT,
+        (120, 230, 255),
+    );
 }
 
 /// Decode the sequence (low `STRIP_BITS` bits) from a rendered tile by sampling each cell centre.
@@ -162,7 +178,11 @@ mod tests {
         for seq in [0u64, 1, 2, 255, 4096, 65535, 65536, 100_003] {
             let mut bytes = blank(w, h);
             overlay_frame_markers(&mut bytes, w, h, seq, 30);
-            assert_eq!(decode_sequence(&bytes, w, h), Some(seq & 0xFFFF), "seq {seq}");
+            assert_eq!(
+                decode_sequence(&bytes, w, h),
+                Some(seq & 0xFFFF),
+                "seq {seq}"
+            );
         }
     }
 

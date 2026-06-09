@@ -214,34 +214,6 @@ impl<P, M> FrameStore<P, M> {
         )
     }
 
-    /// Publish a frame that also retains its capture-source IOSurface for zero-copy GPU import.
-    #[allow(clippy::too_many_arguments)]
-    pub fn publish_with_iosurface(
-        &mut self,
-        sequence: u64,
-        width: u32,
-        height: u32,
-        pixel_format: P,
-        captured_at: Instant,
-        bytes: Vec<u8>,
-        source_iosurface: Option<RetainedIoSurface>,
-    ) -> FrameHandle<P, M>
-    where
-        M: Default,
-    {
-        self.publish_full(
-            sequence,
-            width,
-            height,
-            pixel_format,
-            M::default(),
-            captured_at,
-            bytes,
-            source_iosurface,
-            None,
-        )
-    }
-
     /// Publish a frame that retains source handles for zero-copy GPU import where supported.
     #[allow(clippy::too_many_arguments)]
     pub fn publish_with_source_handles(

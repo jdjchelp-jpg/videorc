@@ -1329,6 +1329,9 @@ fn encode_texture_present(
 }
 
 fn upload_bgra_to_texture(texture: &MetalTexture, source: &GpuSource<'_>) -> Option<()> {
+    if source.bgra.len() < source.width.saturating_mul(source.height).saturating_mul(4) {
+        return None;
+    }
     let region = MTLRegion {
         origin: MTLOrigin { x: 0, y: 0, z: 0 },
         size: MTLSize {
@@ -1808,6 +1811,50 @@ mod tests {
                 .timings
                 .source_import_stats
                 .camera_cvpixelbuffer_frames,
+            1
+        );
+        assert_eq!(output.timings.source_import_stats.byte_upload_frames, 0);
+        assert_eq!(output.timings.source_import_stats.import_failures, 0);
+    }
+
+    #[test]
+    fn compose_timings_count_screen_cvpixelbuffer_import_or_skips() {
+        let Some(mut compositor) = MetalSceneCompositor::new() else {
+            return;
+        };
+        let Some(cache) = compositor.source_texture_cache.as_ref() else {
+            return;
+        };
+        let (w, h) = (16usize, 16usize);
+        let Some(pixel_buffer) = make_iosurface_bgra_pixel_buffer(w, h) else {
+            return;
+        };
+        if import_pixel_buffer_texture(cache.cache(), &pixel_buffer, w, h).is_none() {
+            return;
+        }
+        let sources = [GpuSource {
+            kind: GpuSourceKind::Screen,
+            bgra: &[],
+            iosurface: None,
+            pixel_buffer: Some(&pixel_buffer),
+            width: w,
+            height: h,
+            dest: [0.0, 0.0, 1.0, 1.0],
+            crop: [0.0; 4],
+            mirror: false,
+            circle: false,
+        }];
+
+        let output = compositor
+            .compose_bgra_with_timings(w, h, [0.0, 0.0, 0.0, 1.0], &sources)
+            .expect("compose screen CVPixelBuffer source import");
+
+        assert_eq!(output.timings.source_import_stats.cvpixelbuffer_frames, 1);
+        assert_eq!(
+            output
+                .timings
+                .source_import_stats
+                .screen_cvpixelbuffer_frames,
             1
         );
         assert_eq!(output.timings.source_import_stats.byte_upload_frames, 0);

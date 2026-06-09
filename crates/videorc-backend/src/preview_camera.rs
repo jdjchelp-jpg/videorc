@@ -34,6 +34,47 @@ const CAMERA_REFERENCE_WIDTH: u32 = 1280;
 const CAMERA_REFERENCE_HEIGHT: u32 = 720;
 const CAMERA_OVERLAY_CAPTURE_MIN_WIDTH: u32 = 1280;
 const CAMERA_OVERLAY_CAPTURE_MIN_HEIGHT: u32 = 720;
+const CAMERA_CAPTURE_CPU_COPY_ENV: &str = "VIDEORC_CAMERA_CAPTURE_CPU_COPY";
+
+fn native_preview_surface_env_enabled() -> bool {
+    truthy_env_value(
+        std::env::var("VIDEORC_NATIVE_PREVIEW_SURFACE")
+            .ok()
+            .as_deref(),
+    )
+}
+
+fn forced_camera_capture_cpu_copy_enabled() -> bool {
+    truthy_env_value(std::env::var(CAMERA_CAPTURE_CPU_COPY_ENV).ok().as_deref())
+}
+
+fn truthy_env_value(value: Option<&str>) -> bool {
+    matches!(
+        value.map(|value| value.trim().to_ascii_lowercase()),
+        Some(value) if matches!(value.as_str(), "1" | "true" | "yes" | "on")
+    )
+}
+
+fn should_skip_camera_capture_cpu_copy_for_config(
+    zero_copy_source_handle_available: bool,
+    source_zerocopy_enabled: bool,
+    native_preview_surface_enabled: bool,
+    forced_cpu_copy_enabled: bool,
+) -> bool {
+    zero_copy_source_handle_available
+        && source_zerocopy_enabled
+        && native_preview_surface_enabled
+        && !forced_cpu_copy_enabled
+}
+
+fn should_skip_camera_capture_cpu_copy(zero_copy_source_handle_available: bool) -> bool {
+    should_skip_camera_capture_cpu_copy_for_config(
+        zero_copy_source_handle_available,
+        crate::metal_compositor::source_zerocopy_enabled(),
+        native_preview_surface_env_enabled(),
+        forced_camera_capture_cpu_copy_enabled(),
+    )
+}
 
 pub type PreviewCameraSlot = Arc<tokio::sync::Mutex<PreviewCameraRuntime>>;
 
@@ -556,6 +597,20 @@ pub async fn preview_camera_frame_source(state: &AppState) -> Option<PreviewCame
     })
 }
 
+pub fn try_preview_camera_frame_source(
+    state: &AppState,
+) -> Result<Option<PreviewCameraFrameSource>, ()> {
+    let slot = state.preview_camera.try_lock().map_err(|_| ())?;
+    let Some(active) = slot.active.as_ref() else {
+        return Ok(None);
+    };
+    Ok(Some(PreviewCameraFrameSource {
+        shared: Arc::clone(&active.shared),
+        layout: active.layout.clone(),
+        source_key: slot.source_key.clone(),
+    }))
+}
+
 pub async fn reset_preview_camera_capture_timings(state: &AppState) {
     let shared = {
         let slot = state.preview_camera.lock().await;
@@ -587,6 +642,10 @@ pub async fn latest_preview_camera_png(
         (guard.frame_store.latest()?, layout)
     };
 
+    let expected_len = frame.width as usize * frame.height as usize * 4;
+    if frame.bytes.len() < expected_len {
+        return None;
+    }
     let mut rgba = Vec::with_capacity(frame.bytes.len());
     for pixel in frame.bytes.chunks_exact(4) {
         rgba.extend_from_slice(&[pixel[2], pixel[1], pixel[0], pixel[3]]);
@@ -1585,26 +1644,10 @@ mod macos {
             return;
         }
 
-        let lock_started_at = Instant::now();
-        let lock_result = unsafe {
-            CVPixelBufferLockBaseAddress(&pixel_buffer, CVPixelBufferLockFlags::ReadOnly)
-        };
-        let pixel_buffer_lock_ms = lock_started_at.elapsed().as_secs_f64() * 1000.0;
-        if lock_result != 0 {
-            let mut guard = shared
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            guard.dropped_frames = guard.dropped_frames.saturating_add(1);
-            return;
-        }
-
         let width = CVPixelBufferGetWidth(&pixel_buffer) as u32;
         let height = CVPixelBufferGetHeight(&pixel_buffer) as u32;
 
         if width == 0 || height == 0 {
-            unsafe {
-                CVPixelBufferUnlockBaseAddress(&pixel_buffer, CVPixelBufferLockFlags::ReadOnly)
-            };
             let mut guard = shared
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1616,43 +1659,71 @@ mod macos {
         let height_usize = height as usize;
         let row_bytes = width_usize * 4;
         let frame_bytes = row_bytes * height_usize;
-        let mut bytes = {
-            let mut guard = shared
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if let Some(buffer) = guard.frame_store.checkout_spare_buffer(frame_bytes) {
-                buffer
+        let source_zerocopy_enabled = crate::metal_compositor::source_zerocopy_enabled();
+        let source_pixel_buffer =
+            if source_zerocopy_enabled && pixel_format == kCVPixelFormatType_32BGRA {
+                Some(crate::frame_store::RetainedPixelBuffer::new(
+                    pixel_buffer.clone(),
+                ))
             } else {
-                guard.frame_store.record_buffer_allocation();
-                drop(guard);
-                vec![0; frame_bytes]
+                None
+            };
+        let skip_cpu_copy = should_skip_camera_capture_cpu_copy(source_pixel_buffer.is_some());
+        let (bytes, pixel_buffer_lock_ms, row_copy_ms) = if skip_cpu_copy {
+            (Vec::new(), 0.0, 0.0)
+        } else {
+            let lock_started_at = Instant::now();
+            let lock_result = unsafe {
+                CVPixelBufferLockBaseAddress(&pixel_buffer, CVPixelBufferLockFlags::ReadOnly)
+            };
+            let pixel_buffer_lock_ms = lock_started_at.elapsed().as_secs_f64() * 1000.0;
+            if lock_result != 0 {
+                let mut guard = shared
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                guard.dropped_frames = guard.dropped_frames.saturating_add(1);
+                return;
             }
-        };
 
-        // Fill `bytes` with BGRA, converting from whichever pixel format the device
-        // delivers (BGRA passthrough, or NV12 / UYVY Y'CbCr -> BGRA). The downstream
-        // pipeline stays BGRA, so only this fill changes per format.
-        let copy_started_at = Instant::now();
-        let filled = unsafe {
-            fill_bgra_from_pixel_buffer(
-                &pixel_buffer,
-                pixel_format,
-                width_usize,
-                height_usize,
-                &mut bytes,
-            )
+            let mut bytes = {
+                let mut guard = shared
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if let Some(buffer) = guard.frame_store.checkout_spare_buffer(frame_bytes) {
+                    buffer
+                } else {
+                    guard.frame_store.record_buffer_allocation();
+                    drop(guard);
+                    vec![0; frame_bytes]
+                }
+            };
+
+            // Fill `bytes` with BGRA, converting from whichever pixel format the device
+            // delivers (BGRA passthrough, or NV12 / UYVY Y'CbCr -> BGRA). The downstream
+            // pipeline stays BGRA, so only this fill changes per format.
+            let copy_started_at = Instant::now();
+            let filled = unsafe {
+                fill_bgra_from_pixel_buffer(
+                    &pixel_buffer,
+                    pixel_format,
+                    width_usize,
+                    height_usize,
+                    &mut bytes,
+                )
+            };
+            let row_copy_ms = copy_started_at.elapsed().as_secs_f64() * 1000.0;
+            unsafe {
+                CVPixelBufferUnlockBaseAddress(&pixel_buffer, CVPixelBufferLockFlags::ReadOnly);
+            }
+            if !filled {
+                let mut guard = shared
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                guard.dropped_frames = guard.dropped_frames.saturating_add(1);
+                return;
+            }
+            (bytes, pixel_buffer_lock_ms, row_copy_ms)
         };
-        let row_copy_ms = copy_started_at.elapsed().as_secs_f64() * 1000.0;
-        unsafe {
-            CVPixelBufferUnlockBaseAddress(&pixel_buffer, CVPixelBufferLockFlags::ReadOnly);
-        }
-        if !filled {
-            let mut guard = shared
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            guard.dropped_frames = guard.dropped_frames.saturating_add(1);
-            return;
-        }
 
         let publish_started_at = Instant::now();
         let mut guard = shared
@@ -1670,13 +1741,6 @@ mod macos {
             guard.window_started_at = Some(now);
         }
         let sequence = guard.frames_captured;
-        let source_pixel_buffer = if crate::metal_compositor::source_zerocopy_enabled() {
-            Some(crate::frame_store::RetainedPixelBuffer::new(
-                pixel_buffer.clone(),
-            ))
-        } else {
-            None
-        };
         guard.frame_store.publish_with_source_handles(
             sequence,
             width,
@@ -2010,6 +2074,25 @@ mod tests {
         assert_eq!(preview_camera_png_max_width(Some(0)), 1);
         assert_eq!(preview_camera_png_max_width(Some(1280)), 1280);
         assert_eq!(preview_camera_png_max_width(Some(4096)), 1920);
+    }
+
+    #[test]
+    fn camera_capture_cpu_copy_is_skipped_only_for_native_zero_copy_source_handle() {
+        assert!(should_skip_camera_capture_cpu_copy_for_config(
+            true, true, true, false
+        ));
+        assert!(!should_skip_camera_capture_cpu_copy_for_config(
+            false, true, true, false
+        ));
+        assert!(!should_skip_camera_capture_cpu_copy_for_config(
+            true, false, true, false
+        ));
+        assert!(!should_skip_camera_capture_cpu_copy_for_config(
+            true, true, false, false
+        ));
+        assert!(!should_skip_camera_capture_cpu_copy_for_config(
+            true, true, true, true
+        ));
     }
 
     #[test]

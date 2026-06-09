@@ -56,10 +56,9 @@ use crate::protocol::{
     EncodeBackend, HealthLevel, LayoutPreset, LayoutSettings, PreviewCameraState,
     PreviewLiveParams, PreviewLiveSource, PreviewLiveState, PreviewLiveStatus,
     PreviewScreenSourceKind, PreviewScreenState, PreviewSnapshot, PreviewSnapshotParams,
-    PreviewSurfaceState, PreviewTransport, RecordingPipelineStage, RecordingState, RecordingStatus,
-    RemuxSessionParams, RtmpPreset, RtmpSettings, Scene, SceneConfigParams, SceneSourceKind,
-    SideBySideCameraSide, SideBySideSplit, StartSessionParams, StreamHealth, VideoPreset,
-    VideoSettings,
+    PreviewTransport, RecordingPipelineStage, RecordingState, RecordingStatus, RemuxSessionParams,
+    RtmpPreset, RtmpSettings, Scene, SceneConfigParams, SceneSourceKind, SideBySideCameraSide,
+    SideBySideSplit, StartSessionParams, StreamHealth, VideoPreset, VideoSettings,
 };
 use crate::repair::{
     GateStatus, MAINTENANCE_CANCELLED, QualityExpectations, QualityThresholds, RepairJob,
@@ -3321,15 +3320,12 @@ async fn wait_for_recording_encoder_bridge_sources_ready(
     }
 }
 
-async fn recording_compositor_target_fps(state: &AppState, video: &VideoSettings) -> u32 {
-    let preview_surface = state.preview_surface.lock().await.status.clone();
-    if preview_surface.state == PreviewSurfaceState::Live {
-        // Native activation can arrive after recording starts; honor the live preview's
-        // requested cadence immediately so the 30fps encoder does not race a 30fps
-        // compositor and repeatedly sample the previous target.
-        return video.fps.max(preview_surface.target_fps).max(1);
-    }
-    video.fps.max(1)
+async fn recording_compositor_target_fps(_state: &AppState, video: &VideoSettings) -> u32 {
+    let recording_fps = video.fps.max(1);
+    // The recording compositor is the protected producer for the encoder bridge.
+    // Match the file cadence at 4K; driving extra headroom here increases Metal
+    // command wait and can make fresh sequence numbers carry stale visual content.
+    recording_fps
 }
 
 fn compositor_encoder_bridge_disabled(record_enabled: bool, stream_enabled: bool) -> bool {
@@ -5330,6 +5326,7 @@ pub type LivePreviewSlot = Arc<Mutex<LivePreviewState>>;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::PreviewSurfaceState;
     use crate::protocol::{
         CameraCorner, CameraFit, CameraShape, CameraSize, CameraTransform, LayoutPreset,
         LayoutSettings, OutputSettings, PreviewLiveParams, PreviewSurfaceBacking, RtmpSettings,
@@ -6764,7 +6761,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bridge_compositor_uses_live_preview_surface_fps_before_native_activation() {
+    async fn bridge_compositor_uses_recording_fps_for_electron_surface() {
         let state = test_state();
         {
             let mut surface = state.preview_surface.lock().await;
@@ -6781,11 +6778,11 @@ mod tests {
             bitrate_kbps: 8000,
         };
 
-        assert_eq!(recording_compositor_target_fps(&state, &video).await, 60);
+        assert_eq!(recording_compositor_target_fps(&state, &video).await, 30);
     }
 
     #[tokio::test]
-    async fn bridge_compositor_uses_native_metal_surface_fps_when_preview_is_live() {
+    async fn bridge_compositor_uses_recording_fps_when_native_preview_is_live() {
         let state = test_state();
         {
             let mut surface = state.preview_surface.lock().await;
@@ -6802,7 +6799,7 @@ mod tests {
             bitrate_kbps: 8000,
         };
 
-        assert_eq!(recording_compositor_target_fps(&state, &video).await, 60);
+        assert_eq!(recording_compositor_target_fps(&state, &video).await, 30);
     }
 
     #[test]
@@ -7329,7 +7326,7 @@ mod tests {
         assert_eq!(
             arg_value(&args, "-af"),
             Some(
-                "atrim=start=0.350,asetpts=PTS-STARTPTS,pan=stereo|c0=c0|c1=c0,aresample=async=1:first_pts=0"
+                "atrim=start=0.500,asetpts=PTS-STARTPTS,pan=stereo|c0=c0|c1=c0,aresample=async=1:first_pts=0"
             )
         );
     }

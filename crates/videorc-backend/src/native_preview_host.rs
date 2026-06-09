@@ -175,7 +175,8 @@ mod macos {
     use objc2::rc::Retained;
     use objc2::{ClassType, MainThreadMarker, MainThreadOnly};
     use objc2_app_kit::{
-        NSBackingStoreType, NSColor, NSFloatingWindowLevel, NSView, NSWindow, NSWindowStyleMask,
+        NSBackingStoreType, NSColor, NSFloatingWindowLevel, NSView, NSWindow,
+        NSWindowCollectionBehavior, NSWindowStyleMask,
     };
     use objc2_foundation::{NSPoint, NSRect, NSSize};
     use objc2_quartz_core::{CALayer, CAMetalLayer};
@@ -276,8 +277,20 @@ mod macos {
             window.setContentView(Some(layer_host.view()));
             window.setOpaque(false);
             window.setBackgroundColor(Some(&NSColor::clearColor()));
-            window.setIgnoresMouseEvents(true);
+            window.setIgnoresMouseEvents(false);
+            window.setMovable(true);
+            window.setMovableByWindowBackground(true);
+            // The overlay has to sit above Studio's own content to be visible. Keep it hidden
+            // outside Videorc and out of the window cycle, while allowing users to drag the
+            // borderless preview away if it lands over controls.
             window.setLevel(NSFloatingWindowLevel);
+            window.setHasShadow(false);
+            window.setHidesOnDeactivate(true);
+            window.setCollectionBehavior(
+                NSWindowCollectionBehavior::Transient
+                    | NSWindowCollectionBehavior::IgnoresCycle
+                    | NSWindowCollectionBehavior::FullScreenAuxiliary,
+            );
             unsafe {
                 window.setReleasedWhenClosed(false);
             }
