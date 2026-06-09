@@ -186,6 +186,12 @@ async fn shutdown_signal(state: AppState) {
                     std::future::pending::<()>().await;
                 }
             } => {}
+            _ = orphaned_by_parent_exit() => {
+                state.emit_log(
+                    "warn",
+                    "Parent process exited; shutting down so capture devices (camera/mic/screen) are released.",
+                );
+            }
         }
     }
 
@@ -204,6 +210,20 @@ async fn shutdown_signal(state: AppState) {
         "Backend shutdown requested; stopping capture processes.",
     );
     shutdown_capture_processes(state).await;
+}
+
+/// Resolves when this process is orphaned (its parent died and launchd adopted it).
+/// The Electron app normally stops the backend on quit, but force-quits and crashes
+/// skip that path — an orphaned backend used to keep the camera/microphone/screen
+/// capture running indefinitely (the "camera light stays on" bug).
+#[cfg(unix)]
+async fn orphaned_by_parent_exit() {
+    loop {
+        if std::os::unix::process::parent_id() == 1 {
+            return;
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
 }
 
 #[derive(Debug, Deserialize)]

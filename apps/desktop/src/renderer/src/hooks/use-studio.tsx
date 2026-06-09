@@ -1725,6 +1725,18 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       return status
     }
 
+    // The camera may only be hot when something composes it: the current preset, or
+    // an active session (kept warm so live layout switches swap instantly). A merely
+    // selected camera must not hold the device — and its indicator light — all day.
+    const presetUsesCamera = captureConfig.layout.layoutPreset !== 'screen-only'
+    const sessionActive = isActiveRecordingState(recordingRef.current.state)
+    if (!presetUsesCamera && !sessionActive) {
+      nativePreviewCameraKeyRef.current = null
+      const status = await client.request<PreviewCameraStatus>('preview.camera.stop')
+      applyPreviewCameraStatus(status)
+      return status
+    }
+
     const key = JSON.stringify({
       cameraId,
       width: captureConfig.video.width,
