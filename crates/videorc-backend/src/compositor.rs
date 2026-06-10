@@ -773,6 +773,9 @@ fn startup_frame_advances_required_sources(
         return current.camera_sequence.is_some()
             && current.camera_sequence != previous.camera_sequence;
     }
+    // Screen sources must be PRESENT (startup_frame_block_reason enforces that) but
+    // are never required to advance: ScreenCaptureKit delivers frames only when the
+    // screen changes, so a static screen legitimately repeats one sequence forever.
     true
 }
 
@@ -1685,10 +1688,12 @@ fn try_gpu_compose(
                         unreachable!("screen/window branch")
                     }
                 };
-                if let Some(frame) = inputs
-                    .screen_frame
-                    .filter(|frame| !source_frame_is_too_stale(frame.captured_at))
-                {
+                // No staleness cutoff for screen/window content: ScreenCaptureKit only
+                // delivers frames when the screen CHANGES, so a frame that is seconds old
+                // is the correct current picture of a static screen. Aging it out painted
+                // the missing-source placeholder into real recordings whenever the user
+                // stopped moving the cursor for 2s. Placeholder only when no frame exists.
+                if let Some(frame) = inputs.screen_frame {
                     let (dest, crop) = gpu_source_placement(
                         frame.width,
                         frame.height,
@@ -1868,6 +1873,25 @@ fn source_frame_is_too_stale(captured_at: Instant) -> bool {
     captured_at.elapsed() >= COMPOSITOR_MISSING_SOURCE_PLACEHOLDER_AFTER
 }
 
+/// The fingerprint must report what the render actually SHOWS, because the recording
+/// startup barrier trusts it as evidence that required sources are live. A camera
+/// frame past the staleness cutoff renders as the missing-source placeholder, so it
+/// must not count. Screen frames render at ANY age — ScreenCaptureKit only delivers
+/// new frames when the screen changes, so an old frame IS the current static screen.
+/// Disagreement between this and the render branches re-creates the bug where the
+/// barrier approved a session whose screen layer was the animated placeholder.
+fn evidence_fingerprint(
+    camera: Option<(u64, Instant)>,
+    screen: Option<(u64, Instant)>,
+) -> SourceFrameFingerprint {
+    SourceFrameFingerprint {
+        camera: camera
+            .filter(|(_sequence, captured_at)| !source_frame_is_too_stale(*captured_at))
+            .map(|(sequence, _captured_at)| sequence),
+        screen: screen.map(|(sequence, _captured_at)| sequence),
+    }
+}
+
 fn missing_source_placeholder_bgra(
     source_kind: &SceneSourceKind,
     sequence: u64,
@@ -2036,6 +2060,8 @@ fn try_gpu_compose(
     Err("Metal compositor unavailable on this OS".to_string())
 }
 
+// Internal render-loop plumbing; the parameters are the loop's working set, not an API.
+#[allow(clippy::too_many_arguments)]
 async fn publish_compositor_frame(
     state: &AppState,
     sequence: u64,
@@ -2083,10 +2109,14 @@ async fn publish_compositor_frame(
     let has_image_source = active_image_source
         .as_ref()
         .is_some_and(|source| source.rgba.is_some());
-    let fingerprint = SourceFrameFingerprint {
-        camera: camera_frame.as_ref().map(|(frame, _layout)| frame.sequence),
-        screen: screen_frame.as_ref().map(|frame| frame.sequence),
-    };
+    let fingerprint = evidence_fingerprint(
+        camera_frame
+            .as_ref()
+            .map(|(frame, _layout)| (frame.sequence, frame.captured_at)),
+        screen_frame
+            .as_ref()
+            .map(|frame| (frame.sequence, frame.captured_at)),
+    );
     let captured_at = Instant::now();
     let mut compositor_backend = CompositorBackend::CpuFallback;
     let mut compositor_fallback_reason = None;
@@ -3083,6 +3113,29 @@ mod tests {
 
     fn fp(camera: Option<u64>, screen: Option<u64>) -> SourceFrameFingerprint {
         SourceFrameFingerprint { camera, screen }
+    }
+
+    #[test]
+    fn evidence_fingerprint_matches_render_staleness_semantics() {
+        let fresh = Instant::now();
+        let stale = Instant::now() - COMPOSITOR_MISSING_SOURCE_PLACEHOLDER_AFTER * 2;
+
+        // Fresh frames count for both sources.
+        assert_eq!(
+            evidence_fingerprint(Some((7, fresh)), Some((9, fresh))),
+            fp(Some(7), Some(9))
+        );
+        // A stale camera renders the placeholder, so it must not count as live.
+        assert_eq!(
+            evidence_fingerprint(Some((7, stale)), Some((9, fresh))),
+            fp(None, Some(9))
+        );
+        // A stale screen frame is a static screen and still renders — it counts.
+        assert_eq!(
+            evidence_fingerprint(Some((7, fresh)), Some((9, stale))),
+            fp(Some(7), Some(9))
+        );
+        assert_eq!(evidence_fingerprint(None, None), fp(None, None));
     }
 
     fn preview_surface_status(

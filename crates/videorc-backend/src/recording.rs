@@ -3317,8 +3317,8 @@ async fn should_use_compositor_encoder_bridge(
             video: Some(params.output.video.clone()),
         })
     });
-    if wait_for_recording_encoder_bridge_sources_ready(state, &scene, active_screen.is_some()).await
-    {
+    let screen_image_usable = stream_screen_image_usable(active_screen);
+    if wait_for_recording_encoder_bridge_sources_ready(state, &scene, screen_image_usable).await {
         return Ok(true);
     }
     // No silent downgrade (master plan, locked): falling back to the legacy FFmpeg
@@ -3326,7 +3326,9 @@ async fn should_use_compositor_encoder_bridge(
     // synthetic pattern in the preview while the file captured via AVFoundation).
     // Block with the exact reason instead.
     let has_camera_frame = preview_camera_latest_frame_info(state).await.is_some();
-    let has_screen_frame = preview_screen_latest_frame_info(state).await.is_some();
+    let screen_status = crate::preview_screen::preview_screen_status(state).await;
+    let has_screen_frame = !screen_preview_is_failed(&screen_status)
+        && preview_screen_latest_frame_info(state).await.is_some();
     let mut missing = Vec::new();
     if !has_screen_frame {
         missing.push("screen");
@@ -3334,28 +3336,56 @@ async fn should_use_compositor_encoder_bridge(
     if !has_camera_frame {
         missing.push("camera");
     }
+    let detail = if screen_preview_is_failed(&screen_status) {
+        format!(
+            " Screen preview reported: {}.",
+            screen_status
+                .message
+                .as_deref()
+                .unwrap_or("failed without a message")
+        )
+    } else {
+        String::new()
+    };
     bail!(
-        "Cannot start: the {} preview source(s) produced no frames, so the recording would not match the preview. Re-select the source (or restart the app) and try again.",
+        "Cannot start: the {} preview source(s) produced no frames, so the recording would not match the preview.{} Re-select the source (or restart the app) and try again.",
         if missing.is_empty() {
             "required".to_string()
         } else {
             missing.join(" + ")
-        }
+        },
+        detail
     )
+}
+
+/// Whether an active takeover screen can actually feed the compositor: the row in the
+/// database is only a pointer, the compositor needs the image file itself. Treating a
+/// dangling row as a usable screen let sessions start with nothing to composite.
+fn stream_screen_image_usable(active_screen: Option<&crate::protocol::StreamScreen>) -> bool {
+    active_screen.is_some_and(|screen| std::path::Path::new(&screen.image_path).is_file())
+}
+
+fn screen_preview_is_failed(status: &crate::protocol::PreviewScreenStatus) -> bool {
+    matches!(status.state, crate::protocol::PreviewScreenState::Failed)
 }
 
 async fn wait_for_recording_encoder_bridge_sources_ready(
     state: &AppState,
     scene: &Scene,
-    has_active_screen: bool,
+    screen_image_usable: bool,
 ) -> bool {
     let deadline = Instant::now() + RECORDING_ENCODER_BRIDGE_SOURCE_READY_TIMEOUT;
     loop {
         let has_camera_frame = preview_camera_latest_frame_info(state).await.is_some();
-        let has_screen_frame = preview_screen_latest_frame_info(state).await.is_some();
+        // A Failed screen preview can still hold old frames in its store; recording
+        // from them would freeze the screen layer. Only a non-failed source with at
+        // least one frame counts as ready.
+        let has_screen_frame =
+            !screen_preview_is_failed(&crate::preview_screen::preview_screen_status(state).await)
+                && preview_screen_latest_frame_info(state).await.is_some();
         if recording_encoder_bridge_sources_ready(
             scene,
-            has_active_screen,
+            screen_image_usable,
             has_camera_frame,
             has_screen_frame,
         ) {
@@ -6734,6 +6764,27 @@ mod tests {
         assert!(recording_encoder_bridge_sources_ready(
             &screen, true, false, false
         ));
+
+        // A takeover screen row only counts when its image file actually exists.
+        assert!(!stream_screen_image_usable(None));
+        let mut takeover = crate::protocol::StreamScreen {
+            id: "screen-1".to_string(),
+            name: "Takeover".to_string(),
+            image_path: "/nonexistent/videorc-test-takeover.png".to_string(),
+            thumbnail_path: None,
+            sort_order: 0,
+            status: crate::protocol::StreamScreenStatus::Ready,
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        assert!(!stream_screen_image_usable(Some(&takeover)));
+        let image_dir = std::env::temp_dir().join(format!("videorc-takeover-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&image_dir).expect("create takeover dir");
+        let image_path = image_dir.join("takeover.png");
+        std::fs::write(&image_path, b"png").expect("write takeover image");
+        takeover.image_path = image_path.to_string_lossy().into_owned();
+        assert!(stream_screen_image_usable(Some(&takeover)));
+        let _ = std::fs::remove_dir_all(&image_dir);
 
         assert!(encoder_bridge_recording_disabled(Some("legacy")));
         assert!(encoder_bridge_streaming_disabled(Some("off")));
