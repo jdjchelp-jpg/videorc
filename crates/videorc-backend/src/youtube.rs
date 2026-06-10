@@ -295,6 +295,10 @@ pub async fn prepare_youtube_broadcast(
             "contentDetails": {
                 "enableAutoStart": true,
                 "enableAutoStop": true,
+                // YouTube defaults to "normal" latency (30-60s by design). Low keeps
+                // every feature at ~10-15s glass-to-glass; ultraLow restricts
+                // resolutions and is deliberately not the default here.
+                "latencyPreference": "low",
             },
         }))
         .send()
@@ -1065,6 +1069,9 @@ mod tests {
         );
         assert_eq!(logs[0].path, "/youtube/v3/liveBroadcasts");
         assert_eq!(logs[0].query, "part=snippet%2Cstatus%2CcontentDetails");
+        // Low latency is the product default: YouTube's "normal" mode buffers 30-60s.
+        assert_eq!(logs[0].body["contentDetails"]["latencyPreference"], "low");
+        assert_eq!(logs[0].body["contentDetails"]["enableAutoStart"], true);
         assert_eq!(logs[0].body["snippet"]["title"], "YouTube title");
         assert_eq!(
             logs[0].body["snippet"]["description"],
