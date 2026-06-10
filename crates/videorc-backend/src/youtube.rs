@@ -353,6 +353,9 @@ pub async fn prepare_youtube_broadcast(
                 ],
             )?)
             .bearer_auth(&request.access_token)
+            // Parameter-only POST: Google's front end rejects body-less POSTs with
+            // 411 Length Required, so send an explicit empty body (Content-Length: 0).
+            .body("")
             .send()
             .await
             .context("Could not bind YouTube broadcast to stream.")?;
@@ -554,6 +557,8 @@ pub async fn transition_youtube_broadcast(
             ],
         )?)
         .bearer_auth(&request.access_token)
+        // Parameter-only POST (see bind): explicit empty body avoids 411.
+        .body("")
         .send()
         .await
         .context("Could not transition YouTube broadcast.")?;
