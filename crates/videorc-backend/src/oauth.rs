@@ -26,7 +26,12 @@ const BUNDLED_YOUTUBE_CLIENT_ID: Option<&str> =
         None => Some("244529927041-cibnpf57nmr89fi9f78k9rp83amhpv4l.apps.googleusercontent.com"),
     };
 const BUNDLED_TWITCH_CLIENT_ID: Option<&str> = option_env!("VIDEORC_BUNDLED_TWITCH_CLIENT_ID");
-const BUNDLED_X_CLIENT_ID: Option<&str> = option_env!("VIDEORC_BUNDLED_X_CLIENT_ID");
+// The Videorc X OAuth app (public Native App client, PKCE — no secret involved).
+// Client IDs are public identifiers; build-time/runtime env still override.
+const BUNDLED_X_CLIENT_ID: Option<&str> = match option_env!("VIDEORC_BUNDLED_X_CLIENT_ID") {
+    Some(bundled) => Some(bundled),
+    None => Some("S0NBMDhTQll6cGp1am5HUFRySE86MTpjaQ"),
+};
 
 #[derive(Debug, Default)]
 pub struct OAuthSessions {
