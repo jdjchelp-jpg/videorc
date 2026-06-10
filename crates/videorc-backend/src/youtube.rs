@@ -307,57 +307,78 @@ pub async fn prepare_youtube_broadcast(
             .await
             .context("Could not parse YouTube broadcast response.")?;
 
-    let stream_response = client
-        .post(youtube_api_url(
-            &base_url,
-            "/youtube/v3/liveStreams",
-            &[("part", "snippet,cdn,contentDetails,status")],
-        )?)
-        .bearer_auth(&request.access_token)
-        .json(&json!({
-            "snippet": {
-                "title": format!("Videogre {}", request.account_label),
-                "description": "Created by Videogre",
-            },
-            "cdn": {
-                "frameRate": youtube_frame_rate(request.video.fps),
-                "ingestionType": "rtmp",
-                "resolution": youtube_resolution(request.video.height),
-            },
-            "contentDetails": {
-                "isReusable": true,
-            },
-        }))
-        .send()
-        .await
-        .context("Could not create YouTube stream.")?;
-    let live_stream: YouTubeLiveStreamResponse =
-        require_youtube_success(stream_response, "YouTube stream creation failed")
-            .await?
-            .json()
+    // From here on a failure must roll back what was already created on the
+    // channel; otherwise every failed Go Live leaves an orphaned scheduled
+    // broadcast behind in YouTube Studio.
+    let stream_and_bind = async {
+        let stream_response = client
+            .post(youtube_api_url(
+                &base_url,
+                "/youtube/v3/liveStreams",
+                &[("part", "snippet,cdn,contentDetails,status")],
+            )?)
+            .bearer_auth(&request.access_token)
+            .json(&json!({
+                "snippet": {
+                    "title": format!("Videogre {}", request.account_label),
+                    "description": "Created by Videogre",
+                },
+                "cdn": {
+                    "frameRate": youtube_frame_rate(request.video.fps),
+                    "ingestionType": "rtmp",
+                    "resolution": youtube_resolution(request.video.height),
+                },
+                "contentDetails": {
+                    "isReusable": true,
+                },
+            }))
+            .send()
             .await
-            .context("Could not parse YouTube stream response.")?;
+            .context("Could not create YouTube stream.")?;
+        let live_stream: YouTubeLiveStreamResponse =
+            require_youtube_success(stream_response, "YouTube stream creation failed")
+                .await?
+                .json()
+                .await
+                .context("Could not parse YouTube stream response.")?;
 
-    let bind_response = client
-        .post(youtube_api_url(
-            &base_url,
-            "/youtube/v3/liveBroadcasts/bind",
-            &[
-                ("id", broadcast.id.as_str()),
-                ("part", "id,contentDetails"),
-                ("streamId", live_stream.id.as_str()),
-            ],
-        )?)
-        .bearer_auth(&request.access_token)
-        .send()
-        .await
-        .context("Could not bind YouTube broadcast to stream.")?;
-    let _bound: YouTubeIdResponse =
-        require_youtube_success(bind_response, "YouTube broadcast bind failed")
-            .await?
-            .json()
+        let bind_response = client
+            .post(youtube_api_url(
+                &base_url,
+                "/youtube/v3/liveBroadcasts/bind",
+                &[
+                    ("id", broadcast.id.as_str()),
+                    ("part", "id,contentDetails"),
+                    ("streamId", live_stream.id.as_str()),
+                ],
+            )?)
+            .bearer_auth(&request.access_token)
+            .send()
             .await
-            .context("Could not parse YouTube bind response.")?;
+            .context("Could not bind YouTube broadcast to stream.")?;
+        let _bound: YouTubeIdResponse =
+            require_youtube_success(bind_response, "YouTube broadcast bind failed")
+                .await?
+                .json()
+                .await
+                .context("Could not parse YouTube bind response.")?;
+        Ok::<YouTubeLiveStreamResponse, anyhow::Error>(live_stream)
+    }
+    .await;
+    let live_stream = match stream_and_bind {
+        Ok(live_stream) => live_stream,
+        Err(error) => {
+            delete_youtube_resource(
+                client,
+                &base_url,
+                &request.access_token,
+                "/youtube/v3/liveBroadcasts",
+                &broadcast.id,
+            )
+            .await;
+            return Err(error);
+        }
+    };
 
     let stream_key_secret_ref = format!("platform:youtube:{}:stream-key", request.account_id);
     put_secret(
@@ -610,6 +631,39 @@ fn youtube_api_url(base_url: &str, path: &str, query: &[(&str, &str)]) -> Result
     Ok(url)
 }
 
+/// Best-effort rollback delete for a YouTube resource created during a failed
+/// prepare flow. Failures are logged, never propagated — the original error is
+/// what the user must see.
+async fn delete_youtube_resource(
+    client: &reqwest::Client,
+    base_url: &str,
+    access_token: &str,
+    path: &str,
+    id: &str,
+) {
+    let url = match youtube_api_url(base_url, path, &[("id", id)]) {
+        Ok(url) => url,
+        Err(error) => {
+            tracing::warn!("Could not build YouTube rollback delete URL: {error}");
+            return;
+        }
+    };
+    match client.delete(url).bearer_auth(access_token).send().await {
+        Ok(response) if response.status().is_success() => {
+            tracing::info!("Rolled back orphaned YouTube resource {path} id redacted.");
+        }
+        Ok(response) => {
+            tracing::warn!(
+                "YouTube rollback delete for {path} returned {}.",
+                response.status()
+            );
+        }
+        Err(error) => {
+            tracing::warn!("YouTube rollback delete for {path} failed: {error}");
+        }
+    }
+}
+
 /// Replace `error_for_status` for YouTube API calls: Google puts the actionable
 /// reason (liveStreamingNotEnabled, insufficientLivePermissions, quota…) in the
 /// error BODY, and dropping it leaves the user with an unfixable generic message.
@@ -728,6 +782,119 @@ mod tests {
     }
 
     type RequestLogs = Arc<Mutex<Vec<RequestLog>>>;
+
+    #[tokio::test]
+    async fn failed_bind_rolls_back_the_created_broadcast() {
+        async fn create_broadcast() -> impl axum::response::IntoResponse {
+            Json(json!({ "id": "broadcast-123" })).into_response()
+        }
+        async fn create_stream() -> impl axum::response::IntoResponse {
+            Json(json!({
+                "id": "stream-456",
+                "cdn": {
+                    "ingestionInfo": {
+                        "ingestionAddress": "rtmp://a.rtmp.youtube.com/live2",
+                        "streamName": "secret-stream-name"
+                    }
+                }
+            }))
+            .into_response()
+        }
+        async fn bind_fails() -> impl axum::response::IntoResponse {
+            (
+                axum::http::StatusCode::FORBIDDEN,
+                Json(json!({
+                    "error": {
+                        "code": 403,
+                        "message": "The user is not enabled for live streaming.",
+                        "errors": [{
+                            "message": "The user is not enabled for live streaming.",
+                            "domain": "youtube.liveBroadcast",
+                            "reason": "liveStreamingNotEnabled"
+                        }]
+                    }
+                })),
+            )
+                .into_response()
+        }
+        async fn delete_broadcast(
+            State(logs): State<RequestLogs>,
+            OriginalUri(uri): OriginalUri,
+        ) -> impl axum::response::IntoResponse {
+            logs.lock().unwrap().push(RequestLog {
+                path: "DELETE /youtube/v3/liveBroadcasts".to_string(),
+                query: uri.query().unwrap_or_default().to_string(),
+                authorization: None,
+                body: Value::Null,
+            });
+            axum::http::StatusCode::NO_CONTENT.into_response()
+        }
+
+        let logs: RequestLogs = Arc::new(Mutex::new(Vec::new()));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn({
+            let logs = logs.clone();
+            async move {
+                axum::serve(
+                    listener,
+                    Router::new()
+                        .route(
+                            "/youtube/v3/liveBroadcasts",
+                            post(create_broadcast).delete(delete_broadcast),
+                        )
+                        .route("/youtube/v3/liveStreams", post(create_stream))
+                        .route("/youtube/v3/liveBroadcasts/bind", post(bind_fails))
+                        .with_state(logs),
+                )
+                .await
+                .unwrap();
+            }
+        });
+
+        let mut metadata = default_stream_metadata_draft("2026-06-03T00:00:00Z".to_string());
+        metadata.title = "Rollback test".to_string();
+        let error = prepare_youtube_broadcast(
+            YouTubePrepareRequest {
+                access_token: "access-token".to_string(),
+                account_id: "UC123".to_string(),
+                account_label: "Videogre Channel".to_string(),
+                metadata,
+                video: VideoSettings {
+                    preset: VideoPreset::Stream1080p60,
+                    width: 1920,
+                    height: 1080,
+                    fps: 60,
+                    bitrate_kbps: 6000,
+                },
+                api_base_url: Some(format!("http://{address}")),
+                scheduled_start_time: Some("2026-06-03T10:05:00Z".to_string()),
+            },
+            &reqwest::Client::new(),
+            |_, _| Ok(()),
+        )
+        .await
+        .expect_err("bind failure must propagate");
+
+        // The user sees Google's actual reason, not a generic line…
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("liveStreamingNotEnabled"),
+            "error should carry Google's reason: {message}"
+        );
+
+        // …and the orphaned broadcast is rolled back.
+        let logs = logs.lock().unwrap();
+        let delete = logs
+            .iter()
+            .find(|log| log.path == "DELETE /youtube/v3/liveBroadcasts")
+            .expect("failed bind must delete the created broadcast");
+        assert!(
+            delete.query.contains("id=broadcast-123"),
+            "{}",
+            delete.query
+        );
+    }
 
     #[tokio::test]
     async fn prepares_youtube_broadcast_and_stores_stream_name_as_secret() {
