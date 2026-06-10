@@ -15,7 +15,16 @@ use crate::streaming::{
 };
 
 const OAUTH_STATE_TTL_MINUTES: i64 = 10;
-const BUNDLED_YOUTUBE_CLIENT_ID: Option<&str> = option_env!("VIDEORC_BUNDLED_YOUTUBE_CLIENT_ID");
+// The Videorc YouTube OAuth app (OrcDev's Google Cloud project). OAuth client IDs
+// are public identifiers — they appear in every consent URL — so shipping one in
+// source is standard for desktop apps; the client SECRET stays environment-only
+// (VIDEORC_YOUTUBE_CLIENT_SECRET). VIDEORC_BUNDLED_YOUTUBE_CLIENT_ID at build time
+// or VIDEORC_YOUTUBE_CLIENT_ID at runtime still override this default.
+const BUNDLED_YOUTUBE_CLIENT_ID: Option<&str> =
+    match option_env!("VIDEORC_BUNDLED_YOUTUBE_CLIENT_ID") {
+        Some(bundled) => Some(bundled),
+        None => Some("244529927041-cibnpf57nmr89fi9f78k9rp83amhpv4l.apps.googleusercontent.com"),
+    };
 const BUNDLED_TWITCH_CLIENT_ID: Option<&str> = option_env!("VIDEORC_BUNDLED_TWITCH_CLIENT_ID");
 const BUNDLED_X_CLIENT_ID: Option<&str> = option_env!("VIDEORC_BUNDLED_X_CLIENT_ID");
 
