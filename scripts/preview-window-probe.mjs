@@ -149,7 +149,9 @@ async function waitForSurfaceAtContentRect(label, tolerance = 6, timeoutMsLocal 
         return state
       }
       if (state.nativeOwnsPlacement) {
-        const native = windowList().find((w) => w.layer >= 3 && match(w))
+        // Detached mode runs the helper window at NORMAL level (it stacks with
+        // the preview window as one app), so match by owner, not layer.
+        const native = windowList().find((w) => w.owner === 'native_preview_host_helper' && match(w))
         if (native) {
           assertProbe(true, `${label} [native-window]`, '')
           return state
@@ -174,7 +176,7 @@ async function assertSurfaceHidden(label, sizeHint, timeoutMsLocal = 8000) {
     state = await smokeCommand('preview-window-state')
     floating = windowList().filter(
       (w) =>
-        w.layer >= 3 &&
+        w.owner === 'native_preview_host_helper' &&
         Math.abs(w.width - sizeHint.width) <= 8 &&
         Math.abs(w.height - sizeHint.height) <= 8
     )

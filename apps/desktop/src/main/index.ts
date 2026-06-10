@@ -210,6 +210,17 @@ function applyPreviewWindowAspect(window: BrowserWindow): void {
   window.setContentSize(width, Math.round(width / ratio) + PREVIEW_WINDOW_BAR_HEIGHT)
 }
 
+// The preview window's GLOBAL window number (CGWindowID): valid across processes,
+// so the native helper can order its surface directly above this window.
+function previewWindowGlobalId(): number | undefined {
+  if (!previewWindow || previewWindow.isDestroyed()) {
+    return undefined
+  }
+  const match = /^window:(\d+):/.exec(previewWindow.getMediaSourceId())
+  const id = match ? Number(match[1]) : Number.NaN
+  return Number.isFinite(id) && id > 0 ? id : undefined
+}
+
 function previewWindowVideoBounds(window: BrowserWindow): Electron.Rectangle {
   const contentBounds = window.getContentBounds()
   return {
@@ -288,9 +299,11 @@ function restorePreviewWindowOnLaunch(): void {
 app.on('browser-window-blur', () => {
   setTimeout(() => {
     if (!BrowserWindow.getFocusedWindow()) {
-      // Always-on-top preview deliberately floats over other apps (U3): the
-      // surface stays up when the app loses focus.
-      if (previewWindowAlwaysOnTop && previewWindow && !previewWindow.isDestroyed()) {
+      // Detached mode stacks the surface as a normal window pair — it goes
+      // BEHIND other apps honestly and must not vanish on app blur. Only the
+      // legacy embedded overlay (floating level over the studio slot) still
+      // needs to leave the screen with the app.
+      if (!nativePreviewEmbeddedMode) {
         return
       }
       void setNativePreviewSurfacesVisible(false)
@@ -438,7 +451,7 @@ async function openPreviewWindow(): Promise<PreviewWindowState> {
 
   // Every placement-affecting event re-feeds the bounds pipeline. macOS emits
   // 'move'/'resize' continuously during a drag, so the surface follows live.
-  for (const event of ['move', 'resize', 'show', 'hide', 'minimize', 'restore'] as const) {
+  for (const event of ['move', 'resize', 'show', 'hide', 'minimize', 'restore', 'focus'] as const) {
     window.on(event as 'move', () => {
       if (previewWindow === window) {
         pushPreviewWindowPlacement()
@@ -1208,8 +1221,12 @@ async function createNativePreviewSurfaceWindow(): Promise<void> {
       throw new Error('Main window is not ready for native preview surface.')
     }
 
+    const detachedParent =
+      !nativePreviewEmbeddedMode && previewWindow && !previewWindow.isDestroyed() ? previewWindow : null
     const surfaceWindow = new BrowserWindow({
-      parent: mainWindow,
+      // In detached mode the fallback surface is a CHILD of the preview window:
+      // it stacks above it and moves with it like one app.
+      parent: detachedParent ?? mainWindow,
       frame: false,
       transparent: true,
       focusable: false,
@@ -1395,6 +1412,22 @@ async function applyNativePreviewHostCommands(commands: NativePreviewHostCommand
     commands = commands.filter((command) => command.kind === 'destroy')
     if (commands.length === 0) {
       return nativePreviewSurfaceStatus
+    }
+  }
+  // Detached stacking: every bounds command carries the Electron preview
+  // window's global number so the native surface stacks as one app with it
+  // (normal level; floating only when always-on-top is on).
+  if (!nativePreviewEmbeddedMode) {
+    const orderAboveWindowId = previewWindowGlobalId()
+    if (orderAboveWindowId !== undefined) {
+      commands = commands.map((command) =>
+        command.bounds
+          ? {
+              ...command,
+              bounds: { ...command.bounds, orderAboveWindowId, elevated: previewWindowAlwaysOnTop }
+            }
+          : command
+      )
     }
   }
   await applyNativePreviewRealSurfaceHostCommands(commands)

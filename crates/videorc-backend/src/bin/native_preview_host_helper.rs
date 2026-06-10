@@ -35,6 +35,10 @@ mod protocol {
         pub clip_height: Option<f64>,
         #[serde(default)]
         pub visible: Option<bool>,
+        #[serde(default)]
+        pub order_above_window_id: Option<u32>,
+        #[serde(default)]
+        pub elevated: Option<bool>,
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]

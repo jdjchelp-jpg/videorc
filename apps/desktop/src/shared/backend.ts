@@ -826,6 +826,12 @@ export interface PreviewSurfaceBounds {
   // False when the slot is fully scrolled away, the document is hidden, or the
   // window is not visible — the native host must hide the surface entirely.
   visible?: boolean
+  // Detached preview window stacking: the global window number of the Electron
+  // preview window the native surface sits directly above (normal level), and
+  // whether the pair floats above other apps (always-on-top). Absent = legacy
+  // embedded overlay behavior.
+  orderAboveWindowId?: number
+  elevated?: boolean
 }
 
 export type NativePreviewHostCommandKind = 'create' | 'update-bounds' | 'destroy'

@@ -23,6 +23,11 @@ pub struct NativePreviewHostBounds {
     // False = hide the surface entirely (slot scrolled away / document hidden).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub visible: Option<bool>,
+    // Cross-process stacking target (detached preview window) + always-on-top.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order_above_window_id: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elevated: Option<bool>,
 }
 
 impl NativePreviewHostBounds {
@@ -40,6 +45,8 @@ impl NativePreviewHostBounds {
             clip_width: bounds.clip_width.map(|width| width.max(0.0)),
             clip_height: bounds.clip_height.map(|height| height.max(0.0)),
             visible: bounds.visible,
+            order_above_window_id: bounds.order_above_window_id,
+            elevated: bounds.elevated,
         }
     }
 
@@ -244,8 +251,8 @@ mod macos {
     use objc2::rc::Retained;
     use objc2::{ClassType, MainThreadMarker, MainThreadOnly};
     use objc2_app_kit::{
-        NSBackingStoreType, NSColor, NSFloatingWindowLevel, NSView, NSWindow,
-        NSWindowCollectionBehavior, NSWindowStyleMask,
+        NSBackingStoreType, NSColor, NSFloatingWindowLevel, NSNormalWindowLevel, NSView, NSWindow,
+        NSWindowCollectionBehavior, NSWindowOrderingMode, NSWindowStyleMask,
     };
     use objc2_foundation::{NSPoint, NSRect, NSSize};
     use objc2_quartz_core::{CALayer, CAMetalLayer};
@@ -417,9 +424,30 @@ mod macos {
 
         /// The single visibility rule: on screen only while the bounds say visible
         /// AND at least one real frame has been presented into the layer.
+        ///
+        /// Stacking: with an order target (detached preview window), the surface is
+        /// one half of a normal app window pair — normal level, ordered directly
+        /// above its Electron window via the GLOBAL window number, re-asserted on
+        /// every sync so a raised pair re-glues. Elevated (always-on-top) keeps the
+        /// pair at floating level. No target = legacy embedded overlay behavior.
         pub fn sync_visibility(&self) {
             if self.bounds.is_visible() && self.presented {
-                if !self.window.isVisible() {
+                let level = if self.bounds.elevated.unwrap_or(false)
+                    || self.bounds.order_above_window_id.is_none()
+                {
+                    NSFloatingWindowLevel
+                } else {
+                    NSNormalWindowLevel
+                };
+                if self.window.level() != level {
+                    self.window.setLevel(level);
+                }
+                if let Some(target) = self.bounds.order_above_window_id {
+                    unsafe {
+                        self.window
+                            .orderWindow_relativeTo(NSWindowOrderingMode::Above, target as isize);
+                    }
+                } else if !self.window.isVisible() {
                     self.window.orderFrontRegardless();
                 }
             } else {
@@ -657,6 +685,8 @@ mod tests {
             clip_width: Some(640.0),
             clip_height: Some(200.0),
             visible: Some(true),
+            order_above_window_id: None,
+            elevated: None,
         };
 
         assert!(bounds.is_visible());
@@ -732,6 +762,8 @@ mod tests {
             clip_width: Some(640.0),
             clip_height: Some(-4.0),
             visible: Some(true),
+            order_above_window_id: None,
+            elevated: None,
         };
 
         let host_bounds = NativePreviewHostBounds::from_surface_bounds(&bounds);

@@ -1326,6 +1326,14 @@ pub struct PreviewSurfaceBounds {
     // the native host must hide the surface entirely.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub visible: Option<bool>,
+    // Detached preview window (cross-process stacking): the global window number
+    // of the Electron preview window the native surface must sit directly above,
+    // and whether the pair floats above other apps (always-on-top). Absent =
+    // legacy embedded overlay behavior (floating level, ordered front).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order_above_window_id: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elevated: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
