@@ -88,13 +88,15 @@ pnpm baseline:stream:av-sync:endurance -- --gate
 
 ## Native Preview Placement Contract
 
-The native CAMetalLayer preview is glued to the studio slot (Studio Shell And Live Control Plan, slices B1–B3). The renderer continuously reports the slot rect plus a visible clip rect (slot ∩ clipping ancestors ∩ viewport) and a visibility verdict; the cross-process host window covers exactly the clip rect, ignores all mouse events, is not movable, and hides whenever:
+**Default since the UI rewrite (2026-06-10, slices U1–U4): the live preview is a detached OS window.** Main owns the window and is the placement and existence authority — it applies the window's content rect to both surface hosts directly on every move/resize/visibility event (no renderer round trip), tears the session down on close (frame polling suppressed, hosts destroyed, only `destroy` commands pass while closed), and restores frame/open-state/always-on-top across launches. The placement gate is `node scripts/preview-window-probe.mjs`.
+
+The legacy in-page glued contract below remains behind `VIDEORC_NATIVE_PREVIEW_EMBEDDED=1` (the stage smokes set it) and is scheduled for deletion once the detached window survives a release; its gate is `node scripts/preview-glue-probe.mjs`.
+
+Legacy embedded contract (B1–B3): the renderer continuously reports the slot rect plus a visible clip rect (slot ∩ clipping ancestors ∩ viewport) and a visibility verdict; the cross-process host window covers exactly the clip rect, ignores all mouse events, is not movable, and hides whenever:
 
 - the slot is fully scrolled out of view,
 - the document is hidden/minimized or the app window loses focus, or
 - any open Electron overlay (command palette, dialog, select menu, tooltip, toast) intersects the slot — overlays must never render underneath the preview. New overlay primitives must either portal under `document.body` with one of the selectors in `preview-stage.tsx` (`OVERLAY_SELECTORS`) or be added to that list.
-
-UI rule: the studio slot (and therefore the native preview) exists only on the Studio tab and on the Layouts page's own stage — studio controls (Layouts/Live/Audio/Recording) are full pages reached from the sidebar's Studio group, never rendered beside the studio. Any UI that can overlap a mounted preview stage must satisfy the overlay contract above.
 
 ## Output Profiles
 
