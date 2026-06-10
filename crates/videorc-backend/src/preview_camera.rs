@@ -37,11 +37,12 @@ const CAMERA_OVERLAY_CAPTURE_MIN_HEIGHT: u32 = 720;
 const CAMERA_CAPTURE_CPU_COPY_ENV: &str = "VIDEORC_CAMERA_CAPTURE_CPU_COPY";
 
 fn native_preview_surface_env_enabled() -> bool {
-    truthy_env_value(
-        std::env::var("VIDEORC_NATIVE_PREVIEW_SURFACE")
-            .ok()
-            .as_deref(),
-    )
+    // v1 default: the native CAMetalLayer surface IS the production preview. The env
+    // var remains a developer kill switch only (VIDEORC_NATIVE_PREVIEW_SURFACE=0).
+    match std::env::var("VIDEORC_NATIVE_PREVIEW_SURFACE").ok() {
+        Some(value) => truthy_env_value(Some(value.as_str())),
+        None => true,
+    }
 }
 
 fn forced_camera_capture_cpu_copy_enabled() -> bool {

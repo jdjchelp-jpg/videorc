@@ -65,7 +65,9 @@ const pendingOAuthCallbackUrls: string[] = []
 const OAUTH_CALLBACK_PROTOCOL = 'videorc'
 const OAUTH_APP_PROTOCOL_REDIRECT_URI = 'videorc://oauth/callback'
 const oauthAppProtocolEnabled = process.env.VIDEORC_OAUTH_CALLBACK_MODE === 'app-protocol'
-const nativePreviewSurfaceProofEnabled = process.env.VIDEORC_NATIVE_PREVIEW_SURFACE === '1'
+// v1 default: the native preview surface is always on; the env var is a developer
+// kill switch only (VIDEORC_NATIVE_PREVIEW_SURFACE=0).
+const nativePreviewSurfaceProofEnabled = process.env.VIDEORC_NATIVE_PREVIEW_SURFACE !== '0'
 const nativePreviewFramePollingEnabled = process.env.VIDEORC_SMOKE_PREVIEW_MOTION !== '1'
 const smokeCommandServerEnabled =
   process.env.VIDEORC_SMOKE_PREVIEW_MOTION === '1' || process.env.VIDEORC_SMOKE_COMMAND_SERVER === '1'
