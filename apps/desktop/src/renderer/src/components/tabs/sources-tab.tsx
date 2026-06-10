@@ -110,7 +110,7 @@ export function SourcesTab({
             <AlertTitle>{warning}</AlertTitle>
           </Alert>
         ))}
-        <div className="grid gap-4 md:grid-cols-3">
+        <div className="grid gap-4 md:grid-cols-2">
           <SourceSelect
             devices={captureDevices}
             disabled={isSessionActive}
@@ -153,27 +153,10 @@ export function SourcesTab({
               })
             }
           />
-          <SourceSelect
-            allowNone
-            devices={microphones}
-            disabled={isSessionActive}
-            label="Microphone"
-            value={captureConfig.sources.microphoneId}
-            onChange={(microphoneId) =>
-              setCaptureConfig((current) => {
-                const selectedMicrophone = microphones.find((device) => device.id === microphoneId)
-                return {
-                  ...current,
-                  sources: {
-                    ...current.sources,
-                    microphoneId,
-                    microphoneName: selectedMicrophone?.name
-                  }
-                }
-              })
-            }
-          />
         </div>
+        {isSessionActive ? (
+          <p className="text-xs text-muted-foreground">Devices are locked while a session is live.</p>
+        ) : null}
 
         {import.meta.env.DEV ? (
           <div className="flex items-center justify-between gap-3 rounded-lg border border-dashed bg-muted/20 px-3 py-2">
@@ -206,6 +189,26 @@ export function SourcesTab({
         icon={Waveform}
         title="Microphone mixer"
       >
+        <SourceSelect
+          allowNone
+          devices={microphones}
+          disabled={isSessionActive}
+          label="Microphone"
+          value={captureConfig.sources.microphoneId}
+          onChange={(microphoneId) =>
+            setCaptureConfig((current) => {
+              const selectedMicrophone = microphones.find((device) => device.id === microphoneId)
+              return {
+                ...current,
+                sources: {
+                  ...current.sources,
+                  microphoneId,
+                  microphoneName: selectedMicrophone?.name
+                }
+              }
+            })
+          }
+        />
         <div className="flex items-center justify-between text-sm">
           <span className="flex items-center gap-2 text-muted-foreground">
             {captureConfig.audio.microphoneMuted ? (

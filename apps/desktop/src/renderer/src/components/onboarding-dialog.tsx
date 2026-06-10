@@ -79,7 +79,7 @@ export function OnboardingDialog({
       return 'settings'
     }
     if (!selectedCaptureDevice) {
-      return 'audio'
+      return 'layouts'
     }
     if (workflow === 'stream' && !streamReady) {
       return 'live'
@@ -279,7 +279,7 @@ function SetupStepView({
       <Separator />
 
       <div className="flex flex-wrap gap-2">
-        <Button size="sm" variant="outline" onClick={() => onOpenTab('audio')}>
+        <Button size="sm" variant="outline" onClick={() => onOpenTab('layouts')}>
           <Monitor data-icon="inline-start" />
           Sources
         </Button>
@@ -356,10 +356,10 @@ function FinishStep({
 
       <div className="grid gap-2 sm:grid-cols-2">
         <DestinationButton
-          recommended={recommendedTab === 'audio'}
+          recommended={recommendedTab === 'layouts'}
           icon={Monitor}
           label="Sources"
-          onClick={() => onComplete('audio')}
+          onClick={() => onComplete('layouts')}
         />
         <DestinationButton
           recommended={recommendedTab === 'live'}

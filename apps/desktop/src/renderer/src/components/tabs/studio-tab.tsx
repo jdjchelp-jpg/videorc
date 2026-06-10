@@ -292,7 +292,7 @@ export function StudioTab(): ReactElement {
               <SummaryRow label="Camera" value={selectedCamera?.name ?? 'Off'} />
               <SummaryRow label="Microphone" value={selectedMicrophone?.name ?? 'Off'} />
             </dl>
-            <Button size="sm" variant="outline" className="w-fit" onClick={() => openStudioPanel('audio')}>
+            <Button size="sm" variant="outline" className="w-fit" onClick={() => openStudioPanel('layouts')}>
               Configure sources
             </Button>
           </AccordionContent>
