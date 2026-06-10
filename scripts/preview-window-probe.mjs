@@ -69,14 +69,13 @@ async function main() {
     JSON.stringify(opened)
   )
 
+  // Deterministic starting frame: persisted/relative frames drifted off-screen
+  // across runs and macOS clamping broke the geometry asserts.
+  await smokeCommand('preview-window-set-bounds', { x: 240, y: 160, width: 960, height: 568 })
   let state = await waitForSurfaceAtContentRect('open: surface covers the preview window content rect')
 
   // --- Move: surface follows -----------------------------------------------------
-  const movedTo = {
-    x: state.contentBounds.x + 124,
-    y: state.contentBounds.y + 86
-  }
-  await smokeCommand('preview-window-set-bounds', { x: movedTo.x, y: movedTo.y })
+  await smokeCommand('preview-window-set-bounds', { x: 364, y: 246 })
   state = await waitForSurfaceAtContentRect('move: surface follows the preview window')
 
   // --- Resize: surface follows ----------------------------------------------------

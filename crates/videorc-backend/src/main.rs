@@ -220,18 +220,42 @@ async fn shutdown_signal(state: AppState) {
 /// fresh app instances (screen layers fall to the synthetic pattern mid-session).
 fn spawn_orphan_watchdog_thread() {
     #[cfg(unix)]
-    std::thread::spawn(|| {
-        loop {
-            if std::os::unix::process::parent_id() == 1 {
-                // Give the async graceful path a moment, then exit unconditionally;
-                // process teardown releases every capture device.
-                std::thread::sleep(std::time::Duration::from_secs(5));
-                eprintln!("Parent process died; exiting so capture devices are released.");
-                std::process::exit(1);
+    {
+        // The ppid==1 check alone misses the dev process chain (electron -> cargo
+        // -> backend): killing Electron leaves cargo alive as our parent, and the
+        // backend survived as a "zombie with a living parent". The supervisor pid
+        // (the Electron main process) closes that hole: when it is gone, we go.
+        let supervisor_pid = std::env::var("VIDEORC_SUPERVISOR_PID")
+            .ok()
+            .and_then(|value| value.trim().parse::<i32>().ok())
+            .filter(|pid| *pid > 1);
+        std::thread::spawn(move || {
+            loop {
+                let orphaned = std::os::unix::process::parent_id() == 1;
+                let supervisor_gone = supervisor_pid.is_some_and(|pid| {
+                    let result = unsafe { libc::kill(pid, 0) };
+                    result == -1
+                        && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+                });
+                if orphaned || supervisor_gone {
+                    // Give the async graceful path a moment, then exit
+                    // unconditionally; process teardown releases every capture
+                    // device.
+                    std::thread::sleep(std::time::Duration::from_secs(5));
+                    eprintln!(
+                        "{} died; exiting so capture devices are released.",
+                        if orphaned {
+                            "Parent process"
+                        } else {
+                            "Supervisor process"
+                        }
+                    );
+                    std::process::exit(1);
+                }
+                std::thread::sleep(std::time::Duration::from_secs(2));
             }
-            std::thread::sleep(std::time::Duration::from_secs(2));
-        }
-    });
+        });
+    }
 }
 
 /// Resolves when this process is orphaned (its parent died and launchd adopted it).

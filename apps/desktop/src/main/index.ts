@@ -11,7 +11,7 @@ import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
 import { delimiter, dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 
 import { createNativePreviewHelperProcessDriver } from './native-preview-helper-process-driver'
 import { loadNativePreviewRealSurfaceDriver } from './native-preview-real-surface-loader'
@@ -210,10 +210,29 @@ function loadPreviewWindowPrefs(): PreviewWindowPrefs {
 }
 
 function savePreviewWindowPrefs(patch: PreviewWindowPrefs): void {
+  // Smoke and probe runs share the real userData dir; their window churn must
+  // not overwrite the owner's remembered frame and open/closed choice.
+  if (!previewWindowAutoRestoreEnabled) {
+    return
+  }
   try {
     writeFileSync(previewWindowPrefsPath(), JSON.stringify({ ...loadPreviewWindowPrefs(), ...patch }))
   } catch {
     // Preferences are a convenience; never let them break the preview itself.
+  }
+}
+
+// A remembered frame can be off-screen (display unplugged, or the window was
+// parked at an edge); restore it clamped into the nearest display's work area.
+function clampFrameToWorkArea(frame: Electron.Rectangle): Electron.Rectangle {
+  const workArea = screen.getDisplayMatching(frame).workArea
+  const width = Math.min(frame.width, workArea.width)
+  const height = Math.min(frame.height, workArea.height)
+  return {
+    width,
+    height,
+    x: Math.min(Math.max(frame.x, workArea.x), workArea.x + workArea.width - width),
+    y: Math.min(Math.max(frame.y, workArea.y), workArea.y + workArea.height - height)
   }
 }
 
@@ -351,7 +370,8 @@ async function openPreviewWindow(): Promise<PreviewWindowState> {
   }
 
   const prefs = loadPreviewWindowPrefs()
-  const frame = previewWindowLastFrame ?? prefs.frame ?? null
+  const rememberedFrame = previewWindowLastFrame ?? prefs.frame ?? null
+  const frame = rememberedFrame ? clampFrameToWorkArea(rememberedFrame) : null
   const window = new BrowserWindow({
     width: frame?.width ?? 960,
     height: frame?.height ?? 568,
@@ -2155,10 +2175,64 @@ function resolvePackagedFfmpegBinDir(): string | null {
   return existsSync(binary) ? binDir : null
 }
 
+// Single-backend policy: any videorc backend (or its cargo runner / preview
+// helper) alive before THIS instance spawns its own is stale by definition —
+// the app owns exactly one backend. Smoke and probe runs are exempt so they
+// never murder the session they run beside; the 1.5s SIGKILL sweep only
+// touches pids captured BEFORE our own child exists.
+function reapStaleBackendProcesses(): void {
+  if (process.platform === 'win32') {
+    return
+  }
+  if (
+    process.env.VIDEORC_SMOKE_OUTPUT_DIR ||
+    process.env.VIDEORC_SMOKE_COMMAND_SERVER === '1' ||
+    process.env.VIDEORC_DISABLE_BACKEND_REAP === '1'
+  ) {
+    return
+  }
+  const stale = new Set<number>()
+  for (const pattern of ['videorc-backend', 'native_preview_host_helper']) {
+    try {
+      const out = execFileSync('pgrep', ['-f', pattern], { encoding: 'utf8' })
+      for (const line of out.split('\n')) {
+        const pid = Number(line.trim())
+        if (Number.isFinite(pid) && pid > 1 && pid !== process.pid) {
+          stale.add(pid)
+        }
+      }
+    } catch {
+      // pgrep exits non-zero when nothing matches — nothing stale.
+    }
+  }
+  if (stale.size === 0) {
+    return
+  }
+  logBackend('warn', `Reaping ${stale.size} stale backend process(es): ${[...stale].join(', ')}`)
+  for (const pid of stale) {
+    try {
+      process.kill(pid, 'SIGTERM')
+    } catch {
+      // Already gone.
+    }
+  }
+  setTimeout(() => {
+    for (const pid of stale) {
+      try {
+        process.kill(pid, 'SIGKILL')
+      } catch {
+        // Exited gracefully.
+      }
+    }
+  }, 1500)
+}
+
 function startBackend(): void {
   if (backendProcess) {
     return
   }
+
+  reapStaleBackendProcesses()
 
   const root = workspaceRoot()
   const cargoBinDir = join(homedir(), '.cargo', 'bin')
@@ -2178,6 +2252,10 @@ function startBackend(): void {
       ...devCargoEnvOverrides(),
       PATH: pathEntries.join(delimiter),
       VIDEORC_BUNDLED_FFMPEG_PATH: ffmpegBinDir ? join(ffmpegBinDir, 'ffmpeg') : '',
+      // The backend's watchdog also exits when THIS process dies — the ppid
+      // check alone misses the dev chain (electron -> cargo -> backend), where
+      // killing Electron leaves cargo alive as the backend's parent.
+      VIDEORC_SUPERVISOR_PID: String(process.pid),
       RUST_LOG: process.env.RUST_LOG ?? 'videorc_backend=info'
     }
   })
