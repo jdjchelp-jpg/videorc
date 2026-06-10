@@ -15,15 +15,23 @@ use crate::streaming::{
 };
 
 const OAUTH_STATE_TTL_MINUTES: i64 = 10;
-// The Videorc YouTube OAuth app (OrcDev's Google Cloud project). OAuth client IDs
-// are public identifiers — they appear in every consent URL — so shipping one in
-// source is standard for desktop apps; the client SECRET stays environment-only
-// (VIDEORC_YOUTUBE_CLIENT_SECRET). VIDEORC_BUNDLED_YOUTUBE_CLIENT_ID at build time
-// or VIDEORC_YOUTUBE_CLIENT_ID at runtime still override this default.
+// The Videorc YouTube OAuth app (OrcDev's Google Cloud project, Desktop-app client).
+// OAuth client IDs are public identifiers — they appear in every consent URL — so
+// shipping one in source is standard for desktop apps. The client secret ships in
+// source too (owner's explicit decision, 2026-06-10): Google's installed-app docs
+// state the secret "is not treated as a secret" for Desktop clients, yet the token
+// exchange still REQUIRES it even with PKCE — env-only made every fresh shell fail
+// with HTTP 401. Build-time VIDEORC_BUNDLED_* or runtime VIDEORC_YOUTUBE_CLIENT_ID/
+// VIDEORC_YOUTUBE_CLIENT_SECRET still override these defaults.
 const BUNDLED_YOUTUBE_CLIENT_ID: Option<&str> =
     match option_env!("VIDEORC_BUNDLED_YOUTUBE_CLIENT_ID") {
         Some(bundled) => Some(bundled),
-        None => Some("244529927041-cibnpf57nmr89fi9f78k9rp83amhpv4l.apps.googleusercontent.com"),
+        None => Some("244529927041-oe9n13ur7lhd1k179ivbj2jfi05b3iia.apps.googleusercontent.com"),
+    };
+const BUNDLED_YOUTUBE_CLIENT_SECRET: Option<&str> =
+    match option_env!("VIDEORC_BUNDLED_YOUTUBE_CLIENT_SECRET") {
+        Some(bundled) => Some(bundled),
+        None => Some("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"),
     };
 const BUNDLED_TWITCH_CLIENT_ID: Option<&str> = option_env!("VIDEORC_BUNDLED_TWITCH_CLIENT_ID");
 // The Videorc X OAuth app (public Native App client, PKCE — no secret involved).
@@ -684,7 +692,8 @@ fn provider_config(platform: StreamPlatform) -> Result<OAuthProviderConfig> {
             profile_url: "https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true"
                 .to_string(),
             client_id: required_credential("VIDEORC_YOUTUBE_CLIENT_ID", BUNDLED_YOUTUBE_CLIENT_ID)?,
-            client_secret: optional_env("VIDEORC_YOUTUBE_CLIENT_SECRET"),
+            client_secret: optional_env("VIDEORC_YOUTUBE_CLIENT_SECRET")
+                .or_else(|| optional_static(BUNDLED_YOUTUBE_CLIENT_SECRET)),
             scopes: vec![
                 "https://www.googleapis.com/auth/youtube".to_string(),
                 "https://www.googleapis.com/auth/youtube.force-ssl".to_string(),
@@ -768,6 +777,7 @@ pub fn provider_credential_statuses() -> Vec<OAuthProviderCredentialStatus> {
             "VIDEORC_YOUTUBE_CLIENT_ID",
             "VIDEORC_YOUTUBE_CLIENT_SECRET",
             BUNDLED_YOUTUBE_CLIENT_ID,
+            BUNDLED_YOUTUBE_CLIENT_SECRET,
             true,
         ),
         provider_credential_status(
@@ -775,6 +785,7 @@ pub fn provider_credential_statuses() -> Vec<OAuthProviderCredentialStatus> {
             "VIDEORC_TWITCH_CLIENT_ID",
             "VIDEORC_TWITCH_CLIENT_SECRET",
             BUNDLED_TWITCH_CLIENT_ID,
+            None,
             false,
         ),
         provider_credential_status(
@@ -782,6 +793,7 @@ pub fn provider_credential_statuses() -> Vec<OAuthProviderCredentialStatus> {
             "VIDEORC_X_CLIENT_ID",
             "VIDEORC_X_CLIENT_SECRET",
             BUNDLED_X_CLIENT_ID,
+            None,
             true,
         ),
     ]
@@ -792,11 +804,13 @@ fn provider_credential_status(
     client_id_env: &str,
     client_secret_env: &str,
     bundled_client_id: Option<&'static str>,
+    bundled_client_secret: Option<&'static str>,
     pkce: bool,
 ) -> OAuthProviderCredentialStatus {
     let client_id_source = credential_source(optional_env(client_id_env), bundled_client_id);
     let client_id_present = client_id_source != OAuthCredentialSource::Missing;
-    let client_secret_present = optional_env(client_secret_env).is_some();
+    let client_secret_present =
+        optional_env(client_secret_env).is_some() || bundled_client_secret.is_some();
     let ready = client_id_present && (pkce || client_secret_present);
     let label = stream_platform_label(platform);
     OAuthProviderCredentialStatus {
@@ -1301,6 +1315,7 @@ mod tests {
             "VIDEORC_TEST_TWITCH_CLIENT_ID",
             "VIDEORC_TEST_TWITCH_CLIENT_SECRET",
             Some("bundled-twitch-client"),
+            None,
             false,
         );
 
@@ -1318,12 +1333,28 @@ mod tests {
             "VIDEORC_TEST_YOUTUBE_CLIENT_ID",
             "VIDEORC_TEST_YOUTUBE_CLIENT_SECRET",
             Some("bundled-youtube-client"),
+            None,
             true,
         );
 
         assert!(status.client_id_present);
         assert!(!status.client_secret_present);
         assert!(status.pkce);
+        assert!(status.ready);
+    }
+
+    #[test]
+    fn bundled_client_secret_counts_as_present() {
+        let status = provider_credential_status(
+            StreamPlatform::Youtube,
+            "VIDEORC_TEST_YOUTUBE_CLIENT_ID",
+            "VIDEORC_TEST_YOUTUBE_CLIENT_SECRET",
+            Some("bundled-youtube-client"),
+            Some("bundled-youtube-secret"),
+            true,
+        );
+
+        assert!(status.client_secret_present);
         assert!(status.ready);
     }
 }
