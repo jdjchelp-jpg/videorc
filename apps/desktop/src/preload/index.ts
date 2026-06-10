@@ -64,6 +64,8 @@ const api: VideorcApi = {
   openPreviewWindow: () => ipcRenderer.invoke('preview-window:open'),
   closePreviewWindow: () => ipcRenderer.invoke('preview-window:close'),
   getPreviewWindowState: () => ipcRenderer.invoke('preview-window:get-state'),
+  setPreviewWindowAlwaysOnTop: (alwaysOnTop) =>
+    ipcRenderer.invoke('preview-window:set-always-on-top', alwaysOnTop),
   onPreviewWindowState: (callback) => {
     const listener = (_event: Electron.IpcRendererEvent, state: PreviewWindowState): void => callback(state)
     ipcRenderer.on('preview-window:state', listener)

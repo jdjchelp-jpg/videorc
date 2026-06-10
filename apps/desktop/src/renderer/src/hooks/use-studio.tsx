@@ -192,6 +192,7 @@ export type StudioContextValue = {
   previewWindow: PreviewWindowState
   openPreviewWindow: () => Promise<void>
   closePreviewWindow: () => Promise<void>
+  setPreviewWindowAlwaysOnTop: (alwaysOnTop: boolean) => Promise<void>
   scene: Scene | null
   sceneEditMode: boolean
   selectedSceneSourceId: string | null
@@ -2033,6 +2034,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     contentBounds: null,
     scaleFactor: 1,
     screenHeight: 0,
+    alwaysOnTop: false,
     embeddedMode: false
   })
   const previewWindowRef = useRef(previewWindow)
@@ -2131,6 +2133,10 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
 
   const closePreviewWindow = useCallback(async () => {
     await window.videorc?.closePreviewWindow?.()
+  }, [])
+
+  const setPreviewWindowAlwaysOnTop = useCallback(async (alwaysOnTop: boolean) => {
+    await window.videorc?.setPreviewWindowAlwaysOnTop?.(alwaysOnTop)
   }, [])
 
   const syncNativePreviewSurfaceScene = useCallback(async () => {
@@ -3368,6 +3374,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     previewWindow,
     openPreviewWindow,
     closePreviewWindow,
+    setPreviewWindowAlwaysOnTop,
     scene,
     sceneEditMode,
     selectedSceneSourceId,

@@ -1582,6 +1582,7 @@ export interface PreviewWindowState {
   contentBounds: { x: number; y: number; width: number; height: number } | null
   scaleFactor: number
   screenHeight: number
+  alwaysOnTop: boolean
   embeddedMode: boolean
 }
 
@@ -1596,6 +1597,7 @@ export interface VideorcApi {
   openPreviewWindow: () => Promise<PreviewWindowState>
   closePreviewWindow: () => Promise<PreviewWindowState>
   getPreviewWindowState: () => Promise<PreviewWindowState>
+  setPreviewWindowAlwaysOnTop: (alwaysOnTop: boolean) => Promise<PreviewWindowState>
   onPreviewWindowState: (callback: (state: PreviewWindowState) => void) => () => void
   createNativePreviewSurface: (bounds: PreviewSurfaceBounds) => Promise<PreviewSurfaceStatus>
   updateNativePreviewSurfaceBounds: (bounds: PreviewSurfaceBounds) => Promise<PreviewSurfaceStatus>

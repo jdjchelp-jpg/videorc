@@ -11,6 +11,7 @@ import {
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Switch } from '@/components/ui/switch'
 import { useStudio } from '@/hooks/use-studio'
 import type {
   LayoutSettings,
@@ -145,15 +146,17 @@ type PreviewStageProps = {
 // stages render a control card instead of a glued surface. The embedded stage
 // remains reachable via VIDEORC_NATIVE_PREVIEW_EMBEDDED=1 until U4 deletes it.
 export function PreviewStage(props: PreviewStageProps): ReactElement {
-  const { previewWindow, openPreviewWindow, closePreviewWindow } = useStudio()
+  const { previewWindow, openPreviewWindow, closePreviewWindow, setPreviewWindowAlwaysOnTop } = useStudio()
   if (previewWindow.embeddedMode || !props.nativePreviewSurfaceEnabled) {
     return <EmbeddedPreviewStage {...props} />
   }
   return (
     <DetachedPreviewCard
+      alwaysOnTop={previewWindow.alwaysOnTop}
       className={props.className}
       previewSurfaceStatus={props.previewSurfaceStatus}
       previewWindowOpen={previewWindow.open}
+      onAlwaysOnTopChange={(alwaysOnTop) => void setPreviewWindowAlwaysOnTop(alwaysOnTop)}
       onClose={() => void closePreviewWindow()}
       onOpen={() => void openPreviewWindow()}
     />
@@ -163,12 +166,16 @@ export function PreviewStage(props: PreviewStageProps): ReactElement {
 function DetachedPreviewCard({
   previewWindowOpen,
   previewSurfaceStatus,
+  alwaysOnTop,
+  onAlwaysOnTopChange,
   onOpen,
   onClose,
   className
 }: {
   previewWindowOpen: boolean
   previewSurfaceStatus?: PreviewSurfaceStatus
+  alwaysOnTop: boolean
+  onAlwaysOnTopChange: (alwaysOnTop: boolean) => void
   onOpen: () => void
   onClose: () => void
   className?: string
@@ -201,6 +208,10 @@ function DetachedPreviewCard({
               Close preview
             </Button>
           </div>
+          <label className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Switch checked={alwaysOnTop} size="sm" onCheckedChange={onAlwaysOnTopChange} />
+            Keep on top of other apps
+          </label>
         </>
       ) : (
         <>

@@ -1,5 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, nativeImage, screen, shell, type NativeImage } from 'electron'
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import {
   createServer,
   request as httpRequest,
@@ -175,6 +175,10 @@ function createWindow(): void {
       flushOAuthCallbackUrls()
     })
   }
+
+  mainWindow.webContents.once('did-finish-load', () => {
+    restorePreviewWindowOnLaunch()
+  })
 }
 
 // --- Detached preview window (UI rewrite U1) ---------------------------------
@@ -184,6 +188,49 @@ function createWindow(): void {
 // used (backend session + native helper + proof surface stay untouched).
 let previewWindow: BrowserWindow | null = null
 let previewWindowLastFrame: Electron.Rectangle | null = null
+let previewWindowAlwaysOnTop = false
+
+// Window frame, open/closed choice, and always-on-top survive relaunches (U3).
+type PreviewWindowPrefs = {
+  frame?: Electron.Rectangle
+  alwaysOnTop?: boolean
+  open?: boolean
+}
+
+function previewWindowPrefsPath(): string {
+  return join(app.getPath('userData'), 'preview-window.json')
+}
+
+function loadPreviewWindowPrefs(): PreviewWindowPrefs {
+  try {
+    return JSON.parse(readFileSync(previewWindowPrefsPath(), 'utf8')) as PreviewWindowPrefs
+  } catch {
+    return {}
+  }
+}
+
+function savePreviewWindowPrefs(patch: PreviewWindowPrefs): void {
+  try {
+    writeFileSync(previewWindowPrefsPath(), JSON.stringify({ ...loadPreviewWindowPrefs(), ...patch }))
+  } catch {
+    // Preferences are a convenience; never let them break the preview itself.
+  }
+}
+
+// Smoke and probe runs drive the window explicitly; auto-restore would inject an
+// unexpected window into their assertions.
+const previewWindowAutoRestoreEnabled =
+  process.env.VIDEORC_DISABLE_AUTO_PREVIEW !== '1' && !process.env.VIDEORC_SMOKE_OUTPUT_DIR
+
+function restorePreviewWindowOnLaunch(): void {
+  if (nativePreviewEmbeddedMode || !previewWindowAutoRestoreEnabled) {
+    return
+  }
+  const prefs = loadPreviewWindowPrefs()
+  if (prefs.open !== false) {
+    void openPreviewWindow()
+  }
+}
 
 // The native surface floats above every app, so it must leave the screen with us
 // and come back when we do. The policy is APP-level, not main-window-level:
@@ -192,6 +239,11 @@ let previewWindowLastFrame: Electron.Rectangle | null = null
 app.on('browser-window-blur', () => {
   setTimeout(() => {
     if (!BrowserWindow.getFocusedWindow()) {
+      // Always-on-top preview deliberately floats over other apps (U3): the
+      // surface stays up when the app loses focus.
+      if (previewWindowAlwaysOnTop && previewWindow && !previewWindow.isDestroyed()) {
+        return
+      }
       void setNativePreviewSurfacesVisible(false)
     }
   }, 50)
@@ -208,6 +260,7 @@ type PreviewWindowState = {
   // Primary display height: the native helper needs it to flip top-left screen
   // coordinates into AppKit's bottom-left-origin global space.
   screenHeight: number
+  alwaysOnTop: boolean
   embeddedMode: boolean
 }
 
@@ -221,6 +274,7 @@ function previewWindowState(): PreviewWindowState {
     contentBounds,
     scaleFactor: contentBounds ? screen.getDisplayMatching(contentBounds).scaleFactor : 1,
     screenHeight: screen.getPrimaryDisplay().bounds.height,
+    alwaysOnTop: previewWindowAlwaysOnTop,
     embeddedMode: nativePreviewEmbeddedMode
   }
 }
@@ -293,7 +347,8 @@ async function openPreviewWindow(): Promise<PreviewWindowState> {
     return previewWindowState()
   }
 
-  const frame = previewWindowLastFrame
+  const prefs = loadPreviewWindowPrefs()
+  const frame = previewWindowLastFrame ?? prefs.frame ?? null
   const window = new BrowserWindow({
     width: frame?.width ?? 960,
     height: frame?.height ?? 568,
@@ -312,6 +367,11 @@ async function openPreviewWindow(): Promise<PreviewWindowState> {
     }
   })
   previewWindow = window
+  previewWindowAlwaysOnTop = prefs.alwaysOnTop === true
+  if (previewWindowAlwaysOnTop) {
+    window.setAlwaysOnTop(true, 'floating')
+  }
+  savePreviewWindowPrefs({ open: true })
 
   // Every placement-affecting event re-feeds the bounds pipeline. macOS emits
   // 'move'/'resize' continuously during a drag, so the surface follows live.
@@ -326,16 +386,28 @@ async function openPreviewWindow(): Promise<PreviewWindowState> {
   window.on('close', () => {
     if (previewWindow === window) {
       previewWindowLastFrame = window.getBounds()
+      savePreviewWindowPrefs({ frame: previewWindowLastFrame, open: false })
     }
   })
   window.on('closed', () => {
     if (previewWindow === window) {
       previewWindow = null
+      if (!nativePreviewEmbeddedMode) {
+        // Host teardown happens here, renderer-independent (the renderer's own
+        // teardown adds the backend session destroy when its state event lands).
+        void setNativePreviewSurfaceFramePollingSuppressed(true)
+        void applyNativePreviewHostCommands([{ kind: 'destroy' }]).catch((error) => {
+          console.error('Preview window close teardown failed:', error)
+        })
+      }
       emitPreviewWindowState()
     }
   })
 
   await window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(PREVIEW_WINDOW_HTML)}`)
+  if (!nativePreviewEmbeddedMode) {
+    void setNativePreviewSurfaceFramePollingSuppressed(false)
+  }
   pushPreviewWindowPlacement()
   emitPreviewWindowState()
   return previewWindowState()
@@ -345,6 +417,18 @@ function closePreviewWindow(): PreviewWindowState {
   if (previewWindow && !previewWindow.isDestroyed()) {
     previewWindow.close()
   }
+  return previewWindowState()
+}
+
+function setPreviewWindowAlwaysOnTop(alwaysOnTop: boolean): PreviewWindowState {
+  previewWindowAlwaysOnTop = alwaysOnTop
+  if (previewWindow && !previewWindow.isDestroyed()) {
+    previewWindow.setAlwaysOnTop(alwaysOnTop, 'floating')
+  }
+  savePreviewWindowPrefs({ alwaysOnTop })
+  // Keep the native surface in lockstep with the policy change immediately.
+  void setNativePreviewSurfacesVisible(true)
+  emitPreviewWindowState()
   return previewWindowState()
 }
 
@@ -1131,6 +1215,12 @@ async function createNativePreviewSurface(bounds: PreviewSurfaceBounds): Promise
   if (!nativePreviewPolicyPushInFlight) {
     nativePreviewRendererBounds = bounds
   }
+  // Same detached-mode existence rule as applyNativePreviewHostCommands: the
+  // direct IPC path must not create a surface while the preview window is closed.
+  if (!nativePreviewEmbeddedMode && (!previewWindow || previewWindow.isDestroyed())) {
+    nativePreviewSurfaceStatus = idleNativePreviewSurfaceStatus('Preview window is closed.')
+    return nativePreviewSurfaceStatus
+  }
   if (!nativePreviewSurfaceProofEnabled) {
     nativePreviewSurfaceStatus = idleNativePreviewSurfaceStatus('Native preview surface proof mode is disabled.')
     return nativePreviewSurfaceStatus
@@ -1235,6 +1325,15 @@ async function updateNativePreviewSurfaceBounds(bounds: PreviewSurfaceBounds): P
 }
 
 async function applyNativePreviewHostCommands(commands: NativePreviewHostCommand[]): Promise<PreviewSurfaceStatus> {
+  // Detached mode: no preview window, no surface — period. A renderer holding a
+  // stale window state (IPC events race the close) must not resurrect the hosts
+  // main just tore down; only destroys pass while the window is closed.
+  if (!nativePreviewEmbeddedMode && (!previewWindow || previewWindow.isDestroyed())) {
+    commands = commands.filter((command) => command.kind === 'destroy')
+    if (commands.length === 0) {
+      return nativePreviewSurfaceStatus
+    }
+  }
   await applyNativePreviewRealSurfaceHostCommands(commands)
   let status = nativePreviewSurfaceStatus
   for (const command of commands) {
@@ -2911,6 +3010,9 @@ app.whenReady().then(() => {
   ipcMain.handle('preview-window:open', () => openPreviewWindow())
   ipcMain.handle('preview-window:close', () => closePreviewWindow())
   ipcMain.handle('preview-window:get-state', () => previewWindowState())
+  ipcMain.handle('preview-window:set-always-on-top', (_event, alwaysOnTop: boolean) =>
+    setPreviewWindowAlwaysOnTop(Boolean(alwaysOnTop))
+  )
   ipcMain.handle('preview-surface:create', (_event, bounds: PreviewSurfaceBounds) =>
     runNativePreviewSurfaceMutation(() => createNativePreviewSurface(bounds))
   )
