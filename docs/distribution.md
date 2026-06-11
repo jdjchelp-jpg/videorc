@@ -126,6 +126,20 @@ VIDEORC_TWITCH_CLIENT_SECRET=...
 VIDEORC_X_CLIENT_SECRET=...
 ```
 
+Twitch release blocker:
+
+- Register a Videogre-owned Twitch developer app before a production release candidate.
+- Register the OAuth callback mode used by the release. The default app flow uses
+  `http://127.0.0.1:<port>/oauth/callback`; `videorc://oauth/callback` is opt-in and
+  should be registered only if that callback mode is selected and verified.
+- Bundle the public app client ID with `VIDEORC_BUNDLED_TWITCH_CLIENT_ID` when building
+  the backend.
+- Provide `VIDEORC_TWITCH_CLIENT_SECRET` only in the runtime or release-smoke
+  environment. The current Twitch provider flow is not PKCE-only, so the app is not
+  considered ready without the runtime secret.
+- Verify the app requests the scopes used by the backend:
+  `channel:manage:broadcast`, `channel:read:stream_key`, and `user:read:chat`.
+
 The backend exposes credential source status to the renderer as `environment`, `bundled`, or `missing`; it never exposes actual client ID or secret values. Before release, open the packaged app's Streaming tab and confirm YouTube, Twitch, and X OAuth rows report either `Bundled default` or the intended runtime override.
 
 Before a release candidate, run the redacted provider readiness check:
