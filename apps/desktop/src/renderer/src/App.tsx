@@ -11,7 +11,9 @@ export function App(): ReactElement {
   return (
     <ThemeProvider
       attribute="class"
-      defaultTheme="system"
+      // Dark glass is the design's default expression; light stays one toggle
+      // away as its structural twin (videorc-design skill).
+      defaultTheme="dark"
       enableSystem
       storageKey={STORAGE_KEYS.theme}
     >
