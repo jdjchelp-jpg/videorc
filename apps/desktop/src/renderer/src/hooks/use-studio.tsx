@@ -235,7 +235,10 @@ export type StudioContextValue = {
   applyVideoPreset: (preset: VideoPreset) => void
   applyRtmpPreset: (preset: RtmpPreset) => void
   patchStreamingTarget: (targetId: string, patch: Partial<StreamTargetSettings>) => void
-  saveManualStreamKey: (targetId: string, streamKey: string) => Promise<void>
+  // Resolves true only when the key was actually stored (lets the UI clear
+  // the typed draft without ever losing an unsaved key).
+  saveManualStreamKey: (targetId: string, streamKey: string) => Promise<boolean>
+  restorePreviousStreamKey: (targetId: string) => Promise<void>
   patchStreamMetadataDraft: (patch: Partial<StreamMetadataDraft>) => void
   patchStreamTargetMetadataDraft: (
     platform: StreamMetadataDraft['targetOverrides'][number]['platform'],
@@ -558,6 +561,12 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     loadJson(STORAGE_KEYS.settings, defaultSettings)
   )
   const [captureConfig, setCaptureConfig] = useState<CaptureConfig>(loadCaptureConfig)
+  // Stable handle for callbacks that only need to READ the config (labels,
+  // lookups) without re-creating themselves on every config change.
+  const captureConfigRef = useRef(captureConfig)
+  useEffect(() => {
+    captureConfigRef.current = captureConfig
+  }, [captureConfig])
   const [lastError, setLastError] = useState<string | null>(null)
   const [runtimeInfo, setRuntimeInfo] = useState<RuntimeInfo | null>(null)
   const previewRequestPending = useRef(false)
@@ -3620,11 +3629,30 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     []
   )
 
+  const patchManualStreamKeyResult = useCallback(
+    (targetId: string, result: StoreManualStreamKeyResult) => {
+      setCaptureConfig((current) => {
+        const target = current.streaming.targets.find((item) => item.id === targetId)
+        const streaming = patchPreparedStreamTarget(current.streaming, targetId, {
+          serverUrl: target?.urlMode === 'full-url' ? '' : target?.serverUrl,
+          streamKey: '',
+          streamKeySecretRef: result.streamKeySecretRef,
+          streamKeyPresent: result.streamKeyPresent,
+          streamKeyHint: result.streamKeyHint,
+          previousStreamKeyPresent: result.previousStreamKeyPresent,
+          previousStreamKeyHint: result.previousStreamKeyHint
+        })
+        return bridgeStreamingToLegacy({ ...current, streaming })
+      })
+    },
+    []
+  )
+
   const saveManualStreamKey = useCallback(
     async (targetId: string, streamKey: string) => {
       if (!client) {
         toast.error('Backend socket is not connected.')
-        return
+        return false
       }
 
       try {
@@ -3636,22 +3664,93 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
             streamKey
           }
         )
-        setCaptureConfig((current) => {
-          const target = current.streaming.targets.find((item) => item.id === targetId)
-          const streaming = patchPreparedStreamTarget(current.streaming, targetId, {
-            serverUrl: target?.urlMode === 'full-url' ? '' : target?.serverUrl,
-            streamKey: '',
-            streamKeySecretRef: result.streamKeySecretRef,
-            streamKeyPresent: result.streamKeyPresent
-          })
-          return bridgeStreamingToLegacy({ ...current, streaming })
-        })
+        patchManualStreamKeyResult(targetId, result)
+        const label =
+          captureConfigRef.current.streaming.targets.find((item) => item.id === targetId)?.label ??
+          targetId
+        if (result.streamKeyPresent) {
+          toast.success(
+            `${label} stream key saved${result.streamKeyHint ? ` (ends ${result.streamKeyHint})` : ''}.`
+          )
+        } else {
+          toast.success(
+            result.previousStreamKeyPresent
+              ? `${label} stream key removed — the previous key is kept for restore.`
+              : `${label} stream key removed.`
+          )
+        }
+        return true
+      } catch (error) {
+        reportError(error)
+        return false
+      }
+    },
+    [client, patchManualStreamKeyResult, reportError]
+  )
+
+  // One-click recovery for an accidental paste-over or clear: swaps the saved
+  // key with the archived previous one (so restore itself is undoable).
+  const restorePreviousStreamKey = useCallback(
+    async (targetId: string) => {
+      if (!client) {
+        toast.error('Backend socket is not connected.')
+        return
+      }
+
+      try {
+        setLastError(null)
+        const result = await client.request<StoreManualStreamKeyResult>(
+          'streamTargets.manualKey.restorePrevious',
+          { targetId }
+        )
+        patchManualStreamKeyResult(targetId, result)
+        const label =
+          captureConfigRef.current.streaming.targets.find((item) => item.id === targetId)?.label ??
+          targetId
+        toast.success(
+          `${label} stream key restored${result.streamKeyHint ? ` (ends ${result.streamKeyHint})` : ''}.`
+        )
       } catch (error) {
         reportError(error)
       }
     },
-    [client, reportError]
+    [client, patchManualStreamKeyResult, reportError]
   )
+
+  // Keys saved before hints existed (or by older builds) have streamKeyPresent
+  // without a hint; hydrate those from the backend so the UI can say WHICH key
+  // is stored. Cosmetic — failures stay silent.
+  useEffect(() => {
+    if (!client || wsStatus !== 'connected') {
+      return
+    }
+    const pending = captureConfig.streaming.targets.filter(
+      (target) => target.streamKeyPresent && target.streamKeyHint === undefined
+    )
+    if (pending.length === 0) {
+      return
+    }
+    let cancelled = false
+    void (async () => {
+      for (const target of pending) {
+        try {
+          const result = await client.request<StoreManualStreamKeyResult>(
+            'streamTargets.manualKey.inspect',
+            { targetId: target.id }
+          )
+          if (cancelled) {
+            return
+          }
+          patchManualStreamKeyResult(target.id, result)
+        } catch {
+          return
+        }
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [client, wsStatus, captureConfig.streaming.targets, patchManualStreamKeyResult])
 
   const canStart = !startBlockedReason
   const canStop =
@@ -3821,6 +3920,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       applyRtmpPreset,
       patchStreamingTarget,
       saveManualStreamKey,
+      restorePreviousStreamKey,
       patchStreamMetadataDraft,
       patchStreamTargetMetadataDraft,
       lastError,
@@ -3953,6 +4053,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       applyRtmpPreset,
       patchStreamingTarget,
       saveManualStreamKey,
+      restorePreviousStreamKey,
       patchStreamMetadataDraft,
       patchStreamTargetMetadataDraft,
       lastError,

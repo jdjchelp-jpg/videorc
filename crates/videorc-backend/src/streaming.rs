@@ -124,6 +124,23 @@ pub struct StoreManualStreamKeyResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stream_key_secret_ref: Option<String>,
     pub stream_key_present: bool,
+    /// Masked tail ("••••1234") so the UI can say WHICH key is saved without
+    /// ever round-tripping the secret itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_key_hint: Option<String>,
+    /// A replaced or cleared key is archived as the "previous key" so an
+    /// accidental paste-over is recoverable with one click.
+    #[serde(default)]
+    pub previous_stream_key_present: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_stream_key_hint: Option<String>,
+}
+
+/// Params for restore/inspect requests that address a target's manual key.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ManualStreamKeyRefParams {
+    pub target_id: String,
 }
 
 pub fn manual_stream_key_secret_ref(target_id: &str) -> Result<String> {
@@ -135,6 +152,90 @@ pub fn manual_stream_key_secret_ref(target_id: &str) -> Result<String> {
         bail!("Stream target id is invalid.");
     }
     Ok(format!("stream-target:{target_id}:manual-stream-key"))
+}
+
+/// The archive slot a replaced/cleared key moves into (per target, like the
+/// live slot, so restoring YouTube can never touch Twitch).
+pub fn manual_stream_key_previous_secret_ref(target_id: &str) -> Result<String> {
+    Ok(format!(
+        "{}:previous",
+        manual_stream_key_secret_ref(target_id)?
+    ))
+}
+
+/// Masked tail of a stored key. Short keys mask entirely instead of leaking
+/// most of their characters.
+pub fn stream_key_hint(key: &str) -> String {
+    let trimmed = key.trim();
+    let chars: Vec<char> = trimmed.chars().collect();
+    if chars.len() < 8 {
+        return "••••".to_string();
+    }
+    let tail: String = chars[chars.len() - 4..].iter().collect();
+    format!("••••{tail}")
+}
+
+/// The next contents of the current + previous key slots after a store.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManualStreamKeyPlan {
+    pub next_current: Option<String>,
+    pub next_previous: Option<String>,
+}
+
+/// Storing a key archives the value it replaces (including clears) so the user
+/// can always get one step back. Re-saving the identical key keeps the archive
+/// untouched instead of destroying it with a duplicate.
+pub fn plan_manual_stream_key_store(
+    current: Option<&str>,
+    previous: Option<&str>,
+    new_key: &str,
+) -> ManualStreamKeyPlan {
+    let new_key = new_key.trim();
+    let next_current = if new_key.is_empty() {
+        None
+    } else {
+        Some(new_key.to_string())
+    };
+    let next_previous = match current {
+        Some(existing) if existing != new_key => Some(existing.to_string()),
+        _ => previous.map(str::to_string),
+    };
+    ManualStreamKeyPlan {
+        next_current,
+        next_previous,
+    }
+}
+
+/// Restoring swaps current and previous, so restore itself is undoable by
+/// restoring again. With no current key the previous simply moves back.
+pub fn plan_manual_stream_key_restore(
+    current: Option<&str>,
+    previous: Option<&str>,
+) -> Result<ManualStreamKeyPlan> {
+    let Some(previous) = previous else {
+        bail!("No previous stream key is saved for this target.");
+    };
+    Ok(ManualStreamKeyPlan {
+        next_current: Some(previous.to_string()),
+        next_previous: current.map(str::to_string),
+    })
+}
+
+/// Builds the wire result for any manual-key operation from slot contents.
+pub fn manual_stream_key_state(
+    target_id: &str,
+    current: Option<&str>,
+    previous: Option<&str>,
+) -> Result<StoreManualStreamKeyResult> {
+    Ok(StoreManualStreamKeyResult {
+        stream_key_secret_ref: current
+            .map(|_| manual_stream_key_secret_ref(target_id))
+            .transpose()?,
+        stream_key_present: current.is_some(),
+        stream_key_hint: current.map(stream_key_hint),
+        previous_stream_key_present: previous.is_some(),
+        previous_stream_key_hint: previous.map(stream_key_hint),
+    })
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -671,5 +772,96 @@ mod tests {
             .unwrap()
             .title = "Twitch-specific launch".to_string();
         assert!(validate_stream_metadata_draft(&draft).valid);
+    }
+
+    #[test]
+    fn stream_key_hint_masks_all_but_the_tail() {
+        assert_eq!(stream_key_hint("live_1234567_abcdWXYZ"), "••••WXYZ");
+        assert_eq!(stream_key_hint("  spaced-key-9876  "), "••••9876");
+        // Short keys mask entirely instead of leaking half their characters.
+        assert_eq!(stream_key_hint("tiny"), "••••");
+    }
+
+    #[test]
+    fn previous_secret_ref_is_target_scoped() {
+        assert_eq!(
+            manual_stream_key_previous_secret_ref("youtube").unwrap(),
+            "stream-target:youtube:manual-stream-key:previous"
+        );
+        assert!(manual_stream_key_previous_secret_ref("bad id").is_err());
+    }
+
+    #[test]
+    fn storing_over_an_existing_key_archives_it() {
+        let plan = plan_manual_stream_key_store(Some("old-yt-key"), None, "new-twitch-key");
+        assert_eq!(plan.next_current.as_deref(), Some("new-twitch-key"));
+        assert_eq!(plan.next_previous.as_deref(), Some("old-yt-key"));
+    }
+
+    #[test]
+    fn clearing_a_key_archives_it_for_restore() {
+        let plan = plan_manual_stream_key_store(Some("old-key-1234"), Some("stale"), "  ");
+        assert_eq!(plan.next_current, None);
+        assert_eq!(plan.next_previous.as_deref(), Some("old-key-1234"));
+    }
+
+    #[test]
+    fn resaving_the_same_key_keeps_the_archive() {
+        let plan = plan_manual_stream_key_store(Some("same-key"), Some("older-key"), "same-key");
+        assert_eq!(plan.next_current.as_deref(), Some("same-key"));
+        assert_eq!(plan.next_previous.as_deref(), Some("older-key"));
+    }
+
+    #[test]
+    fn first_store_keeps_previous_empty() {
+        let plan = plan_manual_stream_key_store(None, None, "fresh-key-0001");
+        assert_eq!(plan.next_current.as_deref(), Some("fresh-key-0001"));
+        assert_eq!(plan.next_previous, None);
+    }
+
+    #[test]
+    fn restore_swaps_current_and_previous() {
+        let plan = plan_manual_stream_key_restore(Some("twitch-paste"), Some("yt-key")).unwrap();
+        assert_eq!(plan.next_current.as_deref(), Some("yt-key"));
+        assert_eq!(plan.next_previous.as_deref(), Some("twitch-paste"));
+        // Restoring again undoes the restore.
+        let undone = plan_manual_stream_key_restore(
+            plan.next_current.as_deref(),
+            plan.next_previous.as_deref(),
+        )
+        .unwrap();
+        assert_eq!(undone.next_current.as_deref(), Some("twitch-paste"));
+        assert_eq!(undone.next_previous.as_deref(), Some("yt-key"));
+    }
+
+    #[test]
+    fn restore_after_clear_moves_previous_back() {
+        let plan = plan_manual_stream_key_restore(None, Some("cleared-key")).unwrap();
+        assert_eq!(plan.next_current.as_deref(), Some("cleared-key"));
+        assert_eq!(plan.next_previous, None);
+    }
+
+    #[test]
+    fn restore_without_previous_fails() {
+        assert!(plan_manual_stream_key_restore(Some("anything"), None).is_err());
+    }
+
+    #[test]
+    fn manual_stream_key_state_reports_hints_and_presence() {
+        let state =
+            manual_stream_key_state("youtube", Some("new-key-5678"), Some("old-key-1234")).unwrap();
+        assert_eq!(
+            state.stream_key_secret_ref.as_deref(),
+            Some("stream-target:youtube:manual-stream-key")
+        );
+        assert!(state.stream_key_present);
+        assert_eq!(state.stream_key_hint.as_deref(), Some("••••5678"));
+        assert!(state.previous_stream_key_present);
+        assert_eq!(state.previous_stream_key_hint.as_deref(), Some("••••1234"));
+
+        let empty = manual_stream_key_state("youtube", None, None).unwrap();
+        assert_eq!(empty.stream_key_secret_ref, None);
+        assert!(!empty.stream_key_present);
+        assert!(!empty.previous_stream_key_present);
     }
 }

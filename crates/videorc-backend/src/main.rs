@@ -102,9 +102,11 @@ use crate::preflight::GoLivePreflightParams;
 use crate::state::AppState;
 use crate::storage::Database;
 use crate::streaming::{
-    PlatformAccountStatus, PlatformAccountValidation, PlatformAccountValidationState,
-    StoreManualStreamKeyParams, StoreManualStreamKeyResult, StreamMetadataDraft, StreamPlatform,
-    UpsertPlatformAccount, manual_stream_key_secret_ref, validate_stream_metadata_draft,
+    ManualStreamKeyPlan, ManualStreamKeyRefParams, PlatformAccountStatus,
+    PlatformAccountValidation, PlatformAccountValidationState, StoreManualStreamKeyParams,
+    StoreManualStreamKeyResult, StreamMetadataDraft, StreamPlatform, UpsertPlatformAccount,
+    manual_stream_key_previous_secret_ref, manual_stream_key_secret_ref, manual_stream_key_state,
+    plan_manual_stream_key_restore, plan_manual_stream_key_store, validate_stream_metadata_draft,
 };
 use crate::twitch::{
     PreparedTwitchBroadcast, TwitchCategorySearchParams, TwitchCategorySearchRequest,
@@ -975,24 +977,64 @@ async fn spawn_session_live_chat(
     }
 }
 
+/// Reads both manual-key slots for a target (current, previous).
+fn manual_stream_key_slots(target_id: &str) -> Result<(Option<String>, Option<String>)> {
+    let secret_ref = manual_stream_key_secret_ref(target_id)?;
+    let previous_ref = manual_stream_key_previous_secret_ref(target_id)?;
+    Ok((
+        secrets::try_get_secret(&secret_ref)?,
+        secrets::try_get_secret(&previous_ref)?,
+    ))
+}
+
+/// Writes both slots to match a plan (delete when the slot empties).
+fn apply_manual_stream_key_plan(target_id: &str, plan: &ManualStreamKeyPlan) -> Result<()> {
+    let secret_ref = manual_stream_key_secret_ref(target_id)?;
+    let previous_ref = manual_stream_key_previous_secret_ref(target_id)?;
+    match plan.next_current.as_deref() {
+        Some(value) => secrets::put_secret(&secret_ref, value)?,
+        None => secrets::delete_secret(&secret_ref)?,
+    }
+    match plan.next_previous.as_deref() {
+        Some(value) => secrets::put_secret(&previous_ref, value)?,
+        None => secrets::delete_secret(&previous_ref)?,
+    }
+    Ok(())
+}
+
 fn store_manual_stream_key(
     params: StoreManualStreamKeyParams,
 ) -> Result<StoreManualStreamKeyResult> {
-    let secret_ref = manual_stream_key_secret_ref(&params.target_id)?;
-    let stream_key = params.stream_key.trim();
-    if stream_key.is_empty() {
-        secrets::delete_secret(&secret_ref)?;
-        return Ok(StoreManualStreamKeyResult {
-            stream_key_secret_ref: None,
-            stream_key_present: false,
-        });
-    }
+    let (current, previous) = manual_stream_key_slots(&params.target_id)?;
+    let plan =
+        plan_manual_stream_key_store(current.as_deref(), previous.as_deref(), &params.stream_key);
+    apply_manual_stream_key_plan(&params.target_id, &plan)?;
+    manual_stream_key_state(
+        &params.target_id,
+        plan.next_current.as_deref(),
+        plan.next_previous.as_deref(),
+    )
+}
 
-    secrets::put_secret(&secret_ref, stream_key)?;
-    Ok(StoreManualStreamKeyResult {
-        stream_key_secret_ref: Some(secret_ref),
-        stream_key_present: true,
-    })
+fn restore_previous_manual_stream_key(
+    params: ManualStreamKeyRefParams,
+) -> Result<StoreManualStreamKeyResult> {
+    let (current, previous) = manual_stream_key_slots(&params.target_id)?;
+    let plan = plan_manual_stream_key_restore(current.as_deref(), previous.as_deref())?;
+    apply_manual_stream_key_plan(&params.target_id, &plan)?;
+    manual_stream_key_state(
+        &params.target_id,
+        plan.next_current.as_deref(),
+        plan.next_previous.as_deref(),
+    )
+}
+
+/// Read-only view so the UI can show hints for keys saved before it loaded.
+fn inspect_manual_stream_key(
+    params: ManualStreamKeyRefParams,
+) -> Result<StoreManualStreamKeyResult> {
+    let (current, previous) = manual_stream_key_slots(&params.target_id)?;
+    manual_stream_key_state(&params.target_id, current.as_deref(), previous.as_deref())
 }
 
 async fn search_twitch_categories(
@@ -1814,6 +1856,36 @@ async fn handle_text_message(state: &AppState, text: &str) -> ServerResponse {
                     Err(error) => ServerResponse::error(
                         command.id,
                         "manual-stream-key-store-failed",
+                        error.to_string(),
+                    ),
+                },
+                Err(error) => {
+                    ServerResponse::error(command.id, "invalid-params", error.to_string())
+                }
+            }
+        }
+        "streamTargets.manualKey.restorePrevious" => {
+            match serde_json::from_value::<ManualStreamKeyRefParams>(command.params) {
+                Ok(params) => match restore_previous_manual_stream_key(params) {
+                    Ok(result) => ServerResponse::ok(command.id, result),
+                    Err(error) => ServerResponse::error(
+                        command.id,
+                        "manual-stream-key-restore-failed",
+                        error.to_string(),
+                    ),
+                },
+                Err(error) => {
+                    ServerResponse::error(command.id, "invalid-params", error.to_string())
+                }
+            }
+        }
+        "streamTargets.manualKey.inspect" => {
+            match serde_json::from_value::<ManualStreamKeyRefParams>(command.params) {
+                Ok(params) => match inspect_manual_stream_key(params) {
+                    Ok(result) => ServerResponse::ok(command.id, result),
+                    Err(error) => ServerResponse::error(
+                        command.id,
+                        "manual-stream-key-inspect-failed",
                         error.to_string(),
                     ),
                 },

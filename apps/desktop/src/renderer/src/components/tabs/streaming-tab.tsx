@@ -1,4 +1,5 @@
 import {
+  ArrowCounterClockwise,
   ArrowsClockwise,
   Broadcast,
   CheckCircle,
@@ -9,6 +10,7 @@ import {
   SignOut,
   TextAa,
   TwitchLogo,
+  Warning,
   WarningCircle,
   XLogo,
   YoutubeLogo,
@@ -19,6 +21,14 @@ import { useEffect, useMemo, useState, type ReactElement } from 'react'
 import { PanelSection } from '@/components/panel-section'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from '@/components/ui/dialog'
 import { Field, FieldDescription, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import {
@@ -48,6 +58,7 @@ import type {
   YouTubeChannel
 } from '@/lib/backend'
 import { isStreamTargetReady, videoProfileCompatibility } from '@/lib/capture'
+import { streamKeyPlatformMismatch, streamKeyTailHint } from '@/lib/stream-key-format'
 
 type BadgeTone = 'success' | 'warning' | 'destructive' | 'outline'
 
@@ -67,6 +78,7 @@ export function StreamingTab(): ReactElement {
     patchStreamTargetMetadataDraft,
     patchStreamingTarget,
     saveManualStreamKey,
+    restorePreviousStreamKey,
     platformAccountValidations,
     platformAccounts,
     youtubeChannels,
@@ -171,6 +183,7 @@ export function StreamingTab(): ReactElement {
             onDisconnect={disconnectPlatformAccount}
             onPatch={patchStreamingTarget}
             onSaveManualStreamKey={saveManualStreamKey}
+            onRestorePreviousStreamKey={restorePreviousStreamKey}
             onRefreshYouTubeChannels={refreshYouTubeChannels}
             onRefreshXNativeCapability={refreshXNativeCapability}
             onSelectYouTubeChannel={selectYouTubeChannel}
@@ -299,6 +312,7 @@ function DestinationCard({
   onDisconnect,
   onPatch,
   onSaveManualStreamKey,
+  onRestorePreviousStreamKey,
   onRefreshYouTubeChannels,
   onRefreshXNativeCapability,
   onSelectYouTubeChannel
@@ -316,7 +330,8 @@ function DestinationCard({
   onConnect: (platform: StreamPlatform) => void
   onDisconnect: (platform: StreamPlatform) => void
   onPatch: (targetId: string, patch: Partial<StreamTargetSettings>) => void
-  onSaveManualStreamKey: (targetId: string, streamKey: string) => Promise<void>
+  onSaveManualStreamKey: (targetId: string, streamKey: string) => Promise<boolean>
+  onRestorePreviousStreamKey: (targetId: string) => Promise<void>
   onRefreshYouTubeChannels: (accountId?: string) => Promise<void>
   onRefreshXNativeCapability: (accountId?: string) => Promise<void>
   onSelectYouTubeChannel: (channelId: string, accountId?: string) => Promise<void>
@@ -334,6 +349,14 @@ function DestinationCard({
   const statusMessage = runtime?.message ?? target.status?.message
   const [manualStreamKeyDraft, setManualStreamKeyDraft] = useState(target.streamKey)
   const [fullUrlDraft, setFullUrlDraft] = useState(target.serverUrl)
+  // A pending save that needs the user's explicit OK: replacing a saved key,
+  // or a paste whose shape matches a DIFFERENT platform's key format.
+  const [pendingKeySave, setPendingKeySave] = useState<{
+    value: string
+    mode: 'key' | 'full-url'
+    warning: string | null
+  } | null>(null)
+  const [confirmingClear, setConfirmingClear] = useState(false)
 
   useEffect(() => {
     setManualStreamKeyDraft(target.streamKey)
@@ -341,6 +364,49 @@ function DestinationCard({
   useEffect(() => {
     setFullUrlDraft(target.serverUrl)
   }, [target.id, target.serverUrl])
+
+  const credentialLabel = fullUrl ? 'RTMP URL' : 'stream key'
+
+  const saveAndClearDraft = (value: string, mode: 'key' | 'full-url'): void => {
+    void onSaveManualStreamKey(target.id, value).then((saved) => {
+      // Only discard what the user typed once the key is truly stored.
+      if (saved) {
+        if (mode === 'full-url') {
+          setFullUrlDraft('')
+        } else {
+          setManualStreamKeyDraft('')
+        }
+      }
+    })
+  }
+
+  const requestManualKeySave = (value: string, mode: 'key' | 'full-url'): void => {
+    const trimmed = value.trim()
+    if (!trimmed) {
+      return
+    }
+    const warning = mode === 'key' ? streamKeyPlatformMismatch(target.platform, trimmed) : null
+    if (target.streamKeyPresent || warning) {
+      setPendingKeySave({ value, mode, warning })
+      return
+    }
+    saveAndClearDraft(value, mode)
+  }
+
+  const confirmPendingKeySave = (): void => {
+    const pending = pendingKeySave
+    setPendingKeySave(null)
+    if (pending) {
+      saveAndClearDraft(pending.value, pending.mode)
+    }
+  }
+
+  const confirmClearKey = (): void => {
+    setConfirmingClear(false)
+    setManualStreamKeyDraft('')
+    setFullUrlDraft('')
+    void onSaveManualStreamKey(target.id, '')
+  }
 
   return (
     <PanelSection
@@ -430,12 +496,18 @@ function DestinationCard({
               <Input
                 disabled={disabled}
                 id={`${target.id}-server`}
-                placeholder={fullUrl ? 'rtmp://server/app/key' : 'rtmp://server/app'}
+                placeholder={
+                  fullUrl
+                    ? target.streamKeyPresent
+                      ? `URL saved · ends ${target.streamKeyHint ?? '••••'} — paste to replace`
+                      : 'rtmp://server/app/key'
+                    : 'rtmp://server/app'
+                }
                 type={fullUrl ? 'password' : 'text'}
                 value={fullUrl ? fullUrlDraft : target.serverUrl}
                 onBlur={() => {
-                  if (fullUrl && fullUrlDraft.trim()) {
-                    void onSaveManualStreamKey(target.id, fullUrlDraft)
+                  if (fullUrl) {
+                    requestManualKeySave(fullUrlDraft, 'full-url')
                   }
                 }}
                 onChange={(event) =>
@@ -443,16 +515,18 @@ function DestinationCard({
                     ? setFullUrlDraft(event.target.value)
                     : onPatch(target.id, { serverUrl: event.target.value })
                 }
+                onKeyDown={(event) => {
+                  if (fullUrl && event.key === 'Enter') {
+                    requestManualKeySave(fullUrlDraft, 'full-url')
+                  }
+                }}
               />
               {fullUrl && target.streamKeyPresent ? (
                 <Button
                   disabled={disabled}
                   size="sm"
                   variant="outline"
-                  onClick={() => {
-                    setFullUrlDraft('')
-                    void onSaveManualStreamKey(target.id, '')
-                  }}
+                  onClick={() => setConfirmingClear(true)}
                 >
                   Clear
                 </Button>
@@ -461,7 +535,7 @@ function DestinationCard({
             {fullUrl ? (
               <FieldDescription>
                 {target.streamKeyPresent
-                  ? 'Saved securely. Paste a new full URL to replace it.'
+                  ? `URL saved securely · ends ${target.streamKeyHint ?? '••••'}. Pasting a new one asks before replacing it.`
                   : 'Saved securely because full RTMP URLs can include the stream key.'}
               </FieldDescription>
             ) : null}
@@ -475,25 +549,27 @@ function DestinationCard({
                   autoComplete="off"
                   disabled={disabled}
                   id={`${target.id}-key`}
-                  placeholder="paste your stream key"
+                  placeholder={
+                    target.streamKeyPresent
+                      ? `Key saved · ends ${target.streamKeyHint ?? '••••'} — paste to replace`
+                      : 'paste your stream key'
+                  }
                   type="password"
                   value={manualStreamKeyDraft}
-                  onBlur={() => {
-                    if (manualStreamKeyDraft.trim()) {
-                      void onSaveManualStreamKey(target.id, manualStreamKeyDraft)
+                  onBlur={() => requestManualKeySave(manualStreamKeyDraft, 'key')}
+                  onChange={(event) => setManualStreamKeyDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      requestManualKeySave(manualStreamKeyDraft, 'key')
                     }
                   }}
-                  onChange={(event) => setManualStreamKeyDraft(event.target.value)}
                 />
                 {target.streamKeyPresent ? (
                   <Button
                     disabled={disabled}
                     size="sm"
                     variant="outline"
-                    onClick={() => {
-                      setManualStreamKeyDraft('')
-                      void onSaveManualStreamKey(target.id, '')
-                    }}
+                    onClick={() => setConfirmingClear(true)}
                   >
                     Clear
                   </Button>
@@ -501,13 +577,93 @@ function DestinationCard({
               </div>
               <FieldDescription>
                 {target.streamKeyPresent
-                  ? 'Saved securely per platform. Paste a new key to replace it.'
+                  ? `Key saved securely · ends ${target.streamKeyHint ?? '••••'}. Pasting a new one asks before replacing it.`
                   : 'Saved securely per platform — switching platforms never overwrites another key.'}
               </FieldDescription>
             </Field>
           ) : null}
+
+          {target.previousStreamKeyPresent ? (
+            <Button
+              className="w-fit"
+              disabled={disabled}
+              size="sm"
+              variant="ghost"
+              onClick={() => void onRestorePreviousStreamKey(target.id)}
+            >
+              <ArrowCounterClockwise />
+              Restore previous {credentialLabel}
+              {target.previousStreamKeyHint ? ` (ends ${target.previousStreamKeyHint})` : ''}
+            </Button>
+          ) : null}
         </>
       )}
+
+      <Dialog
+        open={pendingKeySave !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPendingKeySave(null)
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {target.streamKeyPresent
+                ? `Replace the ${target.label} ${credentialLabel}?`
+                : `Save this ${credentialLabel} to ${target.label}?`}
+            </DialogTitle>
+            <DialogDescription>
+              {target.streamKeyPresent
+                ? `The saved ${credentialLabel}${
+                    target.streamKeyHint ? ` ending ${target.streamKeyHint}` : ''
+                  } will be replaced by the new one ending ${streamKeyTailHint(
+                    pendingKeySave?.value ?? ''
+                  )}. The old one is kept as your previous ${credentialLabel}, so you can restore it.`
+                : `The key ending ${streamKeyTailHint(pendingKeySave?.value ?? '')} will be saved to ${target.label}.`}
+            </DialogDescription>
+          </DialogHeader>
+          {pendingKeySave?.warning ? (
+            <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-600 dark:text-amber-400">
+              <Warning className="mt-0.5 shrink-0" />
+              <span>{pendingKeySave.warning}</span>
+            </div>
+          ) : null}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPendingKeySave(null)}>
+              Cancel
+            </Button>
+            <Button
+              variant={pendingKeySave?.warning ? 'destructive' : 'default'}
+              onClick={confirmPendingKeySave}
+            >
+              {target.streamKeyPresent ? `Replace ${credentialLabel}` : `Save ${credentialLabel}`}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={confirmingClear} onOpenChange={setConfirmingClear}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{`Remove the ${target.label} ${credentialLabel}?`}</DialogTitle>
+            <DialogDescription>
+              {`The saved ${credentialLabel}${
+                target.streamKeyHint ? ` ending ${target.streamKeyHint}` : ''
+              } is kept as your previous ${credentialLabel} after removal, so you can restore it.`}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmingClear(false)}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={confirmClearKey}>
+              Remove {credentialLabel}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {target.platform === 'x' && !oauthMode ? (
         <p className="text-xs text-muted-foreground">

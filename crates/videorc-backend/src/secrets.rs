@@ -109,6 +109,17 @@ pub fn get_secret(secret_ref: &str) -> Result<String> {
         .ok_or_else(|| anyhow!("Secret ref {secret_ref} is not stored."))
 }
 
+/// Like [`get_secret`], but absence is a normal outcome (`Ok(None)`) instead of
+/// an error — for callers that need to know whether a secret exists at all.
+pub fn try_get_secret(secret_ref: &str) -> Result<Option<String>> {
+    let mut guard = STORE_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let path = secrets_path();
+    let store = load_cache(&mut guard, &path)?;
+    Ok(store.secrets.get(secret_ref).cloned())
+}
+
 pub fn delete_secret(secret_ref: &str) -> Result<()> {
     let mut guard = STORE_CACHE
         .lock()
@@ -136,8 +147,16 @@ mod tests {
         unsafe { std::env::set_var("VIDEORC_SECRETS_PATH", &path) };
 
         assert!(get_secret("stream-target:twitch:manual-stream-key").is_err());
+        assert_eq!(
+            try_get_secret("stream-target:twitch:manual-stream-key").unwrap(),
+            None
+        );
 
         put_secret("stream-target:twitch:manual-stream-key", "live_abc").unwrap();
+        assert_eq!(
+            try_get_secret("stream-target:twitch:manual-stream-key").unwrap(),
+            Some("live_abc".to_string())
+        );
         put_secret("platform:x:oauth:refresh", "tok").unwrap();
         assert_eq!(
             get_secret("stream-target:twitch:manual-stream-key").unwrap(),

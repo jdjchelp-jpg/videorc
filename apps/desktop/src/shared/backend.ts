@@ -392,6 +392,12 @@ export interface StreamTargetSettings {
   streamKey: string
   streamKeySecretRef?: string
   streamKeyPresent: boolean
+  // Masked tail ("••••1234") of the saved key so the UI can say WHICH key is
+  // stored; hydrated from the backend, never the secret itself.
+  streamKeyHint?: string
+  // A replaced or cleared key is archived per target; restorable in one click.
+  previousStreamKeyPresent?: boolean
+  previousStreamKeyHint?: string
   authMode: StreamAuthMode
   accountId?: string
   accountLabel?: string
@@ -484,6 +490,9 @@ export interface StoreManualStreamKeyParams {
 export interface StoreManualStreamKeyResult {
   streamKeySecretRef?: string
   streamKeyPresent: boolean
+  streamKeyHint?: string
+  previousStreamKeyPresent: boolean
+  previousStreamKeyHint?: string
 }
 
 export interface YouTubePrepareParams {
