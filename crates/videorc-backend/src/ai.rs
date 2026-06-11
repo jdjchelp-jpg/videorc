@@ -21,6 +21,7 @@ use crate::storage::default_artifacts_dir;
 const OPENAI_TRANSCRIPTIONS_URL: &str = "https://api.openai.com/v1/audio/transcriptions";
 const OPENAI_RESPONSES_URL: &str = "https://api.openai.com/v1/responses";
 const OPENAI_AUDIO_UPLOAD_LIMIT_BYTES: u64 = 25 * 1024 * 1024;
+const TRANSCRIPTION_CHUNK_SECONDS: u64 = 30 * 60;
 
 pub async fn run_ai_workflow(
     state: AppState,
@@ -76,37 +77,6 @@ pub async fn run_ai_workflow(
         });
     }
 
-    let audio_size = fs::metadata(&audio_path)
-        .await
-        .with_context(|| format!("Could not inspect {}", audio_path.display()))?
-        .len();
-    if audio_size > OPENAI_AUDIO_UPLOAD_LIMIT_BYTES {
-        artifacts.push(state.database.save_ai_artifact(
-            &params.session_id,
-            AiArtifactKind::Transcript,
-            AiArtifactStatus::Failed,
-            json!({
-                "message": "Extracted audio is larger than the OpenAI transcription upload limit. Shorter recordings or chunked transcription are needed.",
-                "limitBytes": OPENAI_AUDIO_UPLOAD_LIMIT_BYTES,
-                "actualBytes": audio_size,
-            }),
-            None,
-        )?);
-        emit_health_event(
-            &state,
-            Some(&params.session_id),
-            HealthLevel::Warn,
-            "ai-audio-too-large",
-            "Extracted audio is too large for a single cloud transcription upload.",
-        )?;
-        emit_ai_artifacts_changed(&state, &params.session_id)?;
-        return Ok(AiWorkflowResult {
-            session_id: params.session_id,
-            audio_path: audio_path.display().to_string(),
-            artifacts,
-        });
-    }
-
     let api_key = match std::env::var("OPENAI_API_KEY") {
         Ok(value) if !value.trim().is_empty() => value,
         _ => {
@@ -136,7 +106,42 @@ pub async fn run_ai_workflow(
     };
 
     let client = reqwest::Client::new();
-    let transcript = match transcribe_audio(&client, &api_key, &audio_path).await {
+    let transcription_inputs = match transcription_audio_inputs(
+        &ffmpeg_path,
+        &audio_path,
+        &artifact_dir,
+    )
+    .await
+    {
+        Ok(inputs) => inputs,
+        Err(error) => {
+            artifacts.push(state.database.save_ai_artifact(
+                &params.session_id,
+                AiArtifactKind::Transcript,
+                AiArtifactStatus::Failed,
+                json!({
+                    "message": format!("Could not prepare audio for cloud transcription: {error}"),
+                    "provider": "openai",
+                    "model": transcription_model(),
+                }),
+                None,
+            )?);
+            emit_health_event(
+                &state,
+                Some(&params.session_id),
+                HealthLevel::Warn,
+                "ai-transcription-prepare-failed",
+                "Audio preparation for cloud transcription failed. The local recording and extracted audio are still available.",
+            )?;
+            emit_ai_artifacts_changed(&state, &params.session_id)?;
+            return Ok(AiWorkflowResult {
+                session_id: params.session_id,
+                audio_path: audio_path.display().to_string(),
+                artifacts,
+            });
+        }
+    };
+    let transcript = match transcribe_audio_files(&client, &api_key, &transcription_inputs).await {
         Ok(transcript) => transcript,
         Err(error) => {
             artifacts.push(state.database.save_ai_artifact(
@@ -173,6 +178,9 @@ pub async fn run_ai_workflow(
             "text": transcript,
             "provider": "openai",
             "model": transcription_model(),
+            "chunked": transcription_inputs.len() > 1,
+            "chunkCount": transcription_inputs.len(),
+            "uploadLimitBytes": OPENAI_AUDIO_UPLOAD_LIMIT_BYTES,
         }),
         None,
     )?);
@@ -364,6 +372,161 @@ async fn extract_audio(ffmpeg_path: &str, input_path: &Path, output_path: &Path)
     }
 
     Ok(())
+}
+
+async fn transcription_audio_inputs(
+    ffmpeg_path: &str,
+    audio_path: &Path,
+    artifact_dir: &Path,
+) -> Result<Vec<PathBuf>> {
+    let audio_size = fs::metadata(audio_path)
+        .await
+        .with_context(|| format!("Could not inspect {}", audio_path.display()))?
+        .len();
+    if !needs_transcription_chunking(audio_size) {
+        return Ok(vec![audio_path.to_path_buf()]);
+    }
+
+    let chunk_dir = artifact_dir.join("transcription-chunks");
+    match fs::remove_dir_all(&chunk_dir).await {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error).with_context(|| format!("Could not clear {}", chunk_dir.display()));
+        }
+    }
+    fs::create_dir_all(&chunk_dir)
+        .await
+        .with_context(|| format!("Could not create {}", chunk_dir.display()))?;
+
+    let audio_arg = audio_path.display().to_string();
+    let segment_seconds = TRANSCRIPTION_CHUNK_SECONDS.to_string();
+    let chunk_pattern = chunk_dir.join("chunk-%03d.m4a");
+    let chunk_pattern_arg = chunk_pattern.display().to_string();
+    let mut command = Command::new(ffmpeg_path);
+    command
+        .args([
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "warning",
+            "-i",
+            &audio_arg,
+            "-vn",
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "64k",
+            "-f",
+            "segment",
+            "-segment_time",
+            &segment_seconds,
+            "-reset_timestamps",
+            "1",
+            &chunk_pattern_arg,
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+
+    let output = timeout(Duration::from_secs(20 * 60), command.output())
+        .await
+        .context("FFmpeg transcription audio chunking timed out")?
+        .with_context(|| format!("Could not start {ffmpeg_path} for transcription chunking"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        bail!(
+            "FFmpeg transcription chunking failed with {}{}",
+            output.status,
+            if stderr.is_empty() {
+                String::new()
+            } else {
+                format!(": {stderr}")
+            }
+        );
+    }
+
+    let mut chunks = Vec::new();
+    let mut entries = fs::read_dir(&chunk_dir)
+        .await
+        .with_context(|| format!("Could not read {}", chunk_dir.display()))?;
+    while let Some(entry) = entries
+        .next_entry()
+        .await
+        .with_context(|| format!("Could not read entry in {}", chunk_dir.display()))?
+    {
+        let path = entry.path();
+        let is_m4a = path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("m4a"));
+        if is_m4a {
+            chunks.push(path);
+        }
+    }
+    chunks.sort();
+
+    if chunks.is_empty() {
+        bail!("FFmpeg transcription chunking did not produce any .m4a chunks");
+    }
+
+    for chunk in &chunks {
+        let chunk_size = fs::metadata(chunk)
+            .await
+            .with_context(|| format!("Could not inspect {}", chunk.display()))?
+            .len();
+        if chunk_size > OPENAI_AUDIO_UPLOAD_LIMIT_BYTES {
+            bail!(
+                "Transcription chunk {} is larger than the OpenAI upload limit ({} > {} bytes)",
+                chunk.display(),
+                chunk_size,
+                OPENAI_AUDIO_UPLOAD_LIMIT_BYTES
+            );
+        }
+    }
+
+    Ok(chunks)
+}
+
+fn needs_transcription_chunking(audio_size: u64) -> bool {
+    audio_size > OPENAI_AUDIO_UPLOAD_LIMIT_BYTES
+}
+
+async fn transcribe_audio_files(
+    client: &reqwest::Client,
+    api_key: &str,
+    audio_paths: &[PathBuf],
+) -> Result<String> {
+    if audio_paths.is_empty() {
+        bail!("No audio inputs were prepared for cloud transcription");
+    }
+    if audio_paths.len() == 1 {
+        return transcribe_audio(client, api_key, &audio_paths[0]).await;
+    }
+
+    let mut transcripts = Vec::with_capacity(audio_paths.len());
+    for audio_path in audio_paths {
+        transcripts.push(transcribe_audio(client, api_key, audio_path).await?);
+    }
+
+    Ok(combine_transcript_chunks(&transcripts))
+}
+
+fn combine_transcript_chunks(chunks: &[String]) -> String {
+    match chunks {
+        [] => String::new(),
+        [single] => single.clone(),
+        _ => chunks
+            .iter()
+            .enumerate()
+            .map(|(index, text)| format!("[Chunk {}]\n{}", index + 1, text.trim()))
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+    }
 }
 
 async fn transcribe_audio(
@@ -990,5 +1153,29 @@ mod tests {
         assert!(markdown.contains("- 00:00 Intro"));
         assert!(markdown.contains("## Highlights"));
         assert!(markdown.contains("## Health Assistant"));
+    }
+
+    #[test]
+    fn transcription_chunking_starts_after_upload_limit() {
+        assert!(!needs_transcription_chunking(
+            OPENAI_AUDIO_UPLOAD_LIMIT_BYTES
+        ));
+        assert!(needs_transcription_chunking(
+            OPENAI_AUDIO_UPLOAD_LIMIT_BYTES + 1
+        ));
+    }
+
+    #[test]
+    fn combines_multiple_transcript_chunks_with_order_labels() {
+        let single = combine_transcript_chunks(&["leave me alone".to_string()]);
+        assert_eq!(single, "leave me alone");
+
+        let combined =
+            combine_transcript_chunks(&["first chunk ".to_string(), "\nsecond chunk".to_string()]);
+
+        assert_eq!(
+            combined,
+            "[Chunk 1]\nfirst chunk\n\n[Chunk 2]\nsecond chunk"
+        );
     }
 }
