@@ -5,6 +5,7 @@ import {
   dialog,
   ipcMain,
   nativeImage,
+  nativeTheme,
   screen,
   shell,
   type NativeImage
@@ -81,6 +82,8 @@ const nativePreviewSurfaceProofEnabled = process.env.VIDEORC_NATIVE_PREVIEW_SURF
 const nativePreviewFramePollingEnabled = process.env.VIDEORC_SMOKE_PREVIEW_MOTION !== '1'
 
 app.setName('Videorc')
+// Dark glass is the default theme; the renderer re-syncs this on toggle.
+nativeTheme.themeSource = 'dark'
 // Probes and perf harnesses run ALONGSIDE the owner's dev app: an isolated
 // userData gives them their own single-instance lock and preferences instead
 // of dying on the real instance's lock or clobbering its saved state.
@@ -164,7 +167,15 @@ function createWindow(): void {
     minWidth: 960,
     minHeight: 660,
     title: 'Videorc',
-    backgroundColor: '#ffffff',
+    // Glass shell: the desktop blurs through macOS vibrancy, the renderer
+    // paints its translucent tokens on top (videorc-design). The fully
+    // transparent backgroundColor keeps native corners/shadow (unlike
+    // `transparent: true`); vibrancy supplies the backdrop.
+    backgroundColor: '#00000000',
+    vibrancy: 'under-window',
+    visualEffectState: 'active',
+    titleBarStyle: 'hiddenInset',
+    trafficLightPosition: { x: 14, y: 13 },
     ...appWindowIconOptions(),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -429,22 +440,26 @@ const PREVIEW_WINDOW_HTML = `<!doctype html><html><head><meta charset="utf-8"><s
      below the bar and ignores mouse events, so every grab lands here. The bar
      stays visible above the video as the obvious handle. Edge-resize is handled
      by the real window frame (hiddenInset) and is aspect-locked by main. */
-  html, body { margin: 0; height: 100%; background: #09090b; color: #a1a1aa;
+  /* Glass tokens (videorc-design): the preview window frames video, so it
+     stays dark in both themes — charcoal surface, white-8% hairline,
+     tertiary-gray label. */
+  html, body { margin: 0; height: 100%; background: #1c1c1f; color: #a1a1aa;
     font: 12px/1.4 -apple-system, BlinkMacSystemFont, sans-serif; overflow: hidden;
     user-select: none; -webkit-user-select: none; -webkit-app-region: drag; }
   .drag-bar { position: fixed; top: 0; left: 0; right: 0; height: 28px;
     display: flex; align-items: center; gap: 10px; cursor: grab;
     padding: 0 12px 0 78px; /* traffic lights live in the left inset */
-    background: #18181b; border-bottom: 1px solid #27272a; box-sizing: border-box; }
+    background: rgba(24, 24, 27, 0.88); border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    box-sizing: border-box; }
   .drag-bar:active { cursor: grabbing; }
   .drag-bar .label { color: #71717a; font-size: 11px; letter-spacing: 0.08em;
     text-transform: uppercase; white-space: nowrap; }
   .drag-bar .grip { flex: 1; height: 8px; background-image:
-    radial-gradient(circle, #3f3f46 1px, transparent 1.2px);
+    radial-gradient(circle, rgba(255, 255, 255, 0.18) 1px, transparent 1.2px);
     background-size: 6px 4px; background-position: center; }
   .hint { position: fixed; top: 28px; left: 0; right: 0; bottom: 0; display: flex;
     align-items: center; justify-content: center; flex-direction: column; gap: 6px; }
-  .hint .title { color: #d4d4d8; font-size: 13px; }
+  .hint .title { color: #f4f4f5; font-size: 13px; }
 </style></head><body>
   <div class="hint"><div class="title">Waiting for preview</div>
   <div>The native surface appears here as soon as the compositor presents.</div></div>
@@ -2997,6 +3012,14 @@ async function runSmokePreviewMotionCommand(
     return Object.fromEntries(sendToWindowsCounts)
   }
 
+  // The CGWindowID of the main window, for probes that need a REAL composited
+  // screenshot (capturePage excludes the OS vibrancy layer; `screencapture -l`
+  // includes it).
+  if (command === 'main-window-id') {
+    const match = /^window:(\d+):/.exec(mainWindow.getMediaSourceId())
+    return { windowId: match ? Number(match[1]) : null }
+  }
+
   // Leak bisection: replace the main window's content with about:blank (the
   // preload still loads). Growth that survives this is platform-level, not
   // app code. Probe-only; the window needs a reload to recover the app.
@@ -3561,6 +3584,11 @@ app.whenReady().then(() => {
   )
   ipcMain.handle('preview-surface:mode', () => nativePreviewSurfaceProofEnabled)
   ipcMain.handle('preview-surface:pump-mode', () => nativePreviewMainPumpActive)
+  // Vibrancy tints by OS appearance; the renderer's theme toggle drives it so
+  // the blur material always matches the in-app theme (videorc-design).
+  ipcMain.handle('app:set-native-theme', (_event, theme: string) => {
+    nativeTheme.themeSource = theme === 'light' ? 'light' : 'dark'
+  })
   ipcMain.handle('preview-window:open', () => openPreviewWindow())
   ipcMain.handle('preview-window:close', () => closePreviewWindow())
   ipcMain.handle('preview-window:get-state', () => previewWindowState())

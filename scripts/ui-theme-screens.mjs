@@ -7,12 +7,16 @@
 //
 // Usage: node scripts/ui-theme-screens.mjs [tab ...]   (default: studio streaming)
 
+import { execFile } from 'node:child_process'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { request as httpRequest } from 'node:http'
+import { promisify } from 'node:util'
 
 import { launchDevApp } from './lib/app-launcher.mjs'
+
+const execFileAsync = promisify(execFile)
 
 const tabs = process.argv.slice(2).length ? process.argv.slice(2) : ['studio', 'streaming']
 const timeoutMs = Number(process.env.VIDEORC_PROBE_TIMEOUT_MS ?? 180000)
@@ -124,6 +128,20 @@ async function captureAll(smoke, suffix) {
     await sleep(1200)
     const shot = await smokeCommand(smoke, 'capture-page', { name: `${tab}-${suffix}` })
     console.log(`${tab} (${suffix}): ${shot.file}`)
+    // capturePage excludes the OS vibrancy layer; `screencapture -l` grabs the
+    // REAL composited window. Needs Screen Recording permission; best-effort.
+    if (process.env.VIDEORC_SHOTS_COMPOSITED === '1') {
+      try {
+        const { windowId } = await smokeCommand(smoke, 'main-window-id')
+        if (windowId) {
+          const file = `/tmp/videorc-ui-${tab}-${suffix}-composited.png`
+          await execFileAsync('screencapture', ['-o', '-x', `-l${windowId}`, file])
+          console.log(`${tab} (${suffix}, composited): ${file}`)
+        }
+      } catch (error) {
+        console.log(`composited capture unavailable: ${String(error?.message ?? error)}`)
+      }
+    }
   }
 }
 
