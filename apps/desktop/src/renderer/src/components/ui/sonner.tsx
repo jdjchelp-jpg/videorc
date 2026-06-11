@@ -40,7 +40,12 @@ const Toaster = ({ closeButton = true, toastOptions, ...props }: ToasterProps) =
         closeButtonAriaLabel: toastOptions?.closeButtonAriaLabel ?? 'Dismiss notification',
         classNames: {
           ...toastOptions?.classNames,
-          toast: ['cn-toast', toastOptions?.classNames?.toast].filter(Boolean).join(' ')
+          // Toasts are small glass panels: near-opaque popover surface with
+          // the layered shadow + hairline ring (videorc-design). No backdrop
+          // blur — it wedges the compositor on the vibrancy window.
+          toast: ['cn-toast', 'shadow-glass', toastOptions?.classNames?.toast]
+            .filter(Boolean)
+            .join(' ')
         }
       }}
       {...props}

@@ -1,0 +1,37 @@
+import type { ReactElement, ReactNode } from 'react'
+
+import { Separator } from '@/components/ui/separator'
+import { cn } from '@/lib/utils'
+
+/**
+ * Footer action bar (videorc-design): the hairline-separated strip at a
+ * panel's bottom edge — leading glyph/context on the left, actions with key
+ * chips on the right. Compose actions from ghost Buttons + Kbd chips and
+ * divide them with <FooterActionDivider />.
+ */
+export function FooterActionBar({
+  leading,
+  className,
+  children
+}: {
+  /** Left side: app glyph button or contextual hint (tertiary). */
+  leading?: ReactNode
+  className?: string
+  /** Right side: ghost-button actions with their Kbd chips. */
+  children?: ReactNode
+}): ReactElement {
+  return (
+    <div
+      data-slot="footer-action-bar"
+      className={cn('flex h-11 shrink-0 items-center gap-2 border-t border-border px-3', className)}
+    >
+      <div className="flex items-center gap-2 text-[13px] text-subtle">{leading}</div>
+      <div className="ml-auto flex items-center gap-1.5">{children}</div>
+    </div>
+  )
+}
+
+/** Hairline vertical divider between footer actions. */
+export function FooterActionDivider(): ReactElement {
+  return <Separator orientation="vertical" className="mx-1 h-4!" />
+}
