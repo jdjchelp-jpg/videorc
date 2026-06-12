@@ -90,3 +90,103 @@ fn unsupported() -> io::Error {
         "FIFO transport is not implemented on this platform yet (named pipes arrive with the Windows port)",
     )
 }
+
+// These cases define the behavioral contract the Windows named-pipe twin
+// must match (windows-port-plan Phase 3): create → open_writer(retry/stop)
+// → blocking writes once a reader attaches.
+#[cfg(all(test, unix))]
+mod tests {
+    use std::io::Read;
+    use std::io::Write;
+    use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+    use std::path::PathBuf;
+    use std::sync::atomic::Ordering;
+
+    use super::*;
+
+    fn temp_fifo_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("videorc-fifo-test-{name}-{}", std::process::id()))
+    }
+
+    #[test]
+    fn create_makes_a_fifo_with_owner_only_mode() {
+        let path = temp_fifo_path("create");
+        let _ = std::fs::remove_file(&path);
+
+        create(&path).expect("create should succeed on a fresh path");
+
+        let metadata = std::fs::metadata(&path).expect("fifo metadata");
+        assert!(metadata.file_type().is_fifo(), "path must be a FIFO");
+        assert_eq!(
+            metadata.permissions().mode() & 0o777,
+            0o600,
+            "FIFO must be owner-only"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn create_fails_on_existing_path() {
+        let path = temp_fifo_path("create-existing");
+        let _ = std::fs::remove_file(&path);
+
+        create(&path).expect("first create succeeds");
+        assert!(
+            create(&path).is_err(),
+            "second create on the same path must fail (callers remove stale FIFOs themselves)"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn open_writer_returns_interrupted_when_stopped() {
+        let path = temp_fifo_path("stopped");
+        let stop = AtomicBool::new(true);
+
+        let error = open_writer(
+            &path,
+            &stop,
+            Duration::from_millis(1),
+            true,
+            "writer stopped before FIFO opened",
+        )
+        .expect_err("a pre-stopped writer must not open");
+
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        assert_eq!(error.to_string(), "writer stopped before FIFO opened");
+    }
+
+    #[test]
+    fn open_writer_connects_once_a_reader_attaches() {
+        let path = temp_fifo_path("connect");
+        let _ = std::fs::remove_file(&path);
+        create(&path).expect("create fifo");
+
+        let reader_path = path.clone();
+        let reader = std::thread::spawn(move || {
+            let mut file = std::fs::File::open(reader_path).expect("reader open");
+            let mut buffer = [0u8; 4];
+            file.read_exact(&mut buffer).expect("reader read");
+            buffer
+        });
+
+        let stop = AtomicBool::new(false);
+        let mut writer = open_writer(
+            &path,
+            &stop,
+            Duration::from_millis(5),
+            true,
+            "writer stopped before FIFO opened",
+        )
+        .expect("writer opens once the reader is attached");
+        writer.write_all(b"ping").expect("write to fifo");
+        drop(writer);
+
+        assert_eq!(&reader.join().expect("reader thread"), b"ping");
+        stop.store(true, Ordering::Relaxed);
+
+        let _ = std::fs::remove_file(&path);
+    }
+}
