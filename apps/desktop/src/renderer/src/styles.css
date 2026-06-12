@@ -71,9 +71,10 @@
 }
 
 .dark {
-  /* Dark glass: rgba(24,24,27,0.58) — the reference column. Thin enough that
-     the desktop visibly breathes through. */
-  --background: oklch(0.21 0.006 286 / 58%);
+  /* Dark glass — the reference column. Owner-tuned by eye: 65% read as
+     barely-there, 58% let background text interfere with the UI; 62% is the
+     sweet spot for unblurred bleed. */
+  --background: oklch(0.21 0.006 286 / 62%);
   --foreground: oklch(0.97 0.001 286);
   --card: oklch(0.235 0.006 286 / 92%);
   --card-foreground: oklch(0.97 0.001 286);
