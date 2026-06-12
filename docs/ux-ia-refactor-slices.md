@@ -10,16 +10,20 @@ every slice leaves the app green and committable. Gates used throughout:
 - Visual judge-by-eye: `VIDEORC_SMOKE_OUTPUT_DIR=/tmp node scripts/ui-theme-screens.mjs <tab …>`
   (both themes; smoothness/visuals are perceptual — look at the PNGs)
 
-## Battle order
+## Battle order — ALL DONE 2026-06-13
 
-1. **Sidebar regroup, renames, shortcuts** — none
-2. **Bound the sources device diagnostics** — none
-3. **Library absorbs Export-MP4; Output sheds artifacts** — none
-4. **Scene absorbs Screens; framing regroups** — Slice 1 (labels)
-5. **Studio session strip replaces five accordions** — Slices 1–4
-6. **Live-only chat rail; last accordion dies** — Slice 5
-7. **Destinations: rows + separated Broadcast info** — Slice 1
-8. **Health: verdicts pinned, metrics grouped** — Slice 1
+1. **Sidebar regroup, renames, shortcuts** — DONE (37ca186c)
+2. **Bound the sources device diagnostics** — DONE (cd3ad686)
+3. **Library absorbs Export-MP4; Output sheds artifacts** — DONE (b0c19801)
+4. **Scene absorbs Screens; framing regroups** — DONE (f35bc9d2)
+5. **Studio session strip replaces five accordions** — DONE (ce6f1e25)
+6. **Live-only chat rail; last accordion dies** — DONE (e1ab8176)
+7. **Destinations: rows + separated Broadcast info** — DONE (5c5467ee;
+   note: smoke:oauth-guards fails identically pre/post — pre-existing
+   X-account contamination in the smoke profile, flagged separately)
+8. **Health: verdicts pinned, metrics grouped** — DONE (8f8a7f4e; four
+   contiguous groups instead of five so no metric reordered; groups
+   default closed, the always-open Verdicts panel carries the alarm role)
 
 Slices 2 and 3 can land any time after their commit point; 7 and 8 any time
 after Slice 1. The critical path is 1 → 4 → 5 → 6.
