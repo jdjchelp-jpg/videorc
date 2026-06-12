@@ -3,9 +3,11 @@ import { useTheme } from 'next-themes'
 import { useEffect, useState, type ReactElement } from 'react'
 
 import { Button } from '@/components/ui/button'
+import { useThemeToggle } from '@/hooks/use-theme-toggle'
 
 export function ThemeToggle(): ReactElement {
-  const { resolvedTheme, setTheme } = useTheme()
+  const { resolvedTheme } = useTheme()
+  const { toggleTheme } = useThemeToggle()
   const [mounted, setMounted] = useState(false)
 
   useEffect(() => {
@@ -18,9 +20,9 @@ export function ThemeToggle(): ReactElement {
     <Button
       aria-label="Toggle color theme"
       size="icon"
-      title={isDark ? 'Switch to light theme' : 'Switch to dark theme'}
+      title={isDark ? 'Switch to light theme (D)' : 'Switch to dark theme (D)'}
       variant="ghost"
-      onClick={() => setTheme(isDark ? 'light' : 'dark')}
+      onClick={toggleTheme}
     >
       {mounted && isDark ? <Moon weight="fill" /> : <Sun weight="fill" />}
     </Button>
