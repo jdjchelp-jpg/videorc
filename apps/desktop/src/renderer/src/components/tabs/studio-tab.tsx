@@ -216,7 +216,7 @@ export function StudioTab(): ReactElement {
       />
 
       {/* Action bar: status + the two primary buttons + output */}
-      <div className="flex flex-col gap-3 rounded-2xl border bg-card p-4">
+      <div className="flex flex-col gap-3 rounded-2xl border bg-muted/20 p-4">
         <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-2.5">
             <span
@@ -258,13 +258,14 @@ export function StudioTab(): ReactElement {
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
             <Button
               size="lg"
+              variant="outline"
               disabled={!canStart || startRequestPending}
               title={startBlockedReason ?? 'Record to a file (Space)'}
               onClick={handleRecord}
             >
               <Record data-icon="inline-start" weight="fill" />
               {startRequestPending ? 'Starting…' : 'Record'}
-              <Kbd className="ml-1.5 bg-background/20 text-primary-foreground/70">␣</Kbd>
+              <Kbd className="ml-1.5">␣</Kbd>
             </Button>
             <Button
               size="lg"
@@ -331,7 +332,7 @@ export function StudioTab(): ReactElement {
       </div>
 
       {/* All settings, tucked into accordions */}
-      <Accordion type="multiple" defaultValue={['source']} className="bg-card">
+      <Accordion type="multiple" defaultValue={['source']} className="bg-muted/20">
         <AccordionItem value="source">
           <AccordionTrigger>
             <SectionLabel
