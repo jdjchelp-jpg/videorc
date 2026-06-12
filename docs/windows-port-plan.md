@@ -99,20 +99,38 @@ Backend:
 - Gate: `cargo check --target x86_64-pc-windows-msvc` (cross-check runs on
   the Mac — catches type errors without the Windows box). **Green.**
 
-Electron:
-- `.exe` suffixes in backend/ffmpeg resolution (`main/index.ts:2313-2554`),
-  spawn semantics, owned-process cleanup via the Job Object.
-- OAuth on Windows: `open-url` does not fire; the `videorc://` URL arrives
-  in `process.argv` of the second instance — handle it in the existing
-  `second-instance` listener.
-- Window chrome v1: `titleBarStyle: 'hidden'` + `titleBarOverlay` (native
-  min/max/close, themed to the glass tokens); skip transparency initially —
-  solid `--background` fallback is already the degraded glass path.
-- electron-builder: `win:` section (`nsis` + `dir` targets), `icon.ico`,
-  protocol registration; unsigned builds for now. Runtime Windows 11 guard
-  (build ≥ 22000) with a quit dialog, since the installer can't enforce it.
-- Gate: `pnpm package` on Windows produces a launchable app;
-  `smoke:dev`-class scripts (the portable ones) pass.
+Electron: **DONE 2026-06-12 (slice 4), except the Job Object.**
+- `.exe` suffixes in backend/ffmpeg resolution were ALREADY present
+  (`resolveCargoBinary`/`resolvePackagedBackendBinary`/
+  `resolvePackagedFfmpegBinDir` branch on `win32`).
+- OAuth on Windows: ALREADY handled — the existing `second-instance`
+  listener scans argv for the `videorc://` URL; `open-url` is the mac-only
+  twin and simply never fires. No change needed (the callback always
+  arrives while the app is already running).
+- Window chrome v1: the macOS glass/vibrancy/`hiddenInset`/traffic-light
+  block is extracted into `platformWindowChromeOptions()` and gated to
+  macOS untouched; off macOS the window ships the **standard native frame**
+  over a solid themed base. Chose the native frame over
+  `titleBarStyle:'hidden'`+`titleBarOverlay` deliberately: the overlay needs
+  renderer `-webkit-app-region` drag regions to stay movable, which can't be
+  validated without a Windows box — the frameless glass + drag regions are
+  Phase 4. `glassWallpaperEnabled` is now gated to macOS so the System
+  Events wallpaper fetch never shells out on Windows.
+- electron-builder: `win:` section added (`dir` + `nsis` targets) with its
+  own `extraResources` (`.exe` backend, `vendor/ffmpeg/windows-x64`),
+  generated `build-resources/icon.ico`, and an `nsis` block. Unsigned for
+  now (Phase 5).
+- Runtime Windows 11 guard: `enforceWindowsVersionFloor()` quits with a
+  dialog when `os.release()` build < 22000.
+- **Deferred to a Windows-box slice: the Job Object.** `backendProcess.kill`
+  maps to TerminateProcess on Windows, which kills the backend but orphans
+  its ffmpeg children, and `OwnedProcessRegistry.reapStale` already
+  early-returns on win32. The kill-on-job-close guarantee needs a native
+  addon and on-Windows testing — graceful quit still stops the backend; only
+  force-kill/crash leaks ffmpeg until then.
+- Gate: `pnpm typecheck` + `pnpm build` + `smoke:dev` green on macOS
+  (proves the chrome refactor is behavior-neutral). `pnpm package` on
+  Windows is the on-box gate when hardware lands.
 
 ## Phase 2 — Recording MVP via ffmpeg (the tracer bullet)
 

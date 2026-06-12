@@ -45,3 +45,30 @@ mac:
   target:
     - dir
     - dmg
+
+# Windows 11 x64. Unsigned for now (internal testing); Authenticode signing is
+# Phase 5. The .exe backend and the windows-x64 ffmpeg dir override the
+# top-level (macOS) extraResources paths. See docs/windows-port-plan.md.
+win:
+  icon: build-resources/icon.ico
+  extraResources:
+    - from: ../../target/x86_64-pc-windows-msvc/release/videorc-backend.exe
+      to: videorc-backend.exe
+    - from: src/renderer/src/assets/videorc-logo.png
+      to: videorc-logo.png
+    - from: ../../vendor/ffmpeg/windows-x64
+      to: ffmpeg
+      filter:
+        - bin/ffmpeg.exe
+        - NOTICE.txt
+        - SOURCE.txt
+        - BUILD-CONFIG.txt
+        - licenses/**/*
+  target:
+    - dir
+    - nsis
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true

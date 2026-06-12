@@ -8,6 +8,7 @@ import {
   nativeTheme,
   screen,
   shell,
+  type BrowserWindowConstructorOptions,
   type NativeImage
 } from 'electron'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
@@ -19,7 +20,7 @@ import {
   type ServerResponse as HttpResponse
 } from 'node:http'
 import { createRequire } from 'node:module'
-import { homedir } from 'node:os'
+import { homedir, release } from 'node:os'
 import { delimiter, dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
@@ -87,6 +88,8 @@ nativeTheme.themeSource = 'dark'
 // True vibrancy is the default glass; =0 opts out, and any other value picks
 // the macOS material by name (e.g. hud, popover, menu, under-window).
 type GlassVibrancyMaterial = NonNullable<Parameters<BrowserWindow['setVibrancy']>[0]>
+const isMac = process.platform === 'darwin'
+const isWindows = process.platform === 'win32'
 const glassVibrancyEnabled = process.env.VIDEORC_GLASS_VIBRANCY !== '0'
 const glassVibrancyRaw = process.env.VIDEORC_GLASS_VIBRANCY
 const glassVibrancyMaterial: GlassVibrancyMaterial =
@@ -98,7 +101,11 @@ const glassVibrancyMaterial: GlassVibrancyMaterial =
 // the actual wallpaper as its bottom layer since the OS material cannot do
 // it here. Fetching uses System Events — the one-time Automation prompt, if
 // denied, degrades cleanly to the plain translucent glass.
-const glassWallpaperEnabled = glassVibrancyEnabled && process.env.VIDEORC_GLASS_WALLPAPER !== '0'
+// macOS-only today: the underlay is fetched through System Events (osascript),
+// so gating on isMac keeps the move/resize/focus listeners from shelling out on
+// Windows. The Windows wallpaper underlay (a registry read, no prompt) is Phase 4.
+const glassWallpaperEnabled =
+  isMac && glassVibrancyEnabled && process.env.VIDEORC_GLASS_WALLPAPER !== '0'
 let glassWallpaperDataUrl: string | null = null
 let glassWallpaperSourcePath: string | null = null
 let glassGeometryTimer: ReturnType<typeof setTimeout> | null = null
@@ -242,13 +249,19 @@ const MACOS_PERMISSION_URLS: Record<SystemPermissionPane, string> = {
   microphone: 'x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone'
 }
 
-function createWindow(): void {
-  mainWindow = new BrowserWindow({
-    width: 1180,
-    height: 780,
-    minWidth: 960,
-    minHeight: 660,
-    title: 'Videorc',
+// The platform-specific window chrome (translucency, frame, title-bar style).
+// macOS is the reference glass expression below; off macOS we ship a solid
+// themed base with the native frame in chrome v1 — no OS material or window
+// transparency is wired yet (the frameless Windows glass is Phase 4).
+function platformWindowChromeOptions(): BrowserWindowConstructorOptions {
+  if (!isMac) {
+    // Solid themed base so the 75%-alpha glass tokens don't composite over
+    // default white; the standard native frame is guaranteed movable and
+    // carries native min/max/close without renderer drag regions.
+    return { backgroundColor: nativeTheme.shouldUseDarkColors ? '#1C1C1F' : '#F5F5F7' }
+  }
+
+  return {
     // Glass shell. The reference translucency comes from the OS material —
     // CSS alone cannot blur the desktop behind the window — so under-window
     // vibrancy is the default and VIDEORC_GLASS_VIBRANCY=0 opts out to the
@@ -288,7 +301,18 @@ function createWindow(): void {
             ? 'hidden'
             : 'hiddenInset') as 'hidden' | 'hiddenInset',
           trafficLightPosition: { x: 14, y: 13 }
-        }),
+        })
+  }
+}
+
+function createWindow(): void {
+  mainWindow = new BrowserWindow({
+    width: 1180,
+    height: 780,
+    minWidth: 960,
+    minHeight: 660,
+    title: 'Videorc',
+    ...platformWindowChromeOptions(),
     ...appWindowIconOptions(),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -2420,6 +2444,28 @@ function setDockIcon(): void {
   }
 }
 
+// Videorc targets Windows 11 only (build 22000+): it unlocks Mica/acrylic,
+// mature Windows.Graphics.Capture, and per-monitor wallpaper for the glass
+// underlay. The installer can't enforce an OS floor, so we check at startup.
+// Returns true if the app should stop launching.
+function enforceWindowsVersionFloor(): boolean {
+  if (!isWindows) {
+    return false
+  }
+  const build = Number.parseInt(release().split('.')[2] ?? '', 10)
+  if (Number.isFinite(build) && build >= 22000) {
+    return false
+  }
+  dialog.showMessageBoxSync({
+    type: 'error',
+    title: 'Windows 11 required',
+    message: 'Videorc requires Windows 11 or newer.',
+    detail: `This machine reports Windows build ${release()}. Videorc needs build 22000 (Windows 11) or later.`,
+    buttons: ['Quit']
+  })
+  return true
+}
+
 function registerOAuthCallbackProtocol(): void {
   if (process.defaultApp) {
     const appPath = process.argv[1]
@@ -3771,6 +3817,11 @@ app.on('open-url', (event, url) => {
 
 app.whenReady().then(() => {
   if (!hasSingleInstanceLock) {
+    return
+  }
+
+  if (enforceWindowsVersionFloor()) {
+    app.quit()
     return
   }
 
