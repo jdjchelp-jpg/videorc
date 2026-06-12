@@ -1,15 +1,41 @@
 import { describe, expect, it } from 'vitest'
 
+import type { SourceSelection } from '../../../shared/backend'
 import type { CaptureConfig } from './capture'
 import {
   normalizeAudioSettings,
   normalizeMicrophoneSyncOffsetMs,
   normalizeVideoSettings,
   parseMicrophoneSyncOffsetInput,
+  reconcileSourceSelection,
   smokePreviewCompositorCaptureConfig,
+  sourceSelectionChangeMessages,
   videoProfileCompatibility,
   videoPresets
 } from './capture'
+
+describe('reconcileSourceSelection', () => {
+  // The renderer mounts with an empty deviceList placeholder and the
+  // reconcile effect fires before the backend's first devices.list answer.
+  // Remembered selections must survive that pre-snapshot tick: clearing them
+  // toasts 'Capture source "…" is unavailable, so it was cleared.' for
+  // devices that are actually present (startup-toast bug, 2026-06-13).
+  it('leaves remembered selections untouched before the first device snapshot', () => {
+    const remembered: SourceSelection = {
+      screenId: 'screen:1',
+      screenName: 'Display 1',
+      cameraId: 'camera:1',
+      cameraName: 'FaceTime HD Camera',
+      microphoneId: 'microphone:1',
+      microphoneName: 'MacBook Pro Microphone'
+    }
+
+    const next = reconcileSourceSelection(remembered, [])
+
+    expect(next).toEqual(remembered)
+    expect(sourceSelectionChangeMessages(remembered, next)).toEqual([])
+  })
+})
 
 describe('smokePreviewCompositorCaptureConfig', () => {
   it('uses a renderable test-pattern source instead of stopped real preview sources', () => {

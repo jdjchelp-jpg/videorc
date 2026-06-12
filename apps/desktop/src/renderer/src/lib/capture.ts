@@ -784,6 +784,15 @@ export function reconcileSourceSelection(
   sources: SourceSelection,
   devices: Device[]
 ): SourceSelection {
+  if (devices.length === 0) {
+    // No device snapshot yet: the renderer mounts with an empty deviceList
+    // placeholder and reconciles before the backend's first devices.list
+    // answer. A real snapshot is never empty (the system-audio placeholder is
+    // always listed), so reconciling here would clear remembered selections
+    // and toast "unavailable" for devices that are present.
+    return { ...sources }
+  }
+
   const nextSources = { ...sources }
   const captureDevices = devices.filter(
     (device) => ['screen', 'window'].includes(device.kind) && device.status === 'available'
