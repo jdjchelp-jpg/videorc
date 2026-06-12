@@ -4,12 +4,7 @@ import {
   CheckCircle,
   FolderOpen,
   type Icon,
-  ImageSquare,
-  Layout,
-  Monitor,
   Record,
-  SpeakerHigh,
-  SpeakerSlash,
   StopCircle,
   WarningCircle
 } from '@phosphor-icons/react'
@@ -18,6 +13,7 @@ import { useEffect, useState, type ReactElement } from 'react'
 import { BlockingBanner } from '@/components/blocking-banner'
 import { LiveChatPanel } from '@/components/live-chat-panel'
 import { PreviewStage } from '@/components/preview-stage'
+import { SessionStrip } from '@/components/session-strip'
 import { StatusBadge } from '@/components/status-badge'
 import {
   Accordion,
@@ -36,26 +32,18 @@ import {
   DialogHeader,
   DialogTitle
 } from '@/components/ui/dialog'
-import { Field, FieldContent, FieldLabel } from '@/components/ui/field'
+import { Field, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { Separator } from '@/components/ui/separator'
-import { Switch } from '@/components/ui/switch'
-import { useWorkspaceNav, type StudioPanel, type WorkspaceTab } from '@/components/workspace-nav'
+import { type StudioPanel, type WorkspaceTab } from '@/components/workspace-nav'
 import { useStudio } from '@/hooks/use-studio'
-import type {
-  LayoutPreset,
-  GoLiveDestinationPreflight,
-  StreamPlatform,
-  StreamScreen
-} from '@/lib/backend'
-import { isStreamTargetStartReady, videoProfileCompatibility } from '@/lib/capture'
+import type { GoLiveDestinationPreflight, StreamPlatform } from '@/lib/backend'
+import { videoProfileCompatibility } from '@/lib/capture'
 import { studioHealth } from '@/lib/studio-health'
 import { cn } from '@/lib/utils'
 
 export function StudioTab(): ReactElement {
   const studio = useStudio()
-  const { openStudioPanel } = useWorkspaceNav()
   const {
     recording,
     elapsed,
@@ -74,21 +62,8 @@ export function StudioTab(): ReactElement {
     nativePreviewSurfaceEnabled,
     refreshPreview,
     openPreviewPermissions,
-    selectedCaptureDevice,
-    selectedCamera,
-    selectedMicrophone,
-    streamReady,
     wsStatus,
-    health,
     diagnosticStats,
-    audioMeter,
-    meterLevel,
-    sceneEditMode,
-    setSceneEditMode,
-    screens,
-    activeScreen,
-    activateScreen,
-    clearActiveScreen,
     goLiveConfirmationOpen,
     goLiveConfirmationPending,
     goLivePartialSetup,
@@ -98,57 +73,17 @@ export function StudioTab(): ReactElement {
     cancelGoLiveConfirmation,
     confirmGoLive,
     continueGoLiveWithReadyDestinations,
-    resolveGoLiveBlocker,
-    platformAccounts,
-    applyCameraPreset,
-    layoutSwitchPending
+    resolveGoLiveBlocker
   } = studio
 
   const active = recording.state === 'recording' || recording.state === 'streaming'
   const previewHealth = studioHealth(diagnosticStats, active)
   const banner = studioBlocker(studio)
-  const audioSummary =
-    recording.audioTracks?.map((track) => track.label).join(' + ') ??
-    (selectedMicrophone ? 'Microphone' : 'None')
-  const pipelineSummary = recording.pipeline
-    ? pipelineStatusLabel(recording.pipeline.finalization)
-    : 'Ready'
   const liveStreamCompatibility = videoProfileCompatibility({
     ...captureConfig,
     streamEnabled: true
   })
   const liveStreamBlockedReason = liveStreamCompatibility.blockingReason
-  // W1 command center: one chip per enabled destination — ready means this
-  // destination would survive a go-live right now.
-  const destinationChips = captureConfig.streaming.targets
-    .filter((target) => target.enabled)
-    .map((target) => {
-      const account =
-        target.authMode === 'oauth'
-          ? platformAccounts.find((candidate) => candidate.platform === target.platform)
-          : undefined
-      const ready =
-        target.authMode === 'oauth' ? Boolean(account) : isStreamTargetStartReady(target)
-      return {
-        id: target.id,
-        label: target.label || target.platform,
-        detail:
-          target.authMode === 'oauth'
-            ? account
-              ? (account.accountLabel ?? 'connected')
-              : 'no account'
-            : target.streamKeyPresent || target.streamKeySecretRef
-              ? 'key saved'
-              : 'no key',
-        ready
-      }
-    })
-  const LAYOUT_QUICK_PRESETS: { id: LayoutPreset; label: string }[] = [
-    { id: 'screen-camera', label: 'Screen + Cam' },
-    { id: 'screen-only', label: 'Screen' },
-    { id: 'camera-only', label: 'Camera' },
-    { id: 'side-by-side', label: 'Side by side' }
-  ]
 
   // Two-button start: set the intended mode, then start on the next render so startSession
   // sees the updated streamEnabled (record vs go-live) instead of a stale closure value.
@@ -288,41 +223,6 @@ export function StudioTab(): ReactElement {
           </div>
         ) : null}
 
-        {destinationChips.length > 0 ? (
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs font-medium text-muted-foreground">Destinations</span>
-            {destinationChips.map((chip) => (
-              <button
-                className="flex items-center gap-1.5 rounded-full border bg-muted/40 px-2.5 py-1 text-xs transition-colors hover:bg-muted"
-                key={chip.id}
-                type="button"
-                onClick={() => openStudioPanel('live')}
-              >
-                <span
-                  className={cn('size-1.5 rounded-full', chip.ready ? 'bg-success' : 'bg-warning')}
-                />
-                <span className="font-medium capitalize">{chip.label}</span>
-                <span className="text-muted-foreground">{chip.detail}</span>
-              </button>
-            ))}
-          </div>
-        ) : null}
-
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="text-xs font-medium text-muted-foreground">Layout</span>
-          {LAYOUT_QUICK_PRESETS.map((preset) => (
-            <Button
-              key={preset.id}
-              size="sm"
-              variant={captureConfig.layout.layoutPreset === preset.id ? 'secondary' : 'outline'}
-              disabled={layoutSwitchPending !== null}
-              onClick={() => applyCameraPreset({ layoutPreset: preset.id })}
-            >
-              {layoutSwitchPending === preset.id ? 'Switching…' : preset.label}
-            </Button>
-          ))}
-        </div>
-
         <div className="flex items-center gap-2 rounded-lg border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
           <FolderOpen className="size-4 shrink-0" weight="duotone" />
           <span className="truncate">
@@ -331,173 +231,11 @@ export function StudioTab(): ReactElement {
         </div>
       </div>
 
-      {/* All settings, tucked into accordions */}
-      <Accordion type="multiple" defaultValue={['source']} className="bg-muted/20">
-        <AccordionItem value="source">
-          <AccordionTrigger>
-            <SectionLabel
-              icon={Monitor}
-              title="Source"
-              summary={selectedCaptureDevice?.name ?? selectedCamera?.name ?? 'No source'}
-            />
-          </AccordionTrigger>
-          <AccordionContent className="flex flex-col gap-3.5">
-            <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
-              <SummaryRow label="Screen" value={selectedCaptureDevice?.name ?? 'None'} />
-              <SummaryRow label="Camera" value={selectedCamera?.name ?? 'Off'} />
-              <SummaryRow label="Microphone" value={selectedMicrophone?.name ?? 'Off'} />
-            </dl>
-            <Button
-              size="sm"
-              variant="outline"
-              className="w-fit"
-              onClick={() => openStudioPanel('sources')}
-            >
-              Configure sources
-            </Button>
-          </AccordionContent>
-        </AccordionItem>
+      {/* Session strip: every former accordion is now a chip that shows
+          state and deep-links to its owning page (ux-ia plan, slice 5). */}
+      <SessionStrip />
 
-        <AccordionItem value="layout">
-          <AccordionTrigger>
-            <SectionLabel
-              icon={Layout}
-              title="Scene & layout"
-              summary={captureConfig.layout.layoutPreset.replace(/-/g, ' ')}
-            />
-          </AccordionTrigger>
-          <AccordionContent className="flex flex-col gap-3.5">
-            <p className="text-sm text-muted-foreground">
-              Camera and screen arrangement, crop, and output resolution.
-            </p>
-            <Field orientation="horizontal">
-              <FieldContent>
-                <FieldLabel htmlFor="studio-edit-mode">Edit transforms</FieldLabel>
-              </FieldContent>
-              <Switch
-                checked={sceneEditMode}
-                id="studio-edit-mode"
-                onCheckedChange={setSceneEditMode}
-              />
-            </Field>
-            <Button
-              size="sm"
-              variant="outline"
-              className="w-fit"
-              data-videorc-open-tab="layout"
-              onClick={() => openStudioPanel('layouts')}
-            >
-              Edit layout
-            </Button>
-          </AccordionContent>
-        </AccordionItem>
-
-        <AccordionItem value="screens">
-          <AccordionTrigger>
-            <SectionLabel icon={ImageSquare} title="Screens" />
-          </AccordionTrigger>
-          <AccordionContent className="flex flex-col gap-3.5">
-            <StudioScreensRow
-              activeScreen={activeScreen}
-              screens={screens}
-              onActivate={(screenId) => void activateScreen(screenId)}
-              onClear={() => void clearActiveScreen()}
-              onOpenScreens={() => openStudioPanel('layouts')}
-            />
-          </AccordionContent>
-        </AccordionItem>
-
-        <AccordionItem value="mixer">
-          <AccordionTrigger>
-            <SectionLabel
-              icon={selectedMicrophone ? SpeakerHigh : SpeakerSlash}
-              title="Audio mixer"
-              summary={selectedMicrophone?.name}
-            />
-          </AccordionTrigger>
-          <AccordionContent className="flex flex-col gap-3.5">
-            <MixerRow
-              gainDb={captureConfig.audio.microphoneGainDb}
-              meterLevel={meterLevel}
-              muted={captureConfig.audio.microphoneMuted}
-              peakDb={audioMeter?.peakDb}
-              selectedMicrophoneName={selectedMicrophone?.name}
-              syncOffsetMs={captureConfig.audio.microphoneSyncOffsetMs}
-            />
-          </AccordionContent>
-        </AccordionItem>
-
-        <AccordionItem value="output">
-          <AccordionTrigger>
-            <SectionLabel
-              icon={Broadcast}
-              title="Output & status"
-              summary={`${captureConfig.video.width}×${captureConfig.video.height} · ${captureConfig.video.fps}fps`}
-            />
-          </AccordionTrigger>
-          <AccordionContent className="flex flex-col gap-3.5">
-            <Field orientation="horizontal">
-              <FieldContent>
-                <FieldLabel htmlFor="studio-record">Record to file</FieldLabel>
-              </FieldContent>
-              <Switch
-                checked={captureConfig.recordEnabled}
-                id="studio-record"
-                onCheckedChange={(checked) =>
-                  setCaptureConfig((current) => ({ ...current, recordEnabled: checked }))
-                }
-              />
-            </Field>
-            <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
-              <SummaryRow label="Screen" value={selectedCaptureDevice?.name ?? 'None'} />
-              <SummaryRow label="Screen takeover" value={activeScreen?.name ?? 'Normal'} />
-              <SummaryRow label="Camera" value={selectedCamera?.name ?? 'Off'} />
-              <SummaryRow label="Audio" value={audioSummary} />
-              <SummaryRow
-                label="Output"
-                value={`${captureConfig.video.width}×${captureConfig.video.height} · ${captureConfig.video.fps}fps`}
-              />
-              <SummaryRow
-                label="Mode"
-                value={
-                  [captureConfig.recordEnabled && 'Record', captureConfig.streamEnabled && 'Stream']
-                    .filter(Boolean)
-                    .join(' + ') || 'None'
-                }
-              />
-              <SummaryRow label="Pipeline" value={pipelineSummary} />
-            </dl>
-            <Separator />
-            <div className="flex flex-wrap items-center gap-2">
-              <StatusBadge
-                label="Socket"
-                tone={wsStatus === 'connected' ? 'good' : 'warn'}
-                value={wsStatus}
-              />
-              <StatusBadge
-                label="FFmpeg"
-                tone={health?.ffmpeg.available ? 'good' : 'warn'}
-                value={health?.ffmpeg.available ? 'ready' : 'check'}
-              />
-              {captureConfig.streamEnabled ? (
-                <StatusBadge
-                  label="Stream"
-                  tone={streamReady ? 'good' : 'warn'}
-                  value={streamReady ? 'ready' : 'setup'}
-                />
-              ) : null}
-            </div>
-            <div className="flex flex-wrap gap-2">
-              <Button size="sm" variant="outline" onClick={() => openStudioPanel('recording')}>
-                Recording settings
-              </Button>
-              <Button size="sm" variant="outline" onClick={() => openStudioPanel('live')}>
-                Streaming settings
-              </Button>
-            </div>
-          </AccordionContent>
-        </AccordionItem>
-
+      <Accordion type="multiple" className="bg-muted/20">
         <AccordionItem value="chat">
           <AccordionTrigger>
             <SectionLabel icon={ChatCircle} title="Live chat" />
@@ -756,146 +494,6 @@ function platformLabel(platform: StreamPlatform): string {
       return 'X'
     case 'custom':
       return 'Custom RTMP'
-  }
-}
-
-function MixerRow({
-  selectedMicrophoneName,
-  meterLevel,
-  gainDb,
-  muted,
-  peakDb,
-  syncOffsetMs
-}: {
-  selectedMicrophoneName?: string
-  meterLevel: number
-  gainDb: number
-  muted: boolean
-  peakDb?: number
-  syncOffsetMs: number
-}): ReactElement {
-  const meterTone = muted ? 'bg-muted-foreground/30' : meterLevel > 2 ? 'bg-success' : 'bg-warning'
-
-  return (
-    <div className="grid gap-2">
-      <div className="flex items-center justify-between gap-3 text-sm">
-        <span className="min-w-0 truncate text-muted-foreground">
-          {selectedMicrophoneName ?? 'No microphone selected'}
-        </span>
-        <span className="font-mono text-xs tabular-nums text-muted-foreground">
-          {muted ? 'Muted' : `${gainDb > 0 ? '+' : ''}${gainDb} dB`}
-        </span>
-      </div>
-      <div className="h-2.5 w-full overflow-hidden rounded-full bg-muted">
-        <div
-          className={cn('h-full rounded-full transition-all', meterTone)}
-          style={{ width: `${Math.min(100, Math.max(0, meterLevel))}%` }}
-        />
-      </div>
-      <div className="flex items-center justify-between text-xs text-muted-foreground">
-        <span>Source meter</span>
-        <span>{typeof peakDb === 'number' ? `${peakDb.toFixed(1)} dB` : 'Not checked'}</span>
-      </div>
-      <div className="flex items-center justify-between text-xs text-muted-foreground">
-        <span>Sync</span>
-        <span>{`${syncOffsetMs > 0 ? '+' : ''}${syncOffsetMs} ms`}</span>
-      </div>
-    </div>
-  )
-}
-
-function StudioScreensRow({
-  screens,
-  activeScreen,
-  onActivate,
-  onClear,
-  onOpenScreens
-}: {
-  screens: StreamScreen[]
-  activeScreen: StreamScreen | null
-  onActivate: (screenId: string) => void
-  onClear: () => void
-  onOpenScreens: () => void
-}): ReactElement {
-  if (screens.length === 0) {
-    return (
-      <div className="flex items-center justify-between gap-3 rounded-lg border bg-muted/30 px-3 py-2">
-        <span className="min-w-0 truncate text-sm text-muted-foreground">No Screens uploaded</span>
-        <Button size="sm" variant="secondary" onClick={onOpenScreens}>
-          <ImageSquare data-icon="inline-start" weight="duotone" />
-          Add
-        </Button>
-      </div>
-    )
-  }
-
-  return (
-    <div className="flex flex-wrap gap-2">
-      <Button
-        size="sm"
-        variant={activeScreen ? 'outline' : 'default'}
-        onClick={activeScreen ? onClear : undefined}
-      >
-        Normal
-      </Button>
-      {screens.map((screen) => {
-        const selected = activeScreen?.id === screen.id
-        const missing = screen.status === 'missing'
-        return (
-          <Button
-            disabled={missing}
-            key={screen.id}
-            size="sm"
-            title={missing ? 'Screen image is missing' : screen.name}
-            variant={selected ? 'default' : 'outline'}
-            onClick={() => (selected ? onClear() : onActivate(screen.id))}
-          >
-            <span className="flex min-w-0 items-center gap-2">
-              <span className="h-5 w-8 shrink-0 overflow-hidden rounded border bg-muted">
-                {!missing ? (
-                  <img
-                    alt=""
-                    className="size-full object-cover"
-                    src={fileUrlFromPath(screen.imagePath)}
-                  />
-                ) : (
-                  <span className="block size-full bg-destructive/20" />
-                )}
-              </span>
-              <span className="max-w-32 truncate">{screen.name}</span>
-            </span>
-          </Button>
-        )
-      })}
-    </div>
-  )
-}
-
-function SummaryRow({ label, value }: { label: string; value: string }): ReactElement {
-  return (
-    <>
-      <dt className="text-muted-foreground">{label}</dt>
-      <dd className="truncate text-right font-medium">{value}</dd>
-    </>
-  )
-}
-
-function fileUrlFromPath(path: string): string {
-  const normalized = path.replace(/\\/g, '/')
-  const prefix = /^[A-Za-z]:/.test(normalized) ? 'file:///' : 'file://'
-  return `${prefix}${encodeURI(normalized)}`
-}
-
-function pipelineStatusLabel(status: string): string {
-  switch (status) {
-    case 'finalizing':
-      return 'Finalizing'
-    case 'finalized':
-      return 'Finalized'
-    case 'failed':
-      return 'Failed'
-    default:
-      return 'Running'
   }
 }
 
