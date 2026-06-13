@@ -106,6 +106,13 @@ const api: VideorcApi = {
     ipcRenderer.on('oauth:callback-url', listener)
     return () => ipcRenderer.removeListener('oauth:callback-url', listener)
   },
+  onShortcutNavigate: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, key: string): void => {
+      callback(key)
+    }
+    ipcRenderer.on('shortcut:navigate', listener)
+    return () => ipcRenderer.removeListener('shortcut:navigate', listener)
+  },
   onBackendConnection: (callback) => {
     const listener = (_event: Electron.IpcRendererEvent, connection: BackendConnection): void => {
       callback(connection)

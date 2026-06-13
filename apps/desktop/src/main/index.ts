@@ -331,6 +331,25 @@ function createWindow(): void {
     mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
   }
 
+  // Page-navigation shortcuts must be caught here, not in the renderer:
+  // Chromium reserves ⌘1–⌘9 (tab switching) and ⌘0 (zoom) and never delivers
+  // them to the page's keydown, so a document listener silently misses them.
+  // before-input-event runs ahead of that handling; we preventDefault and
+  // forward the raw key to the renderer, which owns the key→tab mapping.
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown' || input.alt || input.shift) {
+      return
+    }
+    if (!(input.meta || input.control)) {
+      return
+    }
+    const isDigit = input.key >= '1' && input.key <= '9'
+    if (isDigit || input.key === ',') {
+      event.preventDefault()
+      mainWindow?.webContents.send('shortcut:navigate', input.key)
+    }
+  })
+
   mainWindow.on('closed', () => {
     destroyNativePreviewSurface()
     if (previewWindow && !previewWindow.isDestroyed()) {

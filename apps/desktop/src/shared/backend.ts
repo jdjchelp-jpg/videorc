@@ -1697,6 +1697,14 @@ export interface VideorcApi {
   openSystemPermissions: (pane?: SystemPermissionPane) => Promise<void>
   revealPermissionTarget: () => Promise<void>
   onOAuthCallbackUrl: (callback: (callbackUrl: string) => void) => () => void
+  /**
+   * Page-navigation shortcuts (⌘1–⌘9, ⌘,) routed from the main process. They
+   * must come through main: Chromium reserves ⌘+digit (tab switching) and
+   * swallows them before the renderer's keydown fires, so a document listener
+   * never sees them. Main catches them via `before-input-event` and forwards
+   * the raw key here ("1".."9" or ",").
+   */
+  onShortcutNavigate: (callback: (key: string) => void) => () => void
   onBackendConnection: (callback: (connection: BackendConnection) => void) => () => void
   onBackendLog: (callback: (log: BackendLogEvent) => void) => () => void
   getGlassWallpaper: () => Promise<GlassWallpaperState | null>

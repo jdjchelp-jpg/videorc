@@ -85,23 +85,27 @@ export function AppShell(): ReactElement {
           void openPreviewWindow()
         }
       }
-      // ⌘1–⌘9 jump to pages in sidebar order; ⌘, is the macOS settings idiom.
-      if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey) {
-        if (event.key === ',') {
-          event.preventDefault()
-          setActive('settings')
-          return
-        }
-        const shortcut = WORKSPACE_SHORTCUTS.find((entry) => entry.digit === event.key)
-        if (shortcut) {
-          event.preventDefault()
-          setActive(shortcut.tab)
-        }
-      }
     }
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
   }, [closePreviewWindow, openPreviewWindow, previewWindow.open])
+
+  // ⌘1–⌘9 / ⌘, arrive from the main process (Chromium swallows ⌘+digit before
+  // the renderer keydown — see main's before-input-event handler). Map the raw
+  // key to a page here, where navigation state lives.
+  useEffect(() => {
+    const off = window.videorc?.onShortcutNavigate?.((key) => {
+      if (key === ',') {
+        setActive('settings')
+        return
+      }
+      const shortcut = WORKSPACE_SHORTCUTS.find((entry) => entry.digit === key)
+      if (shortcut) {
+        setActive(shortcut.tab)
+      }
+    })
+    return off
+  }, [])
 
   const live = recording.state === 'recording' || recording.state === 'streaming'
   const statusTone: StatusDotTone = live
