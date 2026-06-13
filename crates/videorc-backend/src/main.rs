@@ -8,6 +8,7 @@ mod compositor_synthetic;
 mod devices;
 mod diagnostics;
 mod encoder_bridge;
+mod entitlements;
 mod ffmpeg;
 mod ffmpeg_work;
 mod fifo;
@@ -1432,6 +1433,7 @@ async fn handle_text_message(state: &AppState, text: &str) -> ServerResponse {
             );
             ServerResponse::ok(command.id, backend_health(state, &ffmpeg_path).await)
         }
+        "entitlements.get" => ServerResponse::ok(command.id, entitlements::current_entitlements()),
         "devices.list" => {
             let ffmpeg_path = resolve_ffmpeg_path_ref(
                 command

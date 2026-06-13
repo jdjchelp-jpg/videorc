@@ -20,6 +20,23 @@ export interface ToolStatus {
   message?: string
 }
 
+export type FeatureId = 'local-recording' | 'livestreaming' | 'cloud-ai'
+export type EntitlementState = 'enabled' | 'disabled' | 'developer-override'
+export type EntitlementTier = 'free' | 'premium' | 'developer'
+export type EntitlementSource = 'local-default' | 'env-override' | 'future-license'
+
+export interface EntitlementCapability {
+  featureId: FeatureId
+  state: EntitlementState
+  reason?: string
+}
+
+export interface EntitlementsSnapshot {
+  tier: EntitlementTier
+  source: EntitlementSource
+  capabilities: EntitlementCapability[]
+}
+
 export type DeviceKind = 'screen' | 'window' | 'camera' | 'microphone' | 'system-audio'
 export type DeviceStatus = 'available' | 'unavailable' | 'permission-required'
 

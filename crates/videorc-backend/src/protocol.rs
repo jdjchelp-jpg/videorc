@@ -70,6 +70,55 @@ pub struct ToolStatus {
     pub message: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum FeatureId {
+    LocalRecording,
+    Livestreaming,
+    CloudAi,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum EntitlementState {
+    Enabled,
+    Disabled,
+    DeveloperOverride,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum EntitlementTier {
+    Free,
+    Premium,
+    Developer,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum EntitlementSource {
+    LocalDefault,
+    EnvOverride,
+    FutureLicense,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct EntitlementCapability {
+    pub feature_id: FeatureId,
+    pub state: EntitlementState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct EntitlementsSnapshot {
+    pub tier: EntitlementTier,
+    pub source: EntitlementSource,
+    pub capabilities: Vec<EntitlementCapability>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BackendLogEvent {
