@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Instant;
 
 use chrono::Utc;
@@ -19,6 +19,7 @@ use crate::source_registry::SourceRegistry;
 use crate::storage::Database;
 
 const PREVIEW_FRAME_CHANNEL_CAPACITY: usize = 256;
+const LOG_HISTORY_LIMIT: usize = 200;
 
 #[derive(Clone)]
 pub struct PreviewFrame {
@@ -59,6 +60,7 @@ pub struct AppState {
     pub scene: Arc<tokio::sync::Mutex<Scene>>,
     pub source_registry: Arc<tokio::sync::Mutex<SourceRegistry>>,
     pub diagnostics: Arc<tokio::sync::Mutex<DiagnosticStats>>,
+    pub logs: Arc<StdMutex<Vec<BackendLogEvent>>>,
     pub database: Database,
     pub oauth: Arc<OAuthSessions>,
     pub ffmpeg_work: Arc<FfmpegWorkCoordinator>,
@@ -89,6 +91,7 @@ impl AppState {
             scene: Arc::new(tokio::sync::Mutex::new(default_scene())),
             source_registry: Arc::new(tokio::sync::Mutex::new(SourceRegistry::new())),
             diagnostics: Arc::new(tokio::sync::Mutex::new(idle_diagnostics())),
+            logs: Arc::new(StdMutex::new(Vec::new())),
             database,
             oauth: Arc::new(OAuthSessions::default()),
             ffmpeg_work: Arc::new(FfmpegWorkCoordinator::new()),
@@ -120,6 +123,27 @@ impl AppState {
             "warn" => tracing::warn!("{message}"),
             _ => tracing::info!("{message}"),
         }
+        self.remember_log(payload.clone());
         self.emit_event("log", payload);
+    }
+
+    pub fn recent_logs(&self, limit: usize) -> Vec<BackendLogEvent> {
+        self.logs
+            .lock()
+            .map(|logs| {
+                let start = logs.len().saturating_sub(limit);
+                logs[start..].to_vec()
+            })
+            .unwrap_or_default()
+    }
+
+    fn remember_log(&self, event: BackendLogEvent) {
+        if let Ok(mut logs) = self.logs.lock() {
+            logs.push(event);
+            let overflow = logs.len().saturating_sub(LOG_HISTORY_LIMIT);
+            if overflow > 0 {
+                logs.drain(0..overflow);
+            }
+        }
     }
 }

@@ -39,6 +39,7 @@ mod source_status;
 mod state;
 mod storage;
 mod streaming;
+mod support_bundle;
 mod synthetic_diagnostic;
 mod twitch;
 mod twitch_chat;
@@ -51,6 +52,7 @@ mod youtube_chat;
 
 use std::convert::Infallible;
 use std::io::Write;
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -1445,17 +1447,28 @@ async fn handle_text_message(state: &AppState, text: &str) -> ServerResponse {
             state.emit_event("devices.changed", &devices);
             ServerResponse::ok(command.id, devices)
         }
+        "diagnostics.supportBundle.export" => {
+            match serde_json::from_value::<support_bundle::SupportBundleExportParams>(
+                command.params,
+            ) {
+                Ok(params) => {
+                    let ffmpeg_path = resolve_ffmpeg_path_ref(params.ffmpeg_path.as_deref());
+                    match export_support_bundle_for_state(state, params, &ffmpeg_path).await {
+                        Ok(result) => ServerResponse::ok(command.id, result),
+                        Err(error) => ServerResponse::error(
+                            command.id,
+                            "support-bundle-export-failed",
+                            error.to_string(),
+                        ),
+                    }
+                }
+                Err(error) => {
+                    ServerResponse::error(command.id, "invalid-params", error.to_string())
+                }
+            }
+        }
         "diagnostics.stats" => {
-            let stats = state.diagnostics.lock().await.clone();
-            let scene_revision = state.compositor.lock().await.status.scene_revision;
-            let stats = diagnostics::apply_active_scene_revision(stats, scene_revision);
-            let source_registry = state.source_registry.lock().await.snapshot();
-            let stats = diagnostics::apply_source_registry_snapshot(stats, source_registry);
-            let stats = diagnostics::apply_runtime_diagnostics_snapshot(
-                stats,
-                state.ffmpeg_work.snapshot(),
-            );
-            ServerResponse::ok(command.id, stats)
+            ServerResponse::ok(command.id, current_diagnostics_stats(state).await)
         }
         "diagnostics.preview_baseline.record" => {
             match serde_json::from_value::<protocol::PreviewBaselineParams>(command.params) {
@@ -2495,23 +2508,7 @@ async fn handle_text_message(state: &AppState, text: &str) -> ServerResponse {
                 ServerResponse::error(command.id, "recording-stop-failed", error.to_string())
             }
         },
-        "recording.status" => {
-            let status = state
-                .recording
-                .lock()
-                .await
-                .as_ref()
-                .map(|active| {
-                    let state = if active.mode == "stream" {
-                        RecordingState::Streaming
-                    } else {
-                        RecordingState::Recording
-                    };
-                    active.status(state, None)
-                })
-                .unwrap_or_else(idle_status);
-            ServerResponse::ok(command.id, status)
-        }
+        "recording.status" => ServerResponse::ok(command.id, current_recording_status(state).await),
         method => ServerResponse::error(
             command.id,
             "unknown-method",
@@ -2529,6 +2526,50 @@ async fn backend_health(state: &AppState, ffmpeg_path: &str) -> BackendHealth {
         database_path: state.database.path().display().to_string(),
         secret_store_backend: secrets::secret_store_backend_kind().to_string(),
     }
+}
+
+async fn current_diagnostics_stats(state: &AppState) -> protocol::DiagnosticStats {
+    let stats = state.diagnostics.lock().await.clone();
+    let scene_revision = state.compositor.lock().await.status.scene_revision;
+    let stats = diagnostics::apply_active_scene_revision(stats, scene_revision);
+    let source_registry = state.source_registry.lock().await.snapshot();
+    let stats = diagnostics::apply_source_registry_snapshot(stats, source_registry);
+    diagnostics::apply_runtime_diagnostics_snapshot(stats, state.ffmpeg_work.snapshot())
+}
+
+async fn current_recording_status(state: &AppState) -> protocol::RecordingStatus {
+    state
+        .recording
+        .lock()
+        .await
+        .as_ref()
+        .map(|active| {
+            let state = if active.mode == "stream" {
+                RecordingState::Streaming
+            } else {
+                RecordingState::Recording
+            };
+            active.status(state, None)
+        })
+        .unwrap_or_else(idle_status)
+}
+
+async fn export_support_bundle_for_state(
+    state: &AppState,
+    params: support_bundle::SupportBundleExportParams,
+    ffmpeg_path: &str,
+) -> Result<support_bundle::SupportBundleExportResult> {
+    let sessions = state.database.list_sessions(20)?;
+    support_bundle::export_support_bundle(support_bundle::SupportBundleExportInput {
+        output_directory: params.output_directory.map(PathBuf::from),
+        database_path: state.database.path().clone(),
+        health: backend_health(state, ffmpeg_path).await,
+        entitlements: entitlements::current_entitlements(),
+        recording: current_recording_status(state).await,
+        diagnostics: current_diagnostics_stats(state).await,
+        logs: state.recent_logs(200),
+        sessions,
+    })
 }
 
 async fn ffmpeg_status(ffmpeg_path: &str) -> ToolStatus {
