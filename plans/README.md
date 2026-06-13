@@ -21,7 +21,7 @@ row when done.
 | 003 | Pin the new platform seams (fifo.rs, capture_input.rs) with unit tests | P2 | S-M | - | DONE (2026-06-12; 12 tests added) |
 | 004 | Bundle the native CAMetalLayer helper and gate packaged preview | P0 | M | - | DONE (2026-06-13; packaged helper bundled and `pnpm smoke:packaged:native-preview` passes) |
 | 005 | Make platform-safe livestreaming use VideoToolbox by default | P0 | L | - | DONE (2026-06-13; multistream passes; A/V gate blocked locally before encoding by ScreenCaptureKit stream-start timeout) |
-| 006 | Implement true 4K record plus 1080p stream split output | P0 | L | 005 | IN PROGRESS (2026-06-13; stream-output profile resolver, diagnostics proof fields, auxiliary compositor output store, and stream target resolver landed) |
+| 006 | Implement true 4K record plus 1080p stream split output | P0 | L | 005 | IN PROGRESS (2026-06-13; resolver/proof fields, auxiliary compositor store, dual VideoToolbox FIFO writers, split mux args, and guarded 4K+1080p validation unlock landed) |
 | 007 | Characterize Studio and session orchestration before refactoring | P1 | M | - | TODO |
 | 008 | Fix dependency advisory failures and add JS/Rust audit gates | P1 | S-M | - | TODO |
 | 009 | Harden stream/OAuth secret storage and legacy key migration | P1 | M | - | TODO |
@@ -69,15 +69,15 @@ preview, and 1080p livestream output without raw-video fallback.
   and stream profiles can resolve separately.
 - **P1-S2 Split-output proof fields**: Plan 006 Step 2 is done. Diagnostics can
   expose recording/stream output settings and per-output VideoToolbox counters.
-- **P1-S3 Real dual output path**: IN PROGRESS. The compositor can publish an
-  optional auxiliary stream-sized output store with its own GPU compositor
-  instance, and recording can resolve when that stream target is needed from the
-  split-output profiles; finish Plan 006 Step 3 by wiring that store into separate
-  4K-record and 1080p-stream VideoToolbox encoders with independent encoded
-  FIFOs or mux legs. STOP if the only stream-scale path is FFmpeg rawvideo.
-- **P1-S4 Validation unlock**: Finish Plan 006 Step 4. Allow 4K recording plus
-  1080p streaming only when the split-output path is actually available; keep
-  stream-only 4K blocked for v1.
+- **P1-S3 Real dual output path**: Plan 006 Step 3 is done. The compositor can
+  publish an auxiliary stream-sized output store, recording starts separate
+  recording/stream VideoToolbox bridge writers with independent encoded FIFOs,
+  and FFmpeg muxes the local recording separately from stream FLV legs without
+  product rawvideo scaling.
+- **P1-S4 Validation unlock**: Plan 006 Step 4 is done. 4K local recording plus
+  an explicit stream-safe 1080p-or-lower profile is allowed only when the
+  encoder bridge split-output path is not disabled and the stream FPS does not
+  exceed the recording FPS; custom/stream-only 4K remains blocked for v1.
 - **P1-S5 Evidence wiring**: Finish Plan 006 Step 5. Scripts must classify
   `record-stream-split-output` only from proof fields.
 - **P1-S6 Real-source gates**: Finish Plan 006 Step 6. Run 4K A/V and stream

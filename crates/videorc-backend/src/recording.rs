@@ -30,7 +30,8 @@ use crate::capture_input::{
 use crate::compositor::{
     CompositorAuxiliaryOutput, CompositorStartParams, CompositorStartupBarrierParams,
     CompositorStartupBarrierResult, CompositorStartupSourceRequirements, compositor_frame_store,
-    start_synthetic_compositor, update_compositor_scene, wait_for_compositor_startup_frames,
+    compositor_stream_frame_store, start_synthetic_compositor, update_compositor_scene,
+    wait_for_compositor_startup_frames,
 };
 use crate::devices::{
     find_avfoundation_camera_index, find_avfoundation_screen_index,
@@ -43,6 +44,7 @@ use crate::diagnostics::{
     starting_diagnostics,
 };
 use crate::encoder_bridge::{
+    EncoderBridgeDiagnosticsContext, EncoderBridgeOutputProfile, EncoderBridgeOutputRole,
     EncoderBridgeRecordingSession, EncoderBridgeVideoOutput, start_synthetic_recording_bridge,
 };
 use crate::ffmpeg::{ffprobe_path_for, resolve_ffmpeg_path};
@@ -123,6 +125,7 @@ pub struct ActiveRecording {
     pub native_audio: Option<NativeAudioCaptureSession>,
     pub screen_overlay: Option<ScreenOverlaySession>,
     pub encoder_bridge: Option<EncoderBridgeRecordingSession>,
+    pub encoder_bridge_stream: Option<EncoderBridgeRecordingSession>,
     pub _capture_permit: Option<CapturePermit>,
     pub stop_requested: bool,
 }
@@ -490,6 +493,26 @@ pub async fn start_session(
     } else {
         EncoderBridgeVideoOutput::RawYuv420p
     };
+    let encoder_bridge_resolved_stream_profile =
+        if use_encoder_bridge && params.output.stream_enabled {
+            Some(resolve_stream_output_video(&params)?)
+        } else {
+            None
+        };
+    let encoder_bridge_stream_output = if use_encoder_bridge {
+        recording_compositor_stream_output(&params, encoder_bridge_video_output)?
+    } else {
+        None
+    };
+    let encoder_bridge_stream_profile =
+        encoder_bridge_stream_output.and_then(|_| encoder_bridge_resolved_stream_profile.clone());
+    let encoder_bridge_stream_fifo = if encoder_bridge_stream_output.is_some() {
+        let fifo_path = stream_encoder_bridge_fifo_path(&session_id);
+        create_stream_encoder_bridge_fifo(&fifo_path)?;
+        Some(fifo_path)
+    } else {
+        None
+    };
     let screen_overlay_fifo =
         if !use_encoder_bridge && (active_screen.is_some() || params.output.stream_enabled) {
             let fifo_path = screen_overlay_fifo_path(&session_id);
@@ -535,10 +558,8 @@ pub async fn start_session(
             fps: SCREEN_OVERLAY_FPS,
         });
     let mut startup_barrier_result: Option<CompositorStartupBarrierResult> = None;
-    let encoder_bridge_frame_store = if use_encoder_bridge {
+    let (encoder_bridge_frame_store, encoder_bridge_stream_frame_store) = if use_encoder_bridge {
         let target_fps = recording_compositor_target_fps(&state, &params.output.video).await;
-        let stream_output =
-            recording_compositor_stream_output(&params, encoder_bridge_video_output)?;
         start_synthetic_compositor(
             state.clone(),
             CompositorStartParams {
@@ -549,7 +570,7 @@ pub async fn start_session(
                     encoder_bridge_video_output,
                     EncoderBridgeVideoOutput::RawYuv420p
                 ),
-                stream_output,
+                stream_output: encoder_bridge_stream_output,
             },
         )
         .await;
@@ -592,6 +613,9 @@ pub async fn start_session(
             if let Some(fifo_path) = encoder_bridge_fifo.as_ref() {
                 let _ = std::fs::remove_file(fifo_path);
             }
+            if let Some(fifo_path) = encoder_bridge_stream_fifo.as_ref() {
+                let _ = std::fs::remove_file(fifo_path);
+            }
             return Err(error);
         }
         match await_recording_startup_barrier(
@@ -620,12 +644,25 @@ pub async fn start_session(
                 if let Some(fifo_path) = encoder_bridge_fifo.as_ref() {
                     let _ = std::fs::remove_file(fifo_path);
                 }
+                if let Some(fifo_path) = encoder_bridge_stream_fifo.as_ref() {
+                    let _ = std::fs::remove_file(fifo_path);
+                }
                 return Err(error);
             }
         }
-        Some(compositor_frame_store(&state).await)
+        let recording_store = Some(compositor_frame_store(&state).await);
+        let stream_store = if encoder_bridge_stream_output.is_some() {
+            Some(
+                compositor_stream_frame_store(&state)
+                    .await
+                    .context("Split output compositor stream frame store was not prepared")?,
+            )
+        } else {
+            None
+        };
+        (recording_store, stream_store)
     } else {
-        None
+        (None, None)
     };
     let args = if use_encoder_bridge {
         let fifo_path = encoder_bridge_fifo
@@ -638,6 +675,20 @@ pub async fn start_session(
                 output_path.as_deref(),
                 fifo_path,
                 encoder_bridge_video_output,
+            )?
+        } else if let (Some(stream_output), Some(stream_fifo_path)) = (
+            encoder_bridge_stream_output,
+            encoder_bridge_stream_fifo.as_deref(),
+        ) {
+            bridge_compositor_split_output_ffmpeg_args(
+                &capture,
+                &params,
+                output_path.as_deref(),
+                &stream_targets,
+                fifo_path,
+                stream_fifo_path,
+                encoder_bridge_video_output,
+                stream_output,
             )?
         } else {
             bridge_compositor_ffmpeg_args(
@@ -694,11 +745,22 @@ pub async fn start_session(
         child.stdin.take()
     };
     let pid = child.id().unwrap_or_default();
-    let encoder_bridge = if use_encoder_bridge {
+    let (encoder_bridge, encoder_bridge_stream) = if use_encoder_bridge {
         let bridge_fifo_path = encoder_bridge_fifo
             .clone()
             .context("Encoder bridge FIFO path was unavailable")?;
-        Some(start_synthetic_recording_bridge(
+        let recording_diagnostics_context = encoder_bridge_diagnostics_context(
+            if encoder_bridge_stream_profile.is_some() {
+                EncoderBridgeOutputRole::Recording
+            } else {
+                EncoderBridgeOutputRole::Shared
+            },
+            params.output.record_enabled.then_some(&params.output.video),
+            encoder_bridge_resolved_stream_profile.as_ref(),
+            encoder_bridge_video_output,
+            encoder_bridge_stream_profile.is_some(),
+        );
+        let recording_bridge = start_synthetic_recording_bridge(
             state.clone(),
             session_id.clone(),
             params.output.video.fps,
@@ -708,10 +770,41 @@ pub async fn start_session(
             encoder_bridge_frame_store.clone(),
             encoder_bridge_video_output,
             Some(params.output.video.bitrate_kbps),
+            recording_diagnostics_context,
             video_epoch.clone(),
-        )?)
+        )?;
+        let stream_bridge = match (
+            encoder_bridge_stream_fifo.clone(),
+            encoder_bridge_stream_profile.as_ref(),
+            encoder_bridge_stream_frame_store.clone(),
+        ) {
+            (Some(stream_fifo_path), Some(stream_profile), Some(stream_frame_store)) => {
+                let stream_diagnostics_context = encoder_bridge_diagnostics_context(
+                    EncoderBridgeOutputRole::Stream,
+                    Some(&params.output.video),
+                    Some(stream_profile),
+                    encoder_bridge_video_output,
+                    true,
+                );
+                Some(start_synthetic_recording_bridge(
+                    state.clone(),
+                    session_id.clone(),
+                    stream_profile.fps,
+                    stream_profile.width,
+                    stream_profile.height,
+                    stream_fifo_path,
+                    Some(stream_frame_store),
+                    encoder_bridge_video_output,
+                    Some(stream_profile.bitrate_kbps),
+                    stream_diagnostics_context,
+                    video_epoch.clone(),
+                )?)
+            }
+            _ => None,
+        };
+        (Some(recording_bridge), stream_bridge)
     } else {
-        None
+        (None, None)
     };
     if let Some(result) = startup_barrier_result.as_ref() {
         publish_recording_startup_barrier_diagnostics(
@@ -756,6 +849,7 @@ pub async fn start_session(
             None => None,
         },
         encoder_bridge,
+        encoder_bridge_stream,
         _capture_permit: Some(capture_permit),
         stop_requested: false,
     };
@@ -993,6 +1087,9 @@ pub async fn stop_recording(state: AppState) -> Result<RecordingStatus> {
         .pipeline
         .mark_finalizing("Waiting for FFmpeg to flush and close output files.");
     if let Some(encoder_bridge) = &active.encoder_bridge {
+        if let Some(encoder_bridge_stream) = &active.encoder_bridge_stream {
+            encoder_bridge_stream.stop();
+        }
         encoder_bridge.stop();
     } else if let Some(mut stdin) = active.stdin.take() {
         stdin
@@ -1819,6 +1916,9 @@ async fn stop_recording_process_for_shutdown(recording: Option<ActiveRecording>)
     };
 
     if let Some(encoder_bridge) = &recording.encoder_bridge {
+        if let Some(encoder_bridge_stream) = &recording.encoder_bridge_stream {
+            encoder_bridge_stream.stop();
+        }
         encoder_bridge.stop();
     } else if let Some(mut stdin) = recording.stdin.take() {
         let _ = stdin.write_all(b"q\n").await;
@@ -3665,6 +3765,134 @@ fn bridge_compositor_ffmpeg_args(
     Ok(args)
 }
 
+#[allow(clippy::too_many_arguments)]
+fn bridge_compositor_split_output_ffmpeg_args(
+    capture: &CaptureInputs,
+    params: &StartSessionParams,
+    output_path: Option<&Path>,
+    stream_targets: &[StreamTarget],
+    recording_fifo_path: &Path,
+    stream_fifo_path: &Path,
+    recording_video_output: EncoderBridgeVideoOutput,
+    stream_output: CompositorAuxiliaryOutput,
+) -> Result<Vec<String>> {
+    let output_path =
+        output_path.context("Split output encoder bridge requires a local recording path")?;
+    if stream_targets.is_empty() {
+        bail!("Split output encoder bridge requires at least one stream target");
+    }
+    ensure_encoded_bridge_video_output(recording_video_output)?;
+    let stream_video = resolve_stream_output_video(params)?;
+    if stream_output.width != stream_video.width || stream_output.height != stream_video.height {
+        bail!(
+            "Split output compositor target {}x{} does not match stream profile {}x{}",
+            stream_output.width,
+            stream_output.height,
+            stream_video.width,
+            stream_video.height
+        );
+    }
+
+    let mut args = bridge_ffmpeg_base_args();
+    let mut next_input_index = 0;
+    let mut audio_inputs = Vec::new();
+    append_bridge_audio_input_args(&mut args, capture, &mut next_input_index, &mut audio_inputs);
+    let recording_video_input_index = append_bridge_encoded_video_input_args(
+        &mut args,
+        &mut next_input_index,
+        recording_fifo_path,
+        recording_video_output,
+        params.output.video.fps,
+    )?;
+    let stream_video_input_index = append_bridge_encoded_video_input_args(
+        &mut args,
+        &mut next_input_index,
+        stream_fifo_path,
+        recording_video_output,
+        stream_video.fps,
+    )?;
+    let input_layout = InputLayout {
+        video_input_index: recording_video_input_index,
+        camera_input_index: None,
+        screen_overlay_input_index: None,
+        audio_inputs,
+    };
+
+    args.extend([
+        "-map".to_string(),
+        format!("{recording_video_input_index}:v"),
+    ]);
+    append_audio_output_args(&mut args, &input_layout);
+    args.extend(["-c:v".to_string(), "copy".to_string()]);
+    append_audio_encoding_args(&mut args, &input_layout, &params.audio, true);
+    args.push("-shortest".to_string());
+    args.push(output_path.display().to_string());
+
+    let stream_input_layout = InputLayout {
+        video_input_index: stream_video_input_index,
+        camera_input_index: None,
+        screen_overlay_input_index: None,
+        audio_inputs: input_layout.audio_inputs.clone(),
+    };
+    args.extend(["-map".to_string(), format!("{stream_video_input_index}:v")]);
+    append_audio_output_args(&mut args, &stream_input_layout);
+    args.extend(["-c:v".to_string(), "copy".to_string()]);
+    append_audio_encoding_args(&mut args, &stream_input_layout, &params.audio, true);
+    args.push("-shortest".to_string());
+
+    let stream_legs = stream_targets
+        .iter()
+        .map(|target| {
+            format!(
+                "[f=flv:onfail=ignore:flvflags=no_duration_filesize]{}",
+                escape_tee_target(&target.url)
+            )
+        })
+        .collect::<Vec<_>>();
+    match stream_targets {
+        [single] => {
+            args.extend([
+                "-flvflags".to_string(),
+                "no_duration_filesize".to_string(),
+                "-f".to_string(),
+                "flv".to_string(),
+                single.url.clone(),
+            ]);
+        }
+        _ => {
+            args.extend(tee_output_args(stream_legs.join("|")));
+        }
+    }
+
+    Ok(args)
+}
+
+fn bridge_ffmpeg_base_args() -> Vec<String> {
+    vec![
+        "-y".to_string(),
+        "-hide_banner".to_string(),
+        "-loglevel".to_string(),
+        "warning".to_string(),
+        "-stats".to_string(),
+        "-stats_period".to_string(),
+        "2".to_string(),
+        "-progress".to_string(),
+        "pipe:2".to_string(),
+    ]
+}
+
+fn ensure_encoded_bridge_video_output(video_output: EncoderBridgeVideoOutput) -> Result<()> {
+    if matches!(
+        video_output,
+        EncoderBridgeVideoOutput::VideoToolboxH264AnnexB
+            | EncoderBridgeVideoOutput::VideoToolboxH264MpegTs
+    ) {
+        Ok(())
+    } else {
+        bail!("Split output encoder bridge requires encoded VideoToolbox H.264 inputs")
+    }
+}
+
 fn append_bridge_recording_input_args(
     args: &mut Vec<String>,
     capture: &CaptureInputs,
@@ -3732,6 +3960,42 @@ fn append_bridge_recording_input_args(
         screen_overlay_input_index: None,
         audio_inputs,
     }
+}
+
+fn append_bridge_encoded_video_input_args(
+    args: &mut Vec<String>,
+    next_input_index: &mut usize,
+    fifo_path: &Path,
+    video_output: EncoderBridgeVideoOutput,
+    fps: u32,
+) -> Result<usize> {
+    ensure_encoded_bridge_video_output(video_output)?;
+    let input_index = *next_input_index;
+    match video_output {
+        EncoderBridgeVideoOutput::VideoToolboxH264AnnexB => {
+            args.extend([
+                "-use_wallclock_as_timestamps".to_string(),
+                "1".to_string(),
+                "-f".to_string(),
+                "h264".to_string(),
+                "-framerate".to_string(),
+                fps.to_string(),
+                "-i".to_string(),
+                fifo_path.display().to_string(),
+            ]);
+        }
+        EncoderBridgeVideoOutput::VideoToolboxH264MpegTs => {
+            args.extend([
+                "-f".to_string(),
+                "mpegts".to_string(),
+                "-i".to_string(),
+                fifo_path.display().to_string(),
+            ]);
+        }
+        EncoderBridgeVideoOutput::RawYuv420p => unreachable!("checked above"),
+    }
+    *next_input_index += 1;
+    Ok(input_index)
 }
 
 fn append_bridge_audio_input_args(
@@ -4079,6 +4343,10 @@ fn recording_encoder_bridge_fifo_path(session_id: &str) -> PathBuf {
     std::env::temp_dir().join(format!("videorc-recording-encoder-bridge-{session_id}.yuv"))
 }
 
+fn stream_encoder_bridge_fifo_path(session_id: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("videorc-stream-encoder-bridge-{session_id}.h264"))
+}
+
 fn create_recording_encoder_bridge_fifo(path: &Path) -> Result<()> {
     if path.exists() {
         std::fs::remove_file(path).with_context(|| {
@@ -4092,6 +4360,24 @@ fn create_recording_encoder_bridge_fifo(path: &Path) -> Result<()> {
     crate::fifo::create(path).with_context(|| {
         format!(
             "Could not create recording encoder bridge FIFO {}",
+            path.display()
+        )
+    })
+}
+
+fn create_stream_encoder_bridge_fifo(path: &Path) -> Result<()> {
+    if path.exists() {
+        std::fs::remove_file(path).with_context(|| {
+            format!(
+                "Could not remove stale stream encoder bridge FIFO {}",
+                path.display()
+            )
+        })?;
+    }
+
+    crate::fifo::create(path).with_context(|| {
+        format!(
+            "Could not create stream encoder bridge FIFO {}",
             path.display()
         )
     })
@@ -4827,7 +5113,11 @@ fn validate_video_profile_policy(params: &StartSessionParams) -> Result<()> {
     validate_named_video_profile(video)?;
 
     if params.output.stream_enabled {
-        if video.width > 1920 || video.height > 1080 {
+        let has_explicit_stream_output_profile = params
+            .streaming
+            .as_ref()
+            .is_some_and(|streaming| streaming.enabled);
+        if (video.width > 1920 || video.height > 1080) && !has_explicit_stream_output_profile {
             bail!(
                 "4K livestreaming is not enabled for v1. Disable streaming for 4K local recording or select a stream-safe 1080p profile."
             );
@@ -4841,6 +5131,36 @@ fn validate_video_profile_policy(params: &StartSessionParams) -> Result<()> {
             bail!(
                 "Streaming bitrate must be 6000 kbps or lower for the v1 platform-safe path. Select stream-safe-1080p30/60 or reduce the custom bitrate."
             );
+        }
+        if video.width > 1920 || video.height > 1080 {
+            if !params.output.record_enabled {
+                bail!(
+                    "4K livestreaming is not enabled for v1. Disable streaming for 4K local recording or select a stream-safe 1080p profile."
+                );
+            }
+            if video.fps > 30 {
+                bail!(
+                    "4K local recording plus streaming requires a 30fps recording profile for the v1 split-output path."
+                );
+            }
+            if stream_video.fps > video.fps {
+                bail!(
+                    "4K local recording plus streaming requires a stream FPS no higher than the recording FPS for v1."
+                );
+            }
+            if compositor_encoder_bridge_disabled(
+                params.output.record_enabled,
+                params.output.stream_enabled,
+            ) {
+                bail!(
+                    "4K local recording plus streaming requires the encoder bridge split-output path. Remove encoder bridge legacy/disabled overrides for this mode."
+                );
+            }
+            let bridge_video_output = recording_encoder_bridge_video_output(
+                params.output.record_enabled,
+                params.output.stream_enabled,
+            );
+            ensure_encoded_bridge_video_output(bridge_video_output)?;
         }
     }
 
@@ -4905,6 +5225,44 @@ fn recording_compositor_stream_output(
         height: stream.height,
         publish_yuv_frames: false,
     }))
+}
+
+fn encoder_bridge_output_profile(video: &VideoSettings) -> EncoderBridgeOutputProfile {
+    EncoderBridgeOutputProfile {
+        width: video.width,
+        height: video.height,
+        fps: video.fps,
+        bitrate_kbps: video.bitrate_kbps,
+    }
+}
+
+fn encoder_bridge_diagnostics_context(
+    role: EncoderBridgeOutputRole,
+    recording_output: Option<&VideoSettings>,
+    stream_output: Option<&VideoSettings>,
+    video_output: EncoderBridgeVideoOutput,
+    separate_output_encoders_active: bool,
+) -> EncoderBridgeDiagnosticsContext {
+    let active_video_toolbox_output_encoders = if matches!(
+        video_output,
+        EncoderBridgeVideoOutput::VideoToolboxH264AnnexB
+            | EncoderBridgeVideoOutput::VideoToolboxH264MpegTs
+    ) {
+        if separate_output_encoders_active {
+            2
+        } else {
+            1
+        }
+    } else {
+        0
+    };
+    EncoderBridgeDiagnosticsContext {
+        role,
+        recording_output: recording_output.map(encoder_bridge_output_profile),
+        stream_output: stream_output.map(encoder_bridge_output_profile),
+        active_video_toolbox_output_encoders,
+        separate_output_encoders_active,
+    }
 }
 
 fn resolve_stream_output_video(params: &StartSessionParams) -> Result<VideoSettings> {
@@ -6907,6 +7265,144 @@ mod tests {
     }
 
     #[test]
+    fn split_output_bridge_args_use_separate_record_and_stream_encoded_inputs() {
+        let mut params = base_params(true, true);
+        params.output.video = VideoSettings {
+            preset: VideoPreset::Record4k30,
+            width: 3840,
+            height: 2160,
+            fps: 30,
+            bitrate_kbps: 30_000,
+        };
+        let mut streaming = streaming_for(&[
+            (
+                StreamPlatform::Youtube,
+                "rtmp://a.rtmp.youtube.com/live2",
+                "yt",
+            ),
+            (StreamPlatform::Twitch, "rtmp://live.twitch.tv/app", "tw"),
+        ]);
+        streaming.default_output_preset = VideoPreset::StreamSafe1080p30;
+        streaming.default_bitrate_kbps = 6000;
+        params.streaming = Some(streaming.clone());
+        let targets = stream_targets_from_streaming(&streaming).unwrap();
+        let recording_fifo_path = Path::new("/tmp/videorc-bridge-recording-output.h264");
+        let stream_fifo_path = Path::new("/tmp/videorc-bridge-stream-output.h264");
+        let stream_output = recording_compositor_stream_output(
+            &params,
+            EncoderBridgeVideoOutput::VideoToolboxH264AnnexB,
+        )
+        .unwrap()
+        .expect("split stream output");
+
+        let args = bridge_compositor_split_output_ffmpeg_args(
+            &CaptureInputs {
+                video: VideoInput::TestPattern,
+                camera_index: None,
+                microphone: None,
+            },
+            &params,
+            Some(Path::new("/tmp/videorc-bridge-record-stream-split.mkv")),
+            &targets,
+            recording_fifo_path,
+            stream_fifo_path,
+            EncoderBridgeVideoOutput::VideoToolboxH264AnnexB,
+            stream_output,
+        )
+        .unwrap();
+
+        assert_eq!(
+            ffmpeg_inputs(&args),
+            vec![
+                "sine=frequency=880:sample_rate=48000".to_string(),
+                recording_fifo_path.display().to_string(),
+                stream_fifo_path.display().to_string(),
+            ]
+        );
+        assert_eq!(
+            input_arg_value(&args, &recording_fifo_path.display().to_string(), "-f"),
+            Some("h264")
+        );
+        assert_eq!(
+            input_arg_value(&args, &stream_fifo_path.display().to_string(), "-f"),
+            Some("h264")
+        );
+        assert_eq!(
+            input_arg_value(
+                &args,
+                &recording_fifo_path.display().to_string(),
+                "-framerate"
+            ),
+            Some("30")
+        );
+        assert_eq!(
+            input_arg_value(&args, &stream_fifo_path.display().to_string(), "-framerate"),
+            Some("30")
+        );
+        assert!(args.windows(2).any(|pair| pair == ["-map", "1:v"]));
+        assert!(args.windows(2).any(|pair| pair == ["-map", "2:v"]));
+        assert_eq!(args.iter().filter(|arg| *arg == "-c:v").count(), 2);
+        assert_eq!(args.iter().filter(|arg| arg.as_str() == "copy").count(), 2);
+        assert!(args.contains(&"/tmp/videorc-bridge-record-stream-split.mkv".to_string()));
+        let tee = args.iter().find(|arg| arg.contains("[f=flv")).unwrap();
+        assert!(!tee.contains("[f=matroska"));
+        assert_eq!(tee.matches("[f=flv").count(), 2);
+        assert!(tee.contains("rtmp://a.rtmp.youtube.com/live2/yt"));
+        assert!(tee.contains("rtmp://live.twitch.tv/app/tw"));
+        assert!(
+            args.windows(2)
+                .any(|window| window[0] == "-use_fifo" && window[1] == "1"),
+            "stream split-output tee must isolate stream slaves with a fifo: {args:?}"
+        );
+        assert_eq!(arg_value(&args, "-filter_complex"), None);
+    }
+
+    #[test]
+    fn split_output_bridge_args_reject_raw_video_input() {
+        let mut params = base_params(true, true);
+        params.output.video = VideoSettings {
+            preset: VideoPreset::Record4k30,
+            width: 3840,
+            height: 2160,
+            fps: 30,
+            bitrate_kbps: 30_000,
+        };
+        let mut streaming = streaming_for(&[(
+            StreamPlatform::Youtube,
+            "rtmp://a.rtmp.youtube.com/live2",
+            "yt",
+        )]);
+        streaming.default_output_preset = VideoPreset::StreamSafe1080p30;
+        streaming.default_bitrate_kbps = 6000;
+        params.streaming = Some(streaming.clone());
+        let targets = stream_targets_from_streaming(&streaming).unwrap();
+        let stream_output = CompositorAuxiliaryOutput {
+            width: 1920,
+            height: 1080,
+            publish_yuv_frames: false,
+        };
+
+        let error = bridge_compositor_split_output_ffmpeg_args(
+            &CaptureInputs {
+                video: VideoInput::TestPattern,
+                camera_index: None,
+                microphone: None,
+            },
+            &params,
+            Some(Path::new("/tmp/videorc-bridge-record-stream-split.mkv")),
+            &targets,
+            Path::new("/tmp/videorc-bridge-recording-output.yuv"),
+            Path::new("/tmp/videorc-bridge-stream-output.h264"),
+            EncoderBridgeVideoOutput::RawYuv420p,
+            stream_output,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("encoded VideoToolbox H.264"), "{error}");
+    }
+
+    #[test]
     fn bridge_source_guard_requires_ready_native_sources() {
         let test_pattern = scene_with_sources(vec![scene_source(
             "source:test",
@@ -8446,7 +8942,29 @@ mod tests {
     }
 
     #[test]
-    fn rejects_4k_livestream_until_split_outputs_exist() {
+    fn accepts_4k_record_with_stream_safe_split_output_profile() {
+        let mut params = base_params(true, true);
+        params.output.video = VideoSettings {
+            preset: VideoPreset::Record4k30,
+            width: 3840,
+            height: 2160,
+            fps: 30,
+            bitrate_kbps: 30_000,
+        };
+        let mut streaming = streaming_for(&[(
+            StreamPlatform::Youtube,
+            "rtmp://a.rtmp.youtube.com/live2",
+            "yt",
+        )]);
+        streaming.default_output_preset = VideoPreset::StreamSafe1080p30;
+        streaming.default_bitrate_kbps = 6000;
+        params.streaming = Some(streaming);
+
+        validate_outputs(&params).unwrap();
+    }
+
+    #[test]
+    fn rejects_4k_custom_rtmp_livestream_without_split_profile() {
         let mut params = base_params(true, true);
         params.output.video = VideoSettings {
             preset: VideoPreset::Record4k30,
@@ -8458,6 +8976,29 @@ mod tests {
 
         let error = validate_outputs(&params).unwrap_err().to_string();
         assert!(error.contains("4K livestreaming is not enabled"), "{error}");
+    }
+
+    #[test]
+    fn rejects_4k_record_with_stream_fps_above_recording_fps() {
+        let mut params = base_params(true, true);
+        params.output.video = VideoSettings {
+            preset: VideoPreset::Record4k30,
+            width: 3840,
+            height: 2160,
+            fps: 30,
+            bitrate_kbps: 30_000,
+        };
+        let mut streaming = streaming_for(&[(
+            StreamPlatform::Youtube,
+            "rtmp://a.rtmp.youtube.com/live2",
+            "yt",
+        )]);
+        streaming.default_output_preset = VideoPreset::StreamSafe1080p60;
+        streaming.default_bitrate_kbps = 6000;
+        params.streaming = Some(streaming);
+
+        let error = validate_outputs(&params).unwrap_err().to_string();
+        assert!(error.contains("stream FPS no higher"), "{error}");
     }
 
     #[test]

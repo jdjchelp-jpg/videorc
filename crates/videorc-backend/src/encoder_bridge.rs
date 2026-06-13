@@ -54,6 +54,48 @@ impl EncoderBridgeVideoOutput {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EncoderBridgeOutputRole {
+    Shared,
+    Recording,
+    Stream,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EncoderBridgeOutputProfile {
+    pub width: u32,
+    pub height: u32,
+    pub fps: u32,
+    pub bitrate_kbps: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EncoderBridgeDiagnosticsContext {
+    pub role: EncoderBridgeOutputRole,
+    pub recording_output: Option<EncoderBridgeOutputProfile>,
+    pub stream_output: Option<EncoderBridgeOutputProfile>,
+    pub active_video_toolbox_output_encoders: u64,
+    pub separate_output_encoders_active: bool,
+}
+
+impl EncoderBridgeDiagnosticsContext {
+    pub const fn shared() -> Self {
+        Self {
+            role: EncoderBridgeOutputRole::Shared,
+            recording_output: None,
+            stream_output: None,
+            active_video_toolbox_output_encoders: 0,
+            separate_output_encoders_active: false,
+        }
+    }
+}
+
+impl Default for EncoderBridgeDiagnosticsContext {
+    fn default() -> Self {
+        Self::shared()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct EncoderBridgeSettings {
     ffmpeg_path: String,
@@ -240,6 +282,7 @@ pub async fn run_synthetic_encoder_bridge(
             encoder_speed: None,
             ..Default::default()
         },
+        EncoderBridgeDiagnosticsContext::default(),
         None,
     )
     .await;
@@ -309,6 +352,7 @@ pub async fn run_synthetic_encoder_bridge(
                     raw_video_copied_frames: frames_written,
                     ..Default::default()
                 },
+                EncoderBridgeDiagnosticsContext::default(),
                 encoder_progress.last_error,
             )
             .await;
@@ -346,6 +390,7 @@ pub async fn run_synthetic_encoder_bridge(
                 raw_video_copied_frames: frames_written,
                 ..Default::default()
             },
+            EncoderBridgeDiagnosticsContext::default(),
             Some(error.clone()),
         )
         .await;
@@ -366,6 +411,7 @@ pub async fn run_synthetic_encoder_bridge(
             raw_video_copied_frames: frames_written,
             ..Default::default()
         },
+        EncoderBridgeDiagnosticsContext::default(),
         final_progress.last_error,
     )
     .await;
@@ -401,6 +447,7 @@ pub fn start_synthetic_recording_bridge(
     frame_store: Option<CompositorFrameStore>,
     video_output: EncoderBridgeVideoOutput,
     bitrate_kbps: Option<u32>,
+    diagnostics_context: EncoderBridgeDiagnosticsContext,
     // Set once at the bridge's first delivered frame: the shared session epoch the
     // audio FIFO writer aligns to (Studio Shell And Live Control Plan, slice A2).
     video_epoch: Arc<OnceLock<Instant>>,
@@ -419,6 +466,7 @@ pub fn start_synthetic_recording_bridge(
                 &event.session_id,
                 event.target_fps,
                 event.stats,
+                event.diagnostics_context,
                 event.error,
             )
             .await;
@@ -437,6 +485,7 @@ pub fn start_synthetic_recording_bridge(
                 frame_store,
                 video_output,
                 bitrate_kbps,
+                diagnostics_context,
                 stop: writer_stop,
                 diagnostics_tx,
                 video_epoch,
@@ -628,6 +677,7 @@ struct SyntheticRecordingWriterParams {
     video_output: EncoderBridgeVideoOutput,
     bitrate_kbps: Option<u32>,
     diagnostics_tx: mpsc::UnboundedSender<EncoderBridgeWriterEvent>,
+    diagnostics_context: EncoderBridgeDiagnosticsContext,
     video_epoch: Arc<OnceLock<Instant>>,
 }
 
@@ -636,6 +686,7 @@ struct EncoderBridgeWriterEvent {
     session_id: String,
     target_fps: u32,
     stats: EncoderBridgeRuntimeStats,
+    diagnostics_context: EncoderBridgeDiagnosticsContext,
     error: Option<String>,
 }
 
@@ -652,6 +703,7 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
         video_output,
         bitrate_kbps,
         diagnostics_tx,
+        diagnostics_context,
         video_epoch,
     } = params;
     let fifo = match open_recording_fifo_writer(&fifo_path, &stop) {
@@ -668,6 +720,7 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
                     encoder_speed: None,
                     ..Default::default()
                 },
+                diagnostics_context,
                 Some(format!(
                     "Could not open recording encoder bridge FIFO {}: {error}",
                     fifo_path.display()
@@ -748,6 +801,7 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
                 encoder_speed: None,
                 ..Default::default()
             },
+            diagnostics_context,
             Some(format!(
                 "Could not prepare VideoToolbox encoder bridge output: {error}"
             )),
@@ -857,6 +911,7 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
                             deadline_lag_max_ms: max_deadline_lag_ms,
                             late_deadline_ticks,
                         },
+                        diagnostics_context,
                         Some(
                             "VideoToolbox encoder bridge had no compositor frame to encode"
                                 .to_string(),
@@ -1039,6 +1094,7 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
                     deadline_lag_max_ms: max_deadline_lag_ms,
                     late_deadline_ticks,
                 },
+                diagnostics_context,
                 Some(format!(
                     "Could not write compositor frame into recording FFmpeg: {error}"
                 )),
@@ -1108,6 +1164,7 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
                     deadline_lag_max_ms: max_deadline_lag_ms,
                     late_deadline_ticks,
                 },
+                diagnostics_context,
                 Some(format!(
                     "Could not write VideoToolbox output into recording FFmpeg: {error}"
                 )),
@@ -1169,6 +1226,7 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
                     deadline_lag_max_ms: max_deadline_lag_ms,
                     late_deadline_ticks,
                 },
+                diagnostics_context,
                 None,
             );
             window_started_at = Instant::now();
@@ -1278,6 +1336,7 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
             deadline_lag_max_ms: max_deadline_lag_ms,
             late_deadline_ticks,
         },
+        diagnostics_context,
         None,
     );
 }
@@ -1834,12 +1893,14 @@ fn emit_encoder_bridge_diagnostics_from_thread(
     session_id: String,
     target_fps: u32,
     stats: EncoderBridgeRuntimeStats,
+    diagnostics_context: EncoderBridgeDiagnosticsContext,
     error: Option<String>,
 ) {
     let _ = diagnostics_tx.send(EncoderBridgeWriterEvent {
         session_id,
         target_fps,
         stats,
+        diagnostics_context,
         error,
     });
 }
@@ -1925,6 +1986,7 @@ async fn emit_encoder_bridge_diagnostics(
     session_id: &str,
     target_fps: u32,
     runtime: EncoderBridgeRuntimeStats,
+    diagnostics_context: EncoderBridgeDiagnosticsContext,
     error: Option<String>,
 ) {
     let diagnostic_stats = {
@@ -1933,6 +1995,43 @@ async fn emit_encoder_bridge_diagnostics(
             diagnostics.clone()
         } else {
             starting_diagnostics(session_id, target_fps, "encoder-bridge")
+        };
+        let recording_output = diagnostics_context.recording_output;
+        let stream_output = diagnostics_context.stream_output;
+        let (
+            recording_output_frames,
+            recording_output_bytes,
+            stream_output_frames,
+            stream_output_bytes,
+        ) = match diagnostics_context.role {
+            EncoderBridgeOutputRole::Recording => (
+                runtime.video_toolbox_output_frames,
+                runtime.video_toolbox_output_bytes,
+                base.encoder_bridge_stream_video_toolbox_output_frames,
+                base.encoder_bridge_stream_video_toolbox_output_bytes,
+            ),
+            EncoderBridgeOutputRole::Stream => (
+                base.encoder_bridge_recording_video_toolbox_output_frames,
+                base.encoder_bridge_recording_video_toolbox_output_bytes,
+                runtime.video_toolbox_output_frames,
+                runtime.video_toolbox_output_bytes,
+            ),
+            EncoderBridgeOutputRole::Shared => (0, 0, 0, 0),
+        };
+        let video_toolbox_output_frames = if diagnostics_context.separate_output_encoders_active {
+            recording_output_frames.saturating_add(stream_output_frames)
+        } else {
+            runtime.video_toolbox_output_frames
+        };
+        let video_toolbox_output_bytes = if diagnostics_context.separate_output_encoders_active {
+            recording_output_bytes.saturating_add(stream_output_bytes)
+        } else {
+            runtime.video_toolbox_output_bytes
+        };
+        let error = if diagnostics_context.separate_output_encoders_active {
+            error.or_else(|| base.encoder_bridge_error.clone())
+        } else {
+            error
         };
         let next = apply_encoder_bridge_stats(
             base,
@@ -1957,23 +2056,25 @@ async fn emit_encoder_bridge_diagnostics(
                 video_toolbox_probe_frames: runtime.video_toolbox_probe_frames,
                 video_toolbox_probe_bytes: runtime.video_toolbox_probe_bytes,
                 video_toolbox_probe_errors: runtime.video_toolbox_probe_errors,
-                video_toolbox_output_frames: runtime.video_toolbox_output_frames,
-                video_toolbox_output_bytes: runtime.video_toolbox_output_bytes,
+                video_toolbox_output_frames,
+                video_toolbox_output_bytes,
                 video_toolbox_output_encode_ms: runtime.video_toolbox_output_encode_ms,
-                recording_output_width: None,
-                recording_output_height: None,
-                recording_output_fps: None,
-                recording_output_bitrate_kbps: None,
-                stream_output_width: None,
-                stream_output_height: None,
-                stream_output_fps: None,
-                stream_output_bitrate_kbps: None,
-                active_video_toolbox_output_encoders: 0,
-                recording_video_toolbox_output_frames: 0,
-                recording_video_toolbox_output_bytes: 0,
-                stream_video_toolbox_output_frames: 0,
-                stream_video_toolbox_output_bytes: 0,
-                separate_output_encoders_active: false,
+                recording_output_width: recording_output.map(|output| output.width),
+                recording_output_height: recording_output.map(|output| output.height),
+                recording_output_fps: recording_output.map(|output| output.fps),
+                recording_output_bitrate_kbps: recording_output.map(|output| output.bitrate_kbps),
+                stream_output_width: stream_output.map(|output| output.width),
+                stream_output_height: stream_output.map(|output| output.height),
+                stream_output_fps: stream_output.map(|output| output.fps),
+                stream_output_bitrate_kbps: stream_output.map(|output| output.bitrate_kbps),
+                active_video_toolbox_output_encoders: diagnostics_context
+                    .active_video_toolbox_output_encoders,
+                recording_video_toolbox_output_frames: recording_output_frames,
+                recording_video_toolbox_output_bytes: recording_output_bytes,
+                stream_video_toolbox_output_frames: stream_output_frames,
+                stream_video_toolbox_output_bytes: stream_output_bytes,
+                separate_output_encoders_active: diagnostics_context
+                    .separate_output_encoders_active,
                 compositor_wait_p95_ms: runtime.compositor_wait_p95_ms,
                 video_toolbox_submit_p95_ms: runtime.video_toolbox_submit_p95_ms,
                 video_toolbox_fifo_write_p95_ms: runtime.video_toolbox_fifo_write_p95_ms,

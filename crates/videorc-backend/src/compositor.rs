@@ -705,7 +705,6 @@ pub async fn compositor_frame_store(state: &AppState) -> CompositorFrameStore {
     state.compositor.lock().await.frame_store.clone()
 }
 
-#[cfg(test)]
 pub async fn compositor_stream_frame_store(state: &AppState) -> Option<CompositorFrameStore> {
     state.compositor.lock().await.stream_frame_store.clone()
 }
