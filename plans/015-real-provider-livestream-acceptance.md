@@ -18,6 +18,9 @@
 - **Depends on**: Plans 006, 009, and 012
 - **Category**: tests, direction, docs
 - **Planned at**: commit `0ea3c66c`, 2026-06-13
+- **Execution**: IN PROGRESS - Step 1 provider assumptions refreshed from
+  official docs on 2026-06-13. Release readiness and live tests remain blocked
+  on Plans 006/012 and production provider credentials/accounts.
 
 ## Why this matters
 
@@ -203,7 +206,7 @@ pnpm smoke:provider-readiness
 
 ## Done criteria
 
-- [ ] Provider-doc assumptions are refreshed with a date.
+- [x] Provider-doc assumptions are refreshed with a date.
 - [ ] Readiness evidence is redacted and release-grade.
 - [ ] Packaged release candidate passes provider readiness or records exact
       blockers.

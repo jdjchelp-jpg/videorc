@@ -1,8 +1,31 @@
 # OAuth Live Smoke Runbook
 
-Last official-docs check: 2026-06-03.
+Last official-docs check: 2026-06-13.
 
 This runbook is the release acceptance path for first-class OAuth/native livestream destinations. It covers the external checks that local mocked smokes cannot prove: real OAuth login, platform metadata mutation, ingest readiness, and live start/stop behavior.
+
+## Provider Assumptions Checked 2026-06-13
+
+- **YouTube:** Live Streaming API requests must be authorized by the Google
+  account that owns the broadcasting channel. The channel must be verified,
+  free of live-streaming restrictions, and live streaming may take up to
+  24 hours to become available after first enablement. Videorc must keep
+  waiting for the bound stream to report active ingest before transitioning a
+  broadcast live, then transition the broadcast to complete when the session
+  ends.
+- **Twitch:** The developer app must register the OAuth redirect URL(s), and
+  broadcaster actions use user access tokens with scoped permissions. The
+  existing Videorc scopes still map to the current docs:
+  `channel:manage:broadcast` for broadcast metadata and
+  `channel:read:stream_key` for reading the stream key. Twitch still treats
+  access tokens, refresh tokens, and client secrets as password-equivalent, so
+  release evidence must never print their values.
+- **X:** The public X API overview still does not expose a self-serve
+  live-video source or broadcast creation endpoint. Media Studio Producer
+  remains the documented path for creating RTMP/HLS sources and broadcasts.
+  Therefore X native live stays blocked unless the release account has a
+  validated partner/API path; manual RTMP must remain explicit user choice, not
+  hidden fallback.
 
 ## Local Gates First
 
@@ -203,9 +226,17 @@ If native access is not available:
 
 ## Official Docs Checked
 
-- [YouTube Live Streaming API overview](https://developers.google.com/youtube/v3/live/getting-started)
-- [YouTube liveBroadcasts.transition](https://developers.google.com/youtube/v3/live/docs/liveBroadcasts/transition)
-- [Twitch API Reference](https://dev.twitch.tv/docs/api/reference/)
-- [Twitch Authentication](https://dev.twitch.tv/docs/authentication/)
-- [X API Overview](https://docs.x.com/x-api/overview)
-- [X Media Studio Producer](https://help.x.com/en/using-x/how-to-use-live-producer)
+- 2026-06-13:
+  [YouTube Live Streaming API overview](https://developers.google.com/youtube/v3/live/getting-started),
+  [YouTube Life of a Broadcast](https://developers.google.com/youtube/v3/live/life-of-a-broadcast),
+  [YouTube liveBroadcasts](https://developers.google.com/youtube/v3/live/docs/liveBroadcasts),
+  [YouTube liveStreams](https://developers.google.com/youtube/v3/live/docs/liveStreams),
+  [YouTube Help: Get started with live streaming](https://support.google.com/youtube/answer/2474026),
+  [YouTube Help: Create a live stream with an encoder](https://support.google.com/youtube/answer/2907883),
+  [Google OAuth for desktop apps](https://developers.google.com/identity/protocols/oauth2/native-app),
+  [Twitch Authentication](https://dev.twitch.tv/docs/authentication/),
+  [Twitch Register Your App](https://dev.twitch.tv/docs/authentication/register-app),
+  [Twitch API Reference](https://dev.twitch.tv/docs/api/reference),
+  [Twitch Access Token Scopes](https://dev.twitch.tv/docs/authentication/scopes/),
+  [X API Overview](https://docs.x.com/x-api/overview),
+  [X Media Studio Producer](https://help.x.com/en/using-x/how-to-use-live-producer)
