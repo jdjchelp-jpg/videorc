@@ -1,4 +1,3 @@
-#[cfg(test)]
 use anyhow::{Result, bail};
 
 use crate::protocol::{
@@ -65,7 +64,6 @@ pub fn entitlements_from_env_value(value: Option<&str>) -> EntitlementsSnapshot 
     }
 }
 
-#[cfg(test)]
 fn capability(
     snapshot: &EntitlementsSnapshot,
     feature_id: FeatureId,
@@ -83,8 +81,7 @@ fn feature_entitled(snapshot: &EntitlementsSnapshot, feature_id: FeatureId) -> b
         .unwrap_or(false)
 }
 
-#[cfg(test)]
-fn require_feature(snapshot: &EntitlementsSnapshot, feature_id: FeatureId) -> Result<()> {
+pub fn require_feature(snapshot: &EntitlementsSnapshot, feature_id: FeatureId) -> Result<()> {
     let Some(capability) = capability(snapshot, feature_id) else {
         bail!("Feature entitlement is missing from the backend capability model.");
     };

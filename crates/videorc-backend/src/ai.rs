@@ -9,10 +9,12 @@ use tokio::fs;
 use tokio::process::Command;
 use tokio::time::{Duration, timeout};
 
+use crate::entitlements;
 use crate::ffmpeg::resolve_ffmpeg_path;
 use crate::protocol::{
-    AiArtifact, AiArtifactKind, AiArtifactStatus, AiWorkflowResult, ExportPublishPackParams,
-    ExportPublishPackResult, HealthEvent, HealthLevel, RunAiWorkflowParams,
+    AiArtifact, AiArtifactKind, AiArtifactStatus, AiWorkflowResult, EntitlementsSnapshot,
+    ExportPublishPackParams, ExportPublishPackResult, FeatureId, HealthEvent, HealthLevel,
+    RunAiWorkflowParams,
 };
 use crate::recording::emit_health_event;
 use crate::state::AppState;
@@ -68,6 +70,32 @@ pub async fn run_ai_workflow(
             HealthLevel::Info,
             "ai-consent-required",
             "Audio was extracted locally. Cloud AI did not run because consent was not granted.",
+        )?;
+        emit_ai_artifacts_changed(&state, &params.session_id)?;
+        return Ok(AiWorkflowResult {
+            session_id: params.session_id,
+            audio_path: audio_path.display().to_string(),
+            artifacts,
+        });
+    }
+
+    if let Err(error) = validate_cloud_ai_entitlement(&entitlements::current_entitlements()) {
+        artifacts.push(state.database.save_ai_artifact(
+            &params.session_id,
+            AiArtifactKind::Transcript,
+            AiArtifactStatus::Failed,
+            json!({
+                "message": error.to_string(),
+                "entitlement": "cloud-ai",
+            }),
+            None,
+        )?);
+        emit_health_event(
+            &state,
+            Some(&params.session_id),
+            HealthLevel::Warn,
+            "cloud-ai-premium-required",
+            "Audio was extracted locally. Cloud AI did not run because the current entitlement does not include cloud AI.",
         )?;
         emit_ai_artifacts_changed(&state, &params.session_id)?;
         return Ok(AiWorkflowResult {
@@ -327,6 +355,10 @@ fn emit_ai_artifacts_changed(state: &AppState, session_id: &str) -> Result<()> {
         state.database.list_ai_artifacts(session_id)?,
     );
     Ok(())
+}
+
+fn validate_cloud_ai_entitlement(snapshot: &EntitlementsSnapshot) -> Result<()> {
+    entitlements::require_feature(snapshot, FeatureId::CloudAi)
 }
 
 async fn extract_audio(ffmpeg_path: &str, input_path: &Path, output_path: &Path) -> Result<()> {
@@ -1153,6 +1185,22 @@ mod tests {
         assert!(markdown.contains("- 00:00 Intro"));
         assert!(markdown.contains("## Highlights"));
         assert!(markdown.contains("## Health Assistant"));
+    }
+
+    #[test]
+    fn entitlement_guard_blocks_cloud_ai_in_free_mode() {
+        let snapshot = entitlements::entitlements_from_env_value(None);
+        let error = validate_cloud_ai_entitlement(&snapshot)
+            .expect_err("cloud AI should require premium entitlement");
+
+        assert!(error.to_string().contains("Premium"));
+    }
+
+    #[test]
+    fn entitlement_guard_allows_cloud_ai_with_developer_override() {
+        let snapshot = entitlements::entitlements_from_env_value(Some("1"));
+
+        validate_cloud_ai_entitlement(&snapshot).unwrap();
     }
 
     #[test]

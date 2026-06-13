@@ -47,6 +47,7 @@ use crate::encoder_bridge::{
     EncoderBridgeDiagnosticsContext, EncoderBridgeOutputProfile, EncoderBridgeOutputRole,
     EncoderBridgeRecordingSession, EncoderBridgeVideoOutput, start_synthetic_recording_bridge,
 };
+use crate::entitlements;
 use crate::ffmpeg::{ffprobe_path_for, resolve_ffmpeg_path};
 use crate::ffmpeg_work::{CapturePermit, MaintenanceCancelToken};
 use crate::pipeline::{RecordingPipeline, container_for_outputs, container_key};
@@ -57,8 +58,8 @@ use crate::preview_screen::preview_screen_latest_frame_info;
 use crate::protocol::{
     AudioSettings, AudioTrack, AudioTrackSource, CameraCorner, CameraFit, CameraShape, CameraSize,
     CameraTransformMode, CompositorBackend, CompositorSceneUpdateParams, CompositorState,
-    EncodeBackend, HealthLevel, LayoutPreset, LayoutSettings, PreviewCameraState,
-    PreviewLiveParams, PreviewLiveSource, PreviewLiveState, PreviewLiveStatus,
+    EncodeBackend, EntitlementsSnapshot, FeatureId, HealthLevel, LayoutPreset, LayoutSettings,
+    PreviewCameraState, PreviewLiveParams, PreviewLiveSource, PreviewLiveState, PreviewLiveStatus,
     PreviewScreenSourceKind, PreviewScreenState, PreviewSnapshot, PreviewSnapshotParams,
     PreviewTransport, RecordingPipelineStage, RecordingState, RecordingStatus, RemuxSessionParams,
     RtmpPreset, RtmpSettings, Scene, SceneConfigParams, SceneSourceKind, SideBySideCameraSide,
@@ -289,6 +290,8 @@ pub async fn start_session(
     if state.recording.lock().await.is_some() {
         bail!("A capture session is already running");
     }
+
+    validate_session_entitlements(&params, &entitlements::current_entitlements())?;
 
     let capture_permit = state.ffmpeg_work.begin_capture_when_available().await;
     hydrate_stream_key_secret_refs(&state, &mut params)?;
@@ -5066,6 +5069,17 @@ fn crop_offset_expr(offset: i32, input_size: &str, output_size: &str) -> String 
     format!("({input_size}-{output_size})/2+({offset})*({input_size}-{output_size})/200")
 }
 
+fn validate_session_entitlements(
+    params: &StartSessionParams,
+    snapshot: &EntitlementsSnapshot,
+) -> Result<()> {
+    if params.output.stream_enabled {
+        entitlements::require_feature(snapshot, FeatureId::Livestreaming)?;
+    }
+
+    Ok(())
+}
+
 fn validate_outputs(params: &StartSessionParams) -> Result<()> {
     if !params.output.record_enabled && !params.output.stream_enabled {
         bail!("Enable local recording, RTMP streaming, or both");
@@ -8697,6 +8711,32 @@ mod tests {
                 "preview missing {marker}: {preview}"
             );
         }
+    }
+
+    #[test]
+    fn entitlement_guard_allows_local_recording_in_free_mode() {
+        let params = base_params(true, false);
+        let snapshot = entitlements::entitlements_from_env_value(None);
+
+        validate_session_entitlements(&params, &snapshot).unwrap();
+    }
+
+    #[test]
+    fn entitlement_guard_blocks_livestreaming_in_free_mode() {
+        let params = base_params(false, true);
+        let snapshot = entitlements::entitlements_from_env_value(None);
+        let error = validate_session_entitlements(&params, &snapshot)
+            .expect_err("streaming requires premium entitlement");
+
+        assert!(error.to_string().contains("Premium"));
+    }
+
+    #[test]
+    fn entitlement_guard_allows_livestreaming_with_developer_override() {
+        let params = base_params(false, true);
+        let snapshot = entitlements::entitlements_from_env_value(Some("1"));
+
+        validate_session_entitlements(&params, &snapshot).unwrap();
     }
 
     #[test]
