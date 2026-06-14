@@ -48,7 +48,10 @@ try {
 
     await request(ws, timeoutMs, 'screens.clear')
     redScreen = await request(ws, timeoutMs, 'screens.importImage', { path: redPath, ffmpegPath })
-    greenScreen = await request(ws, timeoutMs, 'screens.importImage', { path: greenPath, ffmpegPath })
+    greenScreen = await request(ws, timeoutMs, 'screens.importImage', {
+      path: greenPath,
+      ffmpegPath
+    })
 
     await request(ws, timeoutMs, 'screens.activate', { screenId: redScreen.id })
     const started = await request(ws, timeoutMs, 'session.start', sessionParams())
@@ -128,7 +131,9 @@ function sampleRgb(outputPath, seconds) {
     { encoding: null }
   )
   if (result.status !== 0 || result.stdout.length < 3) {
-    throw new Error(`Could not sample output frame at ${seconds}s: ${result.stderr?.toString() ?? ''}`)
+    throw new Error(
+      `Could not sample output frame at ${seconds}s: ${result.stderr?.toString() ?? ''}`
+    )
   }
   return [result.stdout[0], result.stdout[1], result.stdout[2]]
 }
@@ -164,17 +169,25 @@ function verifyOutput(outputPath, statuses, sessionId) {
 
   const uniqueSessionIds = new Set(statuses.map((status) => status.sessionId).filter(Boolean))
   if (uniqueSessionIds.size !== 1 || !uniqueSessionIds.has(sessionId)) {
-    throw new Error(`Screen switching appears to have restarted the session: ${[...uniqueSessionIds].join(', ')}`)
+    throw new Error(
+      `Screen switching appears to have restarted the session: ${[...uniqueSessionIds].join(', ')}`
+    )
   }
 
   const samples = sampleTimeline(outputPath)
   const red = samples.find((sample) => isRed(sample.rgb))
-  const green = red ? samples.find((sample) => sample.seconds > red.seconds && isGreen(sample.rgb)) : null
+  const green = red
+    ? samples.find((sample) => sample.seconds > red.seconds && isGreen(sample.rgb))
+    : null
   const normal = green
-    ? samples.find((sample) => sample.seconds > green.seconds && !isRed(sample.rgb) && !isGreen(sample.rgb))
+    ? samples.find(
+        (sample) => sample.seconds > green.seconds && !isRed(sample.rgb) && !isGreen(sample.rgb)
+      )
     : null
   if (!red || !green || !normal) {
-    const rendered = samples.map((sample) => `${sample.seconds.toFixed(2)}s=rgb(${sample.rgb.join(',')})`).join(', ')
+    const rendered = samples
+      .map((sample) => `${sample.seconds.toFixed(2)}s=rgb(${sample.rgb.join(',')})`)
+      .join(', ')
     throw new Error(`Expected red -> green -> Normal Screen sequence, got ${rendered}`)
   }
 
@@ -186,7 +199,9 @@ function verifyOutput(outputPath, statuses, sessionId) {
 async function assertSameRunningSession(ws, sessionId) {
   const status = await request(ws, timeoutMs, 'recording.status')
   if (status.sessionId !== sessionId || !['recording', 'streaming'].includes(status.state)) {
-    throw new Error(`Expected same running session ${sessionId}, got ${status.sessionId}/${status.state}`)
+    throw new Error(
+      `Expected same running session ${sessionId}, got ${status.sessionId}/${status.state}`
+    )
   }
 }
 
@@ -231,6 +246,7 @@ function launchAndReadConnection() {
       detached: true,
       env: {
         ...process.env,
+        VIDEORC_DISABLE_BACKEND_REAP: process.env.VIDEORC_DISABLE_BACKEND_REAP ?? '1',
         VIDEORC_SMOKE_PRINT_BACKEND_READY: '1'
       },
       stdio: ['ignore', 'pipe', 'pipe']
@@ -246,7 +262,9 @@ function launchAndReadConnection() {
     })
     appProcess.on('exit', (code, signal) => {
       clearTimeout(timer)
-      rejectConnection(new Error(`Dev app exited before Screens smoke completed: code=${code} signal=${signal}`))
+      rejectConnection(
+        new Error(`Dev app exited before Screens smoke completed: code=${code} signal=${signal}`)
+      )
     })
   })
 }

@@ -52,6 +52,7 @@
     "acceptance:obs-side-by-side": "node scripts/obs-side-by-side-acceptance.mjs",
     "measure:av-sync": "node scripts/measure-av-sync.mjs",
     "smoke:dev": "node scripts/smoke-dev-app.mjs",
+    "smoke:backend-single-instance": "node scripts/smoke-backend-single-instance.mjs",
     "smoke:sources": "node scripts/smoke-source-reconciliation.mjs",
     "smoke:start-labels": "node scripts/smoke-start-labels.mjs",
     "smoke:preview-motion": "node scripts/smoke-preview-motion-app.mjs",

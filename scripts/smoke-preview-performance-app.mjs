@@ -16,7 +16,8 @@ const maxCadenceMs = Number(process.env.VIDEORC_PREVIEW_MAX_CADENCE_MS ?? 300)
 const minTargetFps = Number(process.env.VIDEORC_PREVIEW_MIN_TARGET_FPS ?? 10)
 const expectedTransport = process.env.VIDEORC_PREVIEW_EXPECT_TRANSPORT ?? 'latest-jpeg-polling'
 const outputDirectory = resolve(
-  process.env.VIDEORC_SMOKE_OUTPUT_DIR ?? join(tmpdir(), `videorc-preview-performance-${Date.now()}`)
+  process.env.VIDEORC_SMOKE_OUTPUT_DIR ??
+    join(tmpdir(), `videorc-preview-performance-${Date.now()}`)
 )
 
 let appProcess
@@ -91,7 +92,9 @@ function assertPreviewStatus(status) {
     throw new Error(`Expected preview transport ${expectedTransport}, got ${status.transport}.`)
   }
   if ((status.targetFps ?? 0) < minTargetFps) {
-    throw new Error(`Expected preview target FPS >= ${minTargetFps}, got ${status.targetFps ?? 'missing'}.`)
+    throw new Error(
+      `Expected preview target FPS >= ${minTargetFps}, got ${status.targetFps ?? 'missing'}.`
+    )
   }
   if (!status.width || !status.height) {
     throw new Error(`Preview status did not advertise dimensions: ${JSON.stringify(status)}`)
@@ -101,13 +104,17 @@ function assertPreviewStatus(status) {
 function assertPollsHealthy(polls) {
   const minSuccesses = Math.ceil(polls.attempts * minSuccessfulPollRatio)
   if (polls.successes < minSuccesses) {
-    throw new Error(`Preview frame polling only succeeded ${polls.successes}/${polls.attempts}; expected at least ${minSuccesses}.`)
+    throw new Error(
+      `Preview frame polling only succeeded ${polls.successes}/${polls.attempts}; expected at least ${minSuccesses}.`
+    )
   }
 }
 
 function assertDiagnosticsHealthy(finalDiagnostics, samples) {
   if (finalDiagnostics.previewTransport !== expectedTransport) {
-    throw new Error(`Expected diagnostic preview transport ${expectedTransport}, got ${finalDiagnostics.previewTransport}.`)
+    throw new Error(
+      `Expected diagnostic preview transport ${expectedTransport}, got ${finalDiagnostics.previewTransport}.`
+    )
   }
   if ((finalDiagnostics.previewTargetFps ?? 0) < minTargetFps) {
     throw new Error(
@@ -121,13 +128,17 @@ function assertDiagnosticsHealthy(finalDiagnostics, samples) {
     throw new Error('Preview diagnostics did not report frame age.')
   }
   if (finalDiagnostics.previewFrameAgeMs > maxFrameAgeMs) {
-    throw new Error(`Preview frame age ${finalDiagnostics.previewFrameAgeMs}ms exceeded ${maxFrameAgeMs}ms.`)
+    throw new Error(
+      `Preview frame age ${finalDiagnostics.previewFrameAgeMs}ms exceeded ${maxFrameAgeMs}ms.`
+    )
   }
   if (typeof finalDiagnostics.previewLatencyMs !== 'number') {
     throw new Error('Preview diagnostics did not report frame cadence.')
   }
   if (finalDiagnostics.previewLatencyMs > maxCadenceMs) {
-    throw new Error(`Preview cadence ${finalDiagnostics.previewLatencyMs}ms exceeded ${maxCadenceMs}ms.`)
+    throw new Error(
+      `Preview cadence ${finalDiagnostics.previewLatencyMs}ms exceeded ${maxCadenceMs}ms.`
+    )
   }
 
   const steadySamples = samples.filter((sample) => typeof sample.previewFrameAgeMs === 'number')
@@ -200,6 +211,7 @@ function launchAndReadConnection() {
       detached: true,
       env: {
         ...process.env,
+        VIDEORC_DISABLE_BACKEND_REAP: process.env.VIDEORC_DISABLE_BACKEND_REAP ?? '1',
         VIDEORC_NATIVE_PREVIEW_SURFACE: '0',
         VIDEORC_SMOKE_OUTPUT_DIR: outputDirectory,
         VIDEORC_SMOKE_PRINT_BACKEND_READY: '1'
@@ -217,7 +229,9 @@ function launchAndReadConnection() {
     })
     appProcess.on('exit', (code, signal) => {
       clearTimeout(timer)
-      rejectConnection(new Error(`Dev app exited before preview smoke completed: code=${code} signal=${signal}`))
+      rejectConnection(
+        new Error(`Dev app exited before preview smoke completed: code=${code} signal=${signal}`)
+      )
     })
   })
 }

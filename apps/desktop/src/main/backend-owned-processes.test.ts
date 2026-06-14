@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   OwnedProcessRegistry,
+  globalOwnedProcessLedgerPath,
   ownedProcessLedgerPath,
   type OwnedProcessRecord
 } from './backend-owned-processes'
@@ -83,5 +84,65 @@ describe('OwnedProcessRegistry', () => {
     expect(first).not.toEqual(second)
     expect(first).toContain('owned-processes')
     expect(second).toContain('owned-processes')
+  })
+
+  it('uses one global ledger across isolated userData directories', () => {
+    const first = globalOwnedProcessLedgerPath('/Users/orc/Library/Application Support', 'Videorc')
+    const second = globalOwnedProcessLedgerPath('/Users/orc/Library/Application Support', 'Videorc')
+
+    expect(first).toEqual(second)
+    expect(first).toContain('Videorc')
+    expect(first).toContain('owned-processes')
+  })
+
+  it('reaps stale pids from every configured ledger once', () => {
+    const ledgers = new Map<string, string>([
+      [
+        '/tmp/videorc-global.json',
+        JSON.stringify([
+          { pid: 111, label: 'backend', startedAt: '2026-06-11T10:00:00.000Z' },
+          { pid: 333, label: 'helper', startedAt: '2026-06-11T10:00:02.000Z' }
+        ])
+      ],
+      [
+        '/tmp/videorc-workspace.json',
+        JSON.stringify([
+          { pid: 111, label: 'backend duplicate', startedAt: '2026-06-11T10:00:01.000Z' },
+          { pid: 222, label: 'current process', startedAt: '2026-06-11T10:00:02.000Z' }
+        ])
+      ]
+    ])
+    const kills: Array<{ pid: number; signal: NodeJS.Signals }> = []
+    let scheduled: (() => void) | null = null
+    const registry = new OwnedProcessRegistry({
+      ledgerPath: ['/tmp/videorc-global.json', '/tmp/videorc-workspace.json'],
+      currentPid: 222,
+      platform: 'darwin',
+      readFile: (path) => ledgers.get(path) ?? '',
+      writeFile: (path, contents) => {
+        ledgers.set(path, contents)
+      },
+      makeDir: () => undefined,
+      killProcess: (pid, signal) => kills.push({ pid, signal }),
+      schedule: (callback) => {
+        scheduled = callback
+        return 0
+      }
+    })
+
+    const stale = registry.reapStale()
+    const runScheduled = scheduled as (() => void) | null
+    expect(runScheduled).not.toBeNull()
+    runScheduled?.()
+
+    expect(stale.map((record) => record.pid)).toEqual([111, 333])
+    expect(kills).toEqual([
+      { pid: 111, signal: 'SIGTERM' },
+      { pid: 333, signal: 'SIGTERM' },
+      { pid: 111, signal: 'SIGKILL' },
+      { pid: 333, signal: 'SIGKILL' }
+    ])
+    expect(JSON.parse(ledgers.get('/tmp/videorc-global.json') ?? '')).toEqual([])
+    expect(JSON.parse(ledgers.get('/tmp/videorc-workspace.json') ?? '')).toEqual([])
   })
 })

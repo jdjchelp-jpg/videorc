@@ -25,7 +25,13 @@ import { delimiter, dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 
-import { OwnedProcessRegistry, ownedProcessLedgerPath } from './backend-owned-processes'
+import {
+  OwnedProcessRegistry,
+  acquireOwnedProcessStartupLock,
+  globalOwnedProcessLedgerPath,
+  ownedProcessLedgerPath,
+  ownedProcessStartupLockPath
+} from './backend-owned-processes'
 import { createNativePreviewHelperProcessDriver } from './native-preview-helper-process-driver'
 import { loadNativePreviewRealSurfaceDriver } from './native-preview-real-surface-loader'
 import {
@@ -74,6 +80,7 @@ let nativePreviewSurfaceMutationInFlight: Promise<PreviewSurfaceStatus> | null =
 let nativePreviewSurfaceFramePollingSuppressed = false
 let backendProcess: ChildProcessWithoutNullStreams | null = null
 let ownedProcessRegistry: OwnedProcessRegistry | null = null
+let ownedProcessRegistryLockDepth = 0
 let backendConnection: BackendConnection | null = null
 let smokePreviewMotionServer: HttpServer | null = null
 let smokePreviewCompositorFrameId = 0
@@ -181,9 +188,14 @@ async function refreshGlassWallpaper(): Promise<void> {
     /* unreadable wallpaper: stay on the plain translucent glass */
   }
 }
-// Probes and perf harnesses run ALONGSIDE the owner's dev app: an isolated
-// userData gives them their own single-instance lock and preferences instead
-// of dying on the real instance's lock or clobbering its saved state.
+// Lifecycle smokes can isolate the app-level backend ledger without touching
+// the developer's real app data.
+const appDataDirOverride = process.env.VIDEORC_APP_DATA_DIR?.trim()
+if (appDataDirOverride) {
+  app.setPath('appData', appDataDirOverride)
+}
+// Probes and perf harnesses may still isolate preferences with userData, but
+// backend ownership is now app-global unless they explicitly disable reaping.
 const userDataDirOverride = process.env.VIDEORC_USER_DATA_DIR?.trim()
 if (userDataDirOverride) {
   app.setPath('userData', userDataDirOverride)
@@ -2574,15 +2586,35 @@ function workspaceRoot(): string {
 function processRegistry(): OwnedProcessRegistry {
   if (!ownedProcessRegistry) {
     ownedProcessRegistry = new OwnedProcessRegistry({
-      ledgerPath: ownedProcessLedgerPath(app.getPath('userData'), workspaceRoot())
+      ledgerPath: [
+        globalOwnedProcessLedgerPath(app.getPath('appData'), app.getName()),
+        ownedProcessLedgerPath(app.getPath('userData'), workspaceRoot())
+      ]
     })
   }
   return ownedProcessRegistry
 }
 
+function withProcessRegistryLock<T>(operation: () => T): T {
+  if (ownedProcessRegistryLockDepth > 0) {
+    return operation()
+  }
+
+  const release = acquireOwnedProcessStartupLock({
+    lockPath: ownedProcessStartupLockPath(app.getPath('appData'), app.getName())
+  })
+  ownedProcessRegistryLockDepth += 1
+  try {
+    return operation()
+  } finally {
+    ownedProcessRegistryLockDepth -= 1
+    release()
+  }
+}
+
 function recordOwnedProcess(pid: number, label: string): void {
   try {
-    processRegistry().record(pid, label)
+    withProcessRegistryLock(() => processRegistry().record(pid, label))
   } catch (error) {
     logBackend('warn', `Could not record ${label} process ${pid}: ${errorMessage(error)}`)
   }
@@ -2590,7 +2622,7 @@ function recordOwnedProcess(pid: number, label: string): void {
 
 function removeOwnedProcess(pid: number): void {
   try {
-    processRegistry().remove(pid)
+    withProcessRegistryLock(() => processRegistry().remove(pid))
   } catch (error) {
     logBackend('warn', `Could not clear owned process ${pid}: ${errorMessage(error)}`)
   }
@@ -2628,18 +2660,20 @@ function resolvePackagedFfmpegBinDir(): string | null {
   return existsSync(binary) ? binDir : null
 }
 
-// Single-worktree backend policy: only reap children a previous launch from
-// this same worktree recorded. Never scan command lines; substring process
-// matching can kill cargo builds, editors, or a second worktree.
+// Single-backend policy: reap only children a previous Videorc launch recorded.
+// Never scan command lines; substring process matching can kill cargo builds,
+// editors, or unrelated processes.
 function reapStaleBackendProcesses(): void {
   let stale: ReturnType<OwnedProcessRegistry['reapStale']>
   try {
-    stale = processRegistry().reapStale({
-      disabled:
-        Boolean(process.env.VIDEORC_SMOKE_OUTPUT_DIR) ||
-        process.env.VIDEORC_SMOKE_COMMAND_SERVER === '1' ||
-        process.env.VIDEORC_DISABLE_BACKEND_REAP === '1'
-    })
+    stale = withProcessRegistryLock(() =>
+      processRegistry().reapStale({
+        disabled:
+          Boolean(process.env.VIDEORC_SMOKE_OUTPUT_DIR) ||
+          process.env.VIDEORC_SMOKE_COMMAND_SERVER === '1' ||
+          process.env.VIDEORC_DISABLE_BACKEND_REAP === '1'
+      })
+    )
   } catch (error) {
     logBackend('warn', `Could not reap stale owned backend processes: ${errorMessage(error)}`)
     return
@@ -2653,6 +2687,18 @@ function reapStaleBackendProcesses(): void {
 }
 
 function startBackend(): void {
+  if (backendProcess) {
+    return
+  }
+
+  try {
+    withProcessRegistryLock(() => startBackendWithRegistryLock())
+  } catch (error) {
+    logBackend('error', `Could not launch backend with exclusive ownership: ${errorMessage(error)}`)
+  }
+}
+
+function startBackendWithRegistryLock(): void {
   if (backendProcess) {
     return
   }

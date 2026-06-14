@@ -7,10 +7,12 @@ import { connectBackend, request } from './smoke-recording-session.mjs'
 
 const repoRoot = resolve(import.meta.dirname, '..')
 const outputDirectory = resolve(
-  process.env.VIDEORC_SMOKE_OUTPUT_DIR ?? join(tmpdir(), `videorc-recording-performance-${Date.now()}`)
+  process.env.VIDEORC_SMOKE_OUTPUT_DIR ??
+    join(tmpdir(), `videorc-recording-performance-${Date.now()}`)
 )
 const ffmpegPath = process.env.VIDEORC_SMOKE_FFMPEG_PATH ?? 'ffmpeg'
-const ffprobePath = process.env.VIDEORC_SMOKE_FFPROBE_PATH ?? resolveSiblingFfprobe(ffmpegPath) ?? 'ffprobe'
+const ffprobePath =
+  process.env.VIDEORC_SMOKE_FFPROBE_PATH ?? resolveSiblingFfprobe(ffmpegPath) ?? 'ffprobe'
 const timeoutMs = Number(process.env.VIDEORC_SMOKE_TIMEOUT_MS ?? 120000)
 const recordingMs = Number(process.env.VIDEORC_PERF_RECORDING_MS ?? 20000)
 const warmupMs = Number(process.env.VIDEORC_PERF_WARMUP_MS ?? 12000)
@@ -73,7 +75,9 @@ async function runScenario(ws, connection, samples, scenario) {
   const scenarioStartedAt = Date.now()
   const started = await request(ws, timeoutMs, 'session.start', sessionParams(scenario))
   if (started.state !== 'recording') {
-    throw new Error(`[${scenario.label}] Expected recording state after start, got ${started.state}.`)
+    throw new Error(
+      `[${scenario.label}] Expected recording state after start, got ${started.state}.`
+    )
   }
 
   const stopPreviewPolling = pollPreviewFrames(connection)
@@ -84,7 +88,9 @@ async function runScenario(ws, connection, samples, scenario) {
   const stopped = await request(ws, timeoutMs, 'session.stop')
   const outputPath = stopped.outputPath ?? started.outputPath
   if (!outputPath || !existsSync(outputPath)) {
-    throw new Error(`[${scenario.label}] Recording output was not created: ${outputPath ?? 'missing path'}`)
+    throw new Error(
+      `[${scenario.label}] Recording output was not created: ${outputPath ?? 'missing path'}`
+    )
   }
   const size = statSync(outputPath).size
   if (size <= 0) {
@@ -95,7 +101,9 @@ async function runScenario(ws, connection, samples, scenario) {
   assertStatsHealthy(scenario, stats)
   const skew = await audioVideoSkewMs(outputPath)
   if (skew > maxSkewMs) {
-    throw new Error(`[${scenario.label}] Audio/video duration skew ${skew.toFixed(1)}ms exceeded ${maxSkewMs}ms.`)
+    throw new Error(
+      `[${scenario.label}] Audio/video duration skew ${skew.toFixed(1)}ms exceeded ${maxSkewMs}ms.`
+    )
   }
 
   console.log(
@@ -182,12 +190,20 @@ function summarizeDiagnostics(samples, targetFps, scenarioStartedAt, stopRequest
       receivedAt <= stopRequestedAt
     )
   })
-  const steadySamples = activeSamples.filter((sample) => (sample.receivedAt ?? 0) - scenarioStartedAt >= warmupMs)
+  const steadySamples = activeSamples.filter(
+    (sample) => (sample.receivedAt ?? 0) - scenarioStartedAt >= warmupMs
+  )
   const measuredSamples = steadySamples.length ? steadySamples : activeSamples
-  const captureFpsValues = measuredSamples.map((sample) => numeric(sample.captureFps)).filter((value) => value !== null)
-  const renderFpsValues = measuredSamples.map((sample) => numeric(sample.renderFps)).filter((value) => value !== null)
+  const captureFpsValues = measuredSamples
+    .map((sample) => numeric(sample.captureFps))
+    .filter((value) => value !== null)
+  const renderFpsValues = measuredSamples
+    .map((sample) => numeric(sample.renderFps))
+    .filter((value) => value !== null)
   const fpsValues = [...captureFpsValues, ...renderFpsValues]
-  const speedValues = measuredSamples.map((sample) => numeric(sample.encoderSpeed)).filter((value) => value !== null)
+  const speedValues = measuredSamples
+    .map((sample) => numeric(sample.encoderSpeed))
+    .filter((value) => value !== null)
   const backendRssValues = measuredSamples
     .map((sample) => numeric(sample.backendRssBytes))
     .filter((value) => value !== null)
@@ -204,10 +220,18 @@ function summarizeDiagnostics(samples, targetFps, scenarioStartedAt, stopRequest
     minSpeed: speedValues.length ? Math.min(...speedValues) : null,
     droppedFrames: Math.max(0, ...measuredSamples.map((sample) => sample.droppedFrames ?? 0)),
     micDroppedFrames: Math.max(0, ...measuredSamples.map((sample) => sample.micDroppedFrames ?? 0)),
-    previewDroppedFrames: Math.max(0, ...measuredSamples.map((sample) => sample.previewDroppedFrames ?? 0)),
+    previewDroppedFrames: Math.max(
+      0,
+      ...measuredSamples.map((sample) => sample.previewDroppedFrames ?? 0)
+    ),
     maintenanceSamples: measuredSamples.filter((sample) => sample.ffmpegMaintenanceRunning).length,
-    maintenanceCancelSamples: measuredSamples.filter((sample) => sample.ffmpegMaintenanceCancelRequested).length,
-    duplicateCaptureSamples: measuredSamples.filter((sample) => Array.isArray(sample.duplicateCaptureSources) && sample.duplicateCaptureSources.length > 0).length,
+    maintenanceCancelSamples: measuredSamples.filter(
+      (sample) => sample.ffmpegMaintenanceCancelRequested
+    ).length,
+    duplicateCaptureSamples: measuredSamples.filter(
+      (sample) =>
+        Array.isArray(sample.duplicateCaptureSources) && sample.duplicateCaptureSources.length > 0
+    ).length,
     maxBackendRssBytes: backendRssValues.length ? Math.max(...backendRssValues) : null,
     maxActiveFfmpegProcesses: ffmpegProcessValues.length ? Math.max(...ffmpegProcessValues) : 0,
     maxActiveFfprobeProcesses: ffprobeProcessValues.length ? Math.max(...ffprobeProcessValues) : 0,
@@ -218,13 +242,19 @@ function summarizeDiagnostics(samples, targetFps, scenarioStartedAt, stopRequest
 
 function assertStatsHealthy(scenario, stats) {
   if (stats.minSpeed === null) {
-    throw new Error(`[${scenario.label}] No encoder speed diagnostics were captured after ${warmupMs}ms warm-up.`)
+    throw new Error(
+      `[${scenario.label}] No encoder speed diagnostics were captured after ${warmupMs}ms warm-up.`
+    )
   }
   if (stats.minSpeed < minSpeed) {
-    throw new Error(`[${scenario.label}] Encoder speed ${format(stats.minSpeed)}x fell below ${minSpeed}x.`)
+    throw new Error(
+      `[${scenario.label}] Encoder speed ${format(stats.minSpeed)}x fell below ${minSpeed}x.`
+    )
   }
   if (stats.minFps === null) {
-    throw new Error(`[${scenario.label}] No FPS diagnostics were captured after ${warmupMs}ms warm-up.`)
+    throw new Error(
+      `[${scenario.label}] No FPS diagnostics were captured after ${warmupMs}ms warm-up.`
+    )
   }
   const minFps = scenario.fps * 0.9
   if (stats.minFps < minFps) {
@@ -236,13 +266,19 @@ function assertStatsHealthy(scenario, stats) {
     throw new Error(`[${scenario.label}] FFmpeg reported ${stats.droppedFrames} dropped frame(s).`)
   }
   if (stats.micDroppedFrames > 0) {
-    throw new Error(`[${scenario.label}] Native microphone reported ${stats.micDroppedFrames} dropped frame(s).`)
+    throw new Error(
+      `[${scenario.label}] Native microphone reported ${stats.micDroppedFrames} dropped frame(s).`
+    )
   }
   if (stats.maintenanceSamples > 0) {
-    throw new Error(`[${scenario.label}] Recording overlapped ${stats.maintenanceSamples} maintenance FFmpeg sample(s).`)
+    throw new Error(
+      `[${scenario.label}] Recording overlapped ${stats.maintenanceSamples} maintenance FFmpeg sample(s).`
+    )
   }
   if (stats.duplicateCaptureSamples > 0) {
-    throw new Error(`[${scenario.label}] Recording reported ${stats.duplicateCaptureSamples} duplicate capture diagnostic sample(s).`)
+    throw new Error(
+      `[${scenario.label}] Recording reported ${stats.duplicateCaptureSamples} duplicate capture diagnostic sample(s).`
+    )
   }
 }
 
@@ -285,7 +321,9 @@ async function assertFfprobeAvailable() {
       throw new Error(result.stderr.trim() || `exit ${result.status}`)
     }
   } catch (error) {
-    throw new Error(`FFprobe is required for A/V skew checks. Set VIDEORC_SMOKE_FFPROBE_PATH. ${error.message}`)
+    throw new Error(
+      `FFprobe is required for A/V skew checks. Set VIDEORC_SMOKE_FFPROBE_PATH. ${error.message}`
+    )
   }
 }
 
@@ -318,6 +356,7 @@ function launchAndReadConnection() {
       detached: true,
       env: {
         ...process.env,
+        VIDEORC_DISABLE_BACKEND_REAP: process.env.VIDEORC_DISABLE_BACKEND_REAP ?? '1',
         VIDEORC_SMOKE_PRINT_BACKEND_READY: '1'
       },
       stdio: ['ignore', 'pipe', 'pipe']
@@ -333,7 +372,9 @@ function launchAndReadConnection() {
     })
     appProcess.on('exit', (code, signal) => {
       clearTimeout(timer)
-      rejectConnection(new Error(`Dev app exited before smoke test completed: code=${code} signal=${signal}`))
+      rejectConnection(
+        new Error(`Dev app exited before smoke test completed: code=${code} signal=${signal}`)
+      )
     })
   })
 }

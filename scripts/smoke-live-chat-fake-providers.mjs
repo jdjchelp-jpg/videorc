@@ -42,7 +42,7 @@ try {
     const sessionId = `smoke-live-chat-${Date.now()}`
     await request(ws, timeoutMs, 'liveChat.start', {
       sessionId,
-      fake: { platform: 'youtube', count: 5, intervalMs: 40, includeDuplicate: true },
+      fake: { platform: 'youtube', count: 5, intervalMs: 40, includeDuplicate: true }
     })
 
     await waitFor(() => messages.length >= 5, timeoutMs, 'fake chat messages')
@@ -52,18 +52,26 @@ try {
       throw new Error(`Expected >=5 messages received, got ${diagnostics.messagesReceived}`)
     }
     if (diagnostics.duplicatesSkipped < 1) {
-      throw new Error(`Expected the duplicate id to be skipped, got ${diagnostics.duplicatesSkipped}`)
+      throw new Error(
+        `Expected the duplicate id to be skipped, got ${diagnostics.duplicatesSkipped}`
+      )
     }
 
     // The streamer can read the comments from the snapshot — no platform dashboard needed.
     const status = await request(ws, timeoutMs, 'liveChat.status', {})
     if (status.messages.length < 5 || status.sessionId !== sessionId) {
-      throw new Error(`liveChat.status did not expose the session feed: ${JSON.stringify({
-        sessionId: status.sessionId,
-        count: status.messages.length,
-      })}`)
+      throw new Error(
+        `liveChat.status did not expose the session feed: ${JSON.stringify({
+          sessionId: status.sessionId,
+          count: status.messages.length
+        })}`
+      )
     }
-    if (!status.messages.every((message) => message.platform === 'youtube' && message.id.startsWith('youtube:'))) {
+    if (
+      !status.messages.every(
+        (message) => message.platform === 'youtube' && message.id.startsWith('youtube:')
+      )
+    ) {
       throw new Error('Fake feed contained unexpected message shapes.')
     }
 
@@ -75,7 +83,9 @@ try {
 
     const stopped = await request(ws, timeoutMs, 'liveChat.stop', {})
     if (stopped.sessionId) {
-      throw new Error(`liveChat.stop should clear the active session: ${JSON.stringify(stopped.sessionId)}`)
+      throw new Error(
+        `liveChat.stop should clear the active session: ${JSON.stringify(stopped.sessionId)}`
+      )
     }
 
     console.log(
@@ -134,9 +144,10 @@ function launchAndReadConnection() {
       detached: true,
       env: {
         ...process.env,
-        VIDEORC_SMOKE_PRINT_BACKEND_READY: '1',
+        VIDEORC_DISABLE_BACKEND_REAP: process.env.VIDEORC_DISABLE_BACKEND_REAP ?? '1',
+        VIDEORC_SMOKE_PRINT_BACKEND_READY: '1'
       },
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['ignore', 'pipe', 'pipe']
     })
 
     appProcess.stdout.setEncoding('utf8')
@@ -149,7 +160,11 @@ function launchAndReadConnection() {
     })
     appProcess.on('exit', (code, signal) => {
       clearTimeout(timer)
-      rejectConnection(new Error(`Dev app exited before the live-chat smoke completed: code=${code} signal=${signal}`))
+      rejectConnection(
+        new Error(
+          `Dev app exited before the live-chat smoke completed: code=${code} signal=${signal}`
+        )
+      )
     })
   })
 }

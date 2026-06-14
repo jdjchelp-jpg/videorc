@@ -31,7 +31,10 @@ try {
     if (!/^http:\/\/127\.0\.0\.1:\d+\/oauth\/callback$/.test(started.redirectUri)) {
       throw new Error(`OAuth redirect URI was not a loopback callback: ${started.redirectUri}`)
     }
-    if (!started.authUrl.includes(`state=${started.state}`) || !started.authUrl.includes('scope=account.read%20videos.write')) {
+    if (
+      !started.authUrl.includes(`state=${started.state}`) ||
+      !started.authUrl.includes('scope=account.read%20videos.write')
+    ) {
       throw new Error(`OAuth auth URL is missing state or normalized scope: ${started.authUrl}`)
     }
 
@@ -52,7 +55,9 @@ try {
       code: 'second-code'
     })
     if (reused.status !== 'unknown-state') {
-      throw new Error(`OAuth state should be single-use after loopback callback: ${JSON.stringify(reused)}`)
+      throw new Error(
+        `OAuth state should be single-use after loopback callback: ${JSON.stringify(reused)}`
+      )
     }
 
     const appProtocol = await request(ws, timeoutMs, 'platformAccounts.oauth.startProvider', {
@@ -60,7 +65,9 @@ try {
       redirectUri: 'videorc://oauth/callback'
     })
     if (appProtocol.redirectUri !== 'videorc://oauth/callback') {
-      throw new Error(`Provider OAuth did not preserve app-protocol redirect URI: ${JSON.stringify(appProtocol)}`)
+      throw new Error(
+        `Provider OAuth did not preserve app-protocol redirect URI: ${JSON.stringify(appProtocol)}`
+      )
     }
     if (
       !appProtocol.authUrl.includes('redirect_uri=videorc%3A%2F%2Foauth%2Fcallback') ||
@@ -76,7 +83,11 @@ try {
       errorDescription: 'Smoke provider cancellation.'
     })
     const failedEvent = await failedCallbackPromise
-    if (failedCallback.status !== 'failed' || failedEvent.status !== 'failed' || failedEvent.platform !== 'youtube') {
+    if (
+      failedCallback.status !== 'failed' ||
+      failedEvent.status !== 'failed' ||
+      failedEvent.platform !== 'youtube'
+    ) {
       throw new Error(
         `Provider OAuth app-protocol cancellation was not reported as failed: ${JSON.stringify({
           failedCallback,
@@ -85,7 +96,9 @@ try {
       )
     }
 
-    console.log(`OAuth smoke OK - loopback and app-protocol callbacks completed for ${callback.platform}.`)
+    console.log(
+      `OAuth smoke OK - loopback and app-protocol callbacks completed for ${callback.platform}.`
+    )
   } finally {
     ws.close()
   }
@@ -131,6 +144,7 @@ function launchAndReadConnection() {
       detached: true,
       env: {
         ...process.env,
+        VIDEORC_DISABLE_BACKEND_REAP: process.env.VIDEORC_DISABLE_BACKEND_REAP ?? '1',
         VIDEORC_YOUTUBE_CLIENT_ID: 'smoke-youtube-client-id',
         VIDEORC_SMOKE_PRINT_BACKEND_READY: '1'
       },
@@ -147,7 +161,9 @@ function launchAndReadConnection() {
     })
     appProcess.on('exit', (code, signal) => {
       clearTimeout(timer)
-      rejectConnection(new Error(`Dev app exited before OAuth smoke completed: code=${code} signal=${signal}`))
+      rejectConnection(
+        new Error(`Dev app exited before OAuth smoke completed: code=${code} signal=${signal}`)
+      )
     })
   })
 }

@@ -7,10 +7,12 @@ import { connectBackend, request } from './smoke-recording-session.mjs'
 
 const repoRoot = resolve(import.meta.dirname, '..')
 const outputDirectory = resolve(
-  process.env.VIDEORC_SMOKE_OUTPUT_DIR ?? join(tmpdir(), `videorc-encoder-bridge-smoke-${Date.now()}`)
+  process.env.VIDEORC_SMOKE_OUTPUT_DIR ??
+    join(tmpdir(), `videorc-encoder-bridge-smoke-${Date.now()}`)
 )
 const ffmpegPath = process.env.VIDEORC_SMOKE_FFMPEG_PATH ?? 'ffmpeg'
-const ffprobePath = process.env.VIDEORC_SMOKE_FFPROBE_PATH ?? resolveSiblingFfprobe(ffmpegPath) ?? 'ffprobe'
+const ffprobePath =
+  process.env.VIDEORC_SMOKE_FFPROBE_PATH ?? resolveSiblingFfprobe(ffmpegPath) ?? 'ffprobe'
 const timeoutMs = Number(process.env.VIDEORC_SMOKE_TIMEOUT_MS ?? 90000)
 const scenario = {
   width: Number(process.env.VIDEORC_ENCODER_BRIDGE_WIDTH ?? 640),
@@ -88,9 +90,11 @@ function verifyBridgeResult(result, outputPath) {
   }
   const size = statSync(outputPath).size
   if (size <= 0 || size !== result.fileBytes) {
-    throw new Error(`Encoder bridge output has wrong size: stat=${size}, result=${result.fileBytes}`)
+    throw new Error(
+      `Encoder bridge output has wrong size: stat=${size}, result=${result.fileBytes}`
+    )
   }
-  const expectedFrames = Math.ceil(scenario.durationMs / 1000 * scenario.fps)
+  const expectedFrames = Math.ceil((scenario.durationMs / 1000) * scenario.fps)
   if (result.framesWritten !== expectedFrames) {
     throw new Error(`Expected ${expectedFrames} bridge frames, got ${result.framesWritten}.`)
   }
@@ -110,7 +114,10 @@ function verifyProbe(probe) {
     throw new Error(`Expected probed FPS near ${scenario.fps}, got ${probe.fps}.`)
   }
   const expectedSeconds = scenario.durationMs / 1000
-  if (probe.durationSeconds < expectedSeconds - 0.35 || probe.durationSeconds > expectedSeconds + 0.75) {
+  if (
+    probe.durationSeconds < expectedSeconds - 0.35 ||
+    probe.durationSeconds > expectedSeconds + 0.75
+  ) {
     throw new Error(`Expected duration near ${expectedSeconds}s, got ${probe.durationSeconds}s.`)
   }
 }
@@ -167,7 +174,9 @@ function probeVideo(outputPath) {
 }
 
 function fpsFromRate(rate) {
-  const [num, den] = String(rate ?? '').split('/').map(Number)
+  const [num, den] = String(rate ?? '')
+    .split('/')
+    .map(Number)
   if (!Number.isFinite(num) || !Number.isFinite(den) || den === 0) {
     return 0
   }
@@ -177,7 +186,9 @@ function fpsFromRate(rate) {
 function assertFfprobeAvailable() {
   const result = spawnSync(ffprobePath, ['-version'], { encoding: 'utf8' })
   if (result.status !== 0) {
-    throw new Error(`FFprobe is unavailable for encoder bridge smoke: ${result.stderr || result.stdout}`)
+    throw new Error(
+      `FFprobe is unavailable for encoder bridge smoke: ${result.stderr || result.stdout}`
+    )
   }
 }
 
@@ -196,6 +207,7 @@ function launchAndReadConnection() {
       detached: true,
       env: {
         ...process.env,
+        VIDEORC_DISABLE_BACKEND_REAP: process.env.VIDEORC_DISABLE_BACKEND_REAP ?? '1',
         VIDEORC_SMOKE_PRINT_BACKEND_READY: '1'
       },
       stdio: ['ignore', 'pipe', 'pipe']
@@ -211,7 +223,11 @@ function launchAndReadConnection() {
     })
     appProcess.on('exit', (code, signal) => {
       clearTimeout(timer)
-      rejectConnection(new Error(`Dev app exited before Encoder bridge smoke completed: code=${code} signal=${signal}`))
+      rejectConnection(
+        new Error(
+          `Dev app exited before Encoder bridge smoke completed: code=${code} signal=${signal}`
+        )
+      )
     })
   })
 }

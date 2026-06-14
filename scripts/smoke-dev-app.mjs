@@ -41,6 +41,7 @@ function launchAndReadConnection() {
       detached: true,
       env: {
         ...process.env,
+        VIDEORC_DISABLE_BACKEND_REAP: process.env.VIDEORC_DISABLE_BACKEND_REAP ?? '1',
         VIDEORC_USER_DATA_DIR: userDataDir,
         VIDEORC_SMOKE_PRINT_BACKEND_READY: '1'
       },
@@ -57,7 +58,9 @@ function launchAndReadConnection() {
     })
     appProcess.on('exit', (code, signal) => {
       clearTimeout(timer)
-      rejectConnection(new Error(`Dev app exited before smoke test completed: code=${code} signal=${signal}`))
+      rejectConnection(
+        new Error(`Dev app exited before smoke test completed: code=${code} signal=${signal}`)
+      )
     })
   })
 }

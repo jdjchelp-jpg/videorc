@@ -11,11 +11,17 @@ const measurementMs = Number(process.env.VIDEORC_PREVIEW_MOTION_SAMPLE_MS ?? 100
 const obsMinFps = Number(process.env.VIDEORC_PREVIEW_MOTION_OBS_MIN_FPS ?? 55)
 const obsMaxFrameAgeMs = Number(process.env.VIDEORC_PREVIEW_MOTION_OBS_MAX_AGE_MS ?? 100)
 const obsMaxIntervalP95Ms = Number(process.env.VIDEORC_PREVIEW_MOTION_OBS_MAX_INTERVAL_P95_MS ?? 24)
-const obsMaxCompositorFrameLag = Number(process.env.VIDEORC_PREVIEW_MOTION_OBS_MAX_COMPOSITOR_LAG ?? 1)
+const obsMaxCompositorFrameLag = Number(
+  process.env.VIDEORC_PREVIEW_MOTION_OBS_MAX_COMPOSITOR_LAG ?? 1
+)
 const expectedSurfaceTransport =
-  process.env.VIDEORC_EXPECT_NATIVE_METAL_PREVIEW === '1' ? 'native-surface' : 'electron-proof-surface'
+  process.env.VIDEORC_EXPECT_NATIVE_METAL_PREVIEW === '1'
+    ? 'native-surface'
+    : 'electron-proof-surface'
 const expectedSurfaceBacking =
-  process.env.VIDEORC_EXPECT_NATIVE_METAL_PREVIEW === '1' ? 'cametal-layer' : 'electron-browser-window'
+  process.env.VIDEORC_EXPECT_NATIVE_METAL_PREVIEW === '1'
+    ? 'cametal-layer'
+    : 'electron-browser-window'
 const outputDirectory = resolve(
   process.env.VIDEORC_SMOKE_OUTPUT_DIR ?? join(tmpdir(), `videorc-preview-motion-${Date.now()}`)
 )
@@ -114,10 +120,14 @@ async function exerciseLayoutAndMotion(smoke) {
 
 function assertNativeMotionHealthy(renderer) {
   if ((renderer.measuredFps ?? 0) < obsMinFps) {
-    throw new Error(`Native preview measured ${format(renderer.measuredFps)}fps, expected at least ${obsMinFps}.`)
+    throw new Error(
+      `Native preview measured ${format(renderer.measuredFps)}fps, expected at least ${obsMinFps}.`
+    )
   }
   if ((renderer.intervalP95Ms ?? Number.POSITIVE_INFINITY) > obsMaxIntervalP95Ms) {
-    throw new Error(`Native preview p95 interval ${format(renderer.intervalP95Ms)}ms exceeded ${obsMaxIntervalP95Ms}ms.`)
+    throw new Error(
+      `Native preview p95 interval ${format(renderer.intervalP95Ms)}ms exceeded ${obsMaxIntervalP95Ms}ms.`
+    )
   }
   if ((renderer.blankFrames ?? 0) > 0) {
     throw new Error(`Native preview reported ${renderer.blankFrames} blank frame(s).`)
@@ -128,15 +138,23 @@ function assertNativeBootstrap(result, options = {}) {
   if (!result.hasStage || !result.hasSurface) {
     throw new Error(`Preview stage did not render: ${JSON.stringify(result)}`)
   }
-  if (!result.hasVideorcBridge || !result.hasCreateNativePreviewSurface || !result.hasUpdateNativePreviewSurfaceBounds) {
+  if (
+    !result.hasVideorcBridge ||
+    !result.hasCreateNativePreviewSurface ||
+    !result.hasUpdateNativePreviewSurfaceBounds
+  ) {
     throw new Error(`Native preview bridge is incomplete: ${JSON.stringify(result)}`)
   }
   if (options.requireNativePreview) {
     if (!result.hasNativePlaceholder) {
-      throw new Error(`Preview stage did not render the native surface placeholder: ${JSON.stringify(result)}`)
+      throw new Error(
+        `Preview stage did not render the native surface placeholder: ${JSON.stringify(result)}`
+      )
     }
     if ((result.previewImageCount ?? 0) !== 0 || result.hasJpegPollingPreviewImage) {
-      throw new Error(`Native preview rendered a JPEG/MJPEG fallback image: ${JSON.stringify(result)}`)
+      throw new Error(
+        `Native preview rendered a JPEG/MJPEG fallback image: ${JSON.stringify(result)}`
+      )
     }
   }
 }
@@ -159,16 +177,25 @@ function nativePreviewCurrentnessHealthy(renderer, diagnostics) {
   }
   return (
     nativePreviewSourcePixelsPresent(renderer) &&
-    (nativePreviewCompositorFrameLag(renderer, diagnostics) ?? Number.POSITIVE_INFINITY) <= obsMaxCompositorFrameLag
+    (nativePreviewCompositorFrameLag(renderer, diagnostics) ?? Number.POSITIVE_INFINITY) <=
+      obsMaxCompositorFrameLag
   )
 }
 
 function nativePreviewSourcePixelsPresent(renderer) {
-  return Boolean(renderer.sourcePixelsPresent ?? renderer.status?.sourcePixelsPresent ?? renderer.liveLayerCount > 0)
+  return Boolean(
+    renderer.sourcePixelsPresent ??
+    renderer.status?.sourcePixelsPresent ??
+    renderer.liveLayerCount > 0
+  )
 }
 
 function nativePreviewCompositorFrameLag(renderer, diagnostics) {
-  return numeric(renderer.compositorFrameLag ?? renderer.status?.compositorFrameLag ?? diagnostics.previewCompositorFrameLag)
+  return numeric(
+    renderer.compositorFrameLag ??
+      renderer.status?.compositorFrameLag ??
+      diagnostics.previewCompositorFrameLag
+  )
 }
 
 function currentnessSummary(renderer, diagnostics) {
@@ -194,7 +221,9 @@ async function waitForNativeSurface(ws, previousFrames = -1) {
     }
     await sleep(150)
   }
-  throw new Error(`Native preview surface did not become live. Last status: ${JSON.stringify(lastStatus)}`)
+  throw new Error(
+    `Native preview surface did not become live. Last status: ${JSON.stringify(lastStatus)}`
+  )
 }
 
 async function smokeCommand(smoke, command, params = {}) {
@@ -239,6 +268,7 @@ function launchAndReadConnections() {
       detached: true,
       env: {
         ...process.env,
+        VIDEORC_DISABLE_BACKEND_REAP: process.env.VIDEORC_DISABLE_BACKEND_REAP ?? '1',
         VIDEORC_NATIVE_PREVIEW_SURFACE: '1',
         VIDEORC_SMOKE_OUTPUT_DIR: outputDirectory,
         VIDEORC_SMOKE_PREVIEW_MOTION: '1',
@@ -265,7 +295,11 @@ function launchAndReadConnections() {
     })
     appProcess.on('exit', (code, signal) => {
       clearTimeout(timer)
-      rejectConnections(new Error(`Dev app exited before preview motion smoke completed: code=${code} signal=${signal}`))
+      rejectConnections(
+        new Error(
+          `Dev app exited before preview motion smoke completed: code=${code} signal=${signal}`
+        )
+      )
     })
   })
 }

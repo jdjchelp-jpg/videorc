@@ -168,7 +168,8 @@ function verifyResults(outputPath, targetSnapshots, diagnosticSamples) {
   }
 
   const duplicateSamples = diagnosticSamples.filter(
-    (sample) => Array.isArray(sample?.duplicateCaptureSources) && sample.duplicateCaptureSources.length > 0
+    (sample) =>
+      Array.isArray(sample?.duplicateCaptureSources) && sample.duplicateCaptureSources.length > 0
   )
   if (duplicateSamples.length > 0) {
     console.log(`  ✗ duplicate capture appeared in ${duplicateSamples.length} diagnostic sample(s)`)
@@ -191,13 +192,17 @@ function verifyResults(outputPath, targetSnapshots, diagnosticSamples) {
           `  ✓ ${badTarget.label} reported "failed" — dead leg dropped, others kept streaming`
         )
       } else {
-        console.log(`  ✗ ${badTarget.label} should report failed, got ${badRuntime?.state ?? 'absent'}`)
+        console.log(
+          `  ✗ ${badTarget.label} should report failed, got ${badRuntime?.state ?? 'absent'}`
+        )
         failures.push(`offline target not reported failed (${badRuntime?.state ?? 'absent'})`)
       }
       for (const good of targets) {
         const runtime = latest.find((entry) => entry.targetId === good.id)
         if (runtime?.state !== 'live') {
-          console.log(`  ✗ ${good.label} should be live in snapshot, got ${runtime?.state ?? 'absent'}`)
+          console.log(
+            `  ✗ ${good.label} should be live in snapshot, got ${runtime?.state ?? 'absent'}`
+          )
           failures.push(`${good.label} not live in snapshot`)
         }
       }
@@ -341,6 +346,7 @@ function launchAndReadConnection() {
       detached: true,
       env: {
         ...process.env,
+        VIDEORC_DISABLE_BACKEND_REAP: process.env.VIDEORC_DISABLE_BACKEND_REAP ?? '1',
         VIDEORC_PREMIUM_FEATURES: '1',
         VIDEORC_USER_DATA_DIR: userDataDir,
         VIDEORC_SMOKE_PRINT_BACKEND_READY: '1'
@@ -358,7 +364,9 @@ function launchAndReadConnection() {
     })
     appProcess.on('exit', (code, signal) => {
       clearTimeout(timer)
-      rejectConnection(new Error(`Dev app exited before smoke test completed: code=${code} signal=${signal}`))
+      rejectConnection(
+        new Error(`Dev app exited before smoke test completed: code=${code} signal=${signal}`)
+      )
     })
   })
 }

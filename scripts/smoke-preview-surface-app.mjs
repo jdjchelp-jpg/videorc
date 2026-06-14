@@ -521,6 +521,7 @@ function launchAndReadConnections() {
       detached: true,
       env: {
         ...process.env,
+        VIDEORC_DISABLE_BACKEND_REAP: process.env.VIDEORC_DISABLE_BACKEND_REAP ?? '1',
         VIDEORC_SMOKE_OUTPUT_DIR: outputDirectory,
         VIDEORC_NATIVE_PREVIEW_SURFACE: '1',
         VIDEORC_SMOKE_PREVIEW_MOTION: '1',

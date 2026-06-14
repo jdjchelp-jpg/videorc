@@ -23,7 +23,9 @@ try {
 
     const refreshedAccounts = await request(ws, timeoutMs, 'platformAccounts.refresh')
     if (!Array.isArray(refreshedAccounts)) {
-      throw new Error(`Platform account refresh should return validation results: ${JSON.stringify(refreshedAccounts)}`)
+      throw new Error(
+        `Platform account refresh should return validation results: ${JSON.stringify(refreshedAccounts)}`
+      )
     }
 
     await request(ws, timeoutMs, 'streamTargets.metadata.update', {
@@ -63,7 +65,9 @@ try {
 
 function assertProviderCredentials(credentials) {
   if (!Array.isArray(credentials)) {
-    throw new Error(`Provider credentials response was not an array: ${JSON.stringify(credentials)}`)
+    throw new Error(
+      `Provider credentials response was not an array: ${JSON.stringify(credentials)}`
+    )
   }
   const byPlatform = new Map(credentials.map((credential) => [credential.platform, credential]))
 
@@ -95,7 +99,9 @@ function requireCredential(byPlatform, platform) {
     throw new Error(`Missing credential status for ${platform}.`)
   }
   if (credential.clientIdSource !== 'environment') {
-    throw new Error(`${platform} should use the smoke environment client ID, got ${credential.clientIdSource}.`)
+    throw new Error(
+      `${platform} should use the smoke environment client ID, got ${credential.clientIdSource}.`
+    )
   }
   return credential
 }
@@ -141,8 +147,14 @@ function preflightStreamingFixture() {
 }
 
 function assertPreflight(preflight) {
-  if (preflight?.valid !== false || !Array.isArray(preflight.destinations) || !Array.isArray(preflight.issues)) {
-    throw new Error(`Go Live preflight should return invalid destinations/issues: ${JSON.stringify(preflight)}`)
+  if (
+    preflight?.valid !== false ||
+    !Array.isArray(preflight.destinations) ||
+    !Array.isArray(preflight.issues)
+  ) {
+    throw new Error(
+      `Go Live preflight should return invalid destinations/issues: ${JSON.stringify(preflight)}`
+    )
   }
 
   const youtube = preflight.destinations.find((destination) => destination.platform === 'youtube')
@@ -150,7 +162,9 @@ function assertPreflight(preflight) {
     throw new Error(`Manual YouTube preflight should be blocked: ${JSON.stringify(preflight)}`)
   }
   if (!youtube.message.includes('server URL and stream key')) {
-    throw new Error(`Manual YouTube preflight should explain missing RTMP credentials: ${JSON.stringify(youtube)}`)
+    throw new Error(
+      `Manual YouTube preflight should explain missing RTMP credentials: ${JSON.stringify(youtube)}`
+    )
   }
 
   const x = preflight.destinations.find((destination) => destination.platform === 'x')
@@ -158,13 +172,21 @@ function assertPreflight(preflight) {
     throw new Error(`OAuth X preflight should be blocked: ${JSON.stringify(preflight)}`)
   }
   if (!x.message.includes('connected account')) {
-    throw new Error(`OAuth X preflight should explain missing connected account: ${JSON.stringify(x)}`)
+    throw new Error(
+      `OAuth X preflight should explain missing connected account: ${JSON.stringify(x)}`
+    )
   }
 
-  const hasManualIssue = preflight.issues.some((issue) => issue.platform === 'youtube' && issue.severity === 'error')
-  const hasOauthIssue = preflight.issues.some((issue) => issue.platform === 'x' && issue.severity === 'error')
+  const hasManualIssue = preflight.issues.some(
+    (issue) => issue.platform === 'youtube' && issue.severity === 'error'
+  )
+  const hasOauthIssue = preflight.issues.some(
+    (issue) => issue.platform === 'x' && issue.severity === 'error'
+  )
   if (!hasManualIssue || !hasOauthIssue) {
-    throw new Error(`Go Live preflight should include per-destination errors: ${JSON.stringify(preflight)}`)
+    throw new Error(
+      `Go Live preflight should include per-destination errors: ${JSON.stringify(preflight)}`
+    )
   }
 }
 
@@ -211,21 +233,31 @@ function preflightSecretRefFixture() {
 }
 
 function assertSecretRefPreflight(preflight) {
-  if (preflight?.valid !== true || !Array.isArray(preflight.destinations) || !Array.isArray(preflight.issues)) {
+  if (
+    preflight?.valid !== true ||
+    !Array.isArray(preflight.destinations) ||
+    !Array.isArray(preflight.issues)
+  ) {
     throw new Error(`Secret-ref Go Live preflight should be valid: ${JSON.stringify(preflight)}`)
   }
   if (preflight.issues.length !== 0) {
-    throw new Error(`Secret-ref Go Live preflight should not report issues: ${JSON.stringify(preflight)}`)
+    throw new Error(
+      `Secret-ref Go Live preflight should not report issues: ${JSON.stringify(preflight)}`
+    )
   }
 
   const youtube = preflight.destinations.find((destination) => destination.platform === 'youtube')
   if (!youtube || !youtube.ready || youtube.authMode !== 'manual-rtmp') {
-    throw new Error(`Manual YouTube secret-ref preflight should be ready: ${JSON.stringify(preflight)}`)
+    throw new Error(
+      `Manual YouTube secret-ref preflight should be ready: ${JSON.stringify(preflight)}`
+    )
   }
 
   const custom = preflight.destinations.find((destination) => destination.platform === 'custom')
   if (!custom || !custom.ready || custom.authMode !== 'manual-rtmp') {
-    throw new Error(`Custom full-url secret-ref preflight should be ready: ${JSON.stringify(preflight)}`)
+    throw new Error(
+      `Custom full-url secret-ref preflight should be ready: ${JSON.stringify(preflight)}`
+    )
   }
 }
 
@@ -240,7 +272,9 @@ function assertXCapability(capability) {
     throw new Error(`X native capability guard mismatch: ${JSON.stringify(capability)}`)
   }
   if (!String(capability.message).includes('partner/API path')) {
-    throw new Error(`X capability message should explain the partner/API path: ${JSON.stringify(capability)}`)
+    throw new Error(
+      `X capability message should explain the partner/API path: ${JSON.stringify(capability)}`
+    )
   }
   if (!String(capability.docsUrl).startsWith('https://help.x.com/')) {
     throw new Error(`X capability should include Producer docs URL: ${JSON.stringify(capability)}`)
@@ -293,6 +327,7 @@ function launchAndReadConnection() {
       detached: true,
       env: {
         ...process.env,
+        VIDEORC_DISABLE_BACKEND_REAP: process.env.VIDEORC_DISABLE_BACKEND_REAP ?? '1',
         VIDEORC_SMOKE_PRINT_BACKEND_READY: '1',
         VIDEORC_USER_DATA_DIR: process.env.VIDEORC_USER_DATA_DIR ?? join(stateRoot, 'user-data'),
         VIDEORC_DATABASE_PATH:
@@ -317,7 +352,11 @@ function launchAndReadConnection() {
     })
     appProcess.on('exit', (code, signal) => {
       clearTimeout(timer)
-      rejectConnection(new Error(`Dev app exited before OAuth guard smoke completed: code=${code} signal=${signal}`))
+      rejectConnection(
+        new Error(
+          `Dev app exited before OAuth guard smoke completed: code=${code} signal=${signal}`
+        )
+      )
     })
   })
 }

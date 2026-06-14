@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { closeSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
 export interface OwnedProcessRecord {
@@ -10,9 +10,13 @@ export interface OwnedProcessRecord {
 
 type KillProcess = (pid: number, signal: NodeJS.Signals) => void
 type Schedule = (callback: () => void, delayMs: number) => unknown
+type Sleep = (delayMs: number) => void
+type OpenExclusiveFile = (path: string) => number
+type CloseFile = (fileDescriptor: number) => void
+type RemoveFile = (path: string) => void
 
 export interface OwnedProcessRegistryOptions {
-  ledgerPath: string
+  ledgerPath: string | string[]
   currentPid?: number
   platform?: NodeJS.Platform
   now?: () => string
@@ -28,12 +32,102 @@ export interface ReapOwnedProcessesOptions {
   killGraceMs?: number
 }
 
+export interface OwnedProcessStartupLockOptions {
+  lockPath: string
+  timeoutMs?: number
+  retryMs?: number
+  currentPid?: number
+  nowMs?: () => number
+  sleep?: Sleep
+  makeDir?: (path: string) => void
+  openFileExclusive?: OpenExclusiveFile
+  closeFile?: CloseFile
+  removeFile?: RemoveFile
+  writeFile?: (path: string, contents: string) => void
+}
+
 export function ownedProcessLedgerPath(userDataPath: string, workspaceRoot: string): string {
   const key = createHash('sha256').update(workspaceRoot).digest('hex').slice(0, 16)
   return join(userDataPath, 'owned-processes', `${key}.json`)
 }
 
+export function globalOwnedProcessLedgerPath(appDataPath: string, appName: string): string {
+  return join(appDataPath, appName, 'owned-processes', 'global.json')
+}
+
+export function ownedProcessStartupLockPath(appDataPath: string, appName: string): string {
+  return join(appDataPath, appName, 'owned-processes', 'startup.lock')
+}
+
+export function acquireOwnedProcessStartupLock(
+  options: OwnedProcessStartupLockOptions
+): () => void {
+  const timeoutMs = options.timeoutMs ?? 5000
+  const retryMs = options.retryMs ?? 50
+  const currentPid = options.currentPid ?? process.pid
+  const nowMs = options.nowMs ?? (() => Date.now())
+  const sleep = options.sleep ?? sleepSync
+  const makeDir = options.makeDir ?? ((path) => mkdirSync(path, { recursive: true }))
+  const openFileExclusive = options.openFileExclusive ?? ((path) => openSync(path, 'wx', 0o600))
+  const closeFile = options.closeFile ?? ((fileDescriptor) => closeSync(fileDescriptor))
+  const removeFile = options.removeFile ?? ((path) => unlinkSync(path))
+  const writeFile = options.writeFile ?? ((path, contents) => writeFileSync(path, contents))
+  const startedAtMs = nowMs()
+
+  makeDir(dirname(options.lockPath))
+
+  for (;;) {
+    let fileDescriptor: number | null = null
+    try {
+      fileDescriptor = openFileExclusive(options.lockPath)
+      writeFile(
+        options.lockPath,
+        `${JSON.stringify({ pid: currentPid, acquiredAt: new Date().toISOString() }, null, 2)}\n`
+      )
+      const ownedFileDescriptor = fileDescriptor
+      let released = false
+      return () => {
+        if (released) {
+          return
+        }
+        released = true
+        try {
+          closeFile(ownedFileDescriptor)
+        } catch {
+          // The descriptor may already be closed; releasing the lock should be best-effort.
+        }
+        try {
+          removeFile(options.lockPath)
+        } catch {
+          // A later process may already have cleaned up a stale lock.
+        }
+      }
+    } catch (error) {
+      if (fileDescriptor !== null) {
+        try {
+          closeFile(fileDescriptor)
+        } catch {
+          // Best effort.
+        }
+      }
+
+      const code =
+        typeof error === 'object' && error ? (error as { code?: string }).code : undefined
+      if (code !== 'EEXIST') {
+        throw error
+      }
+      if (nowMs() - startedAtMs >= timeoutMs) {
+        throw new Error(`Timed out waiting for owned process startup lock at ${options.lockPath}`, {
+          cause: error
+        })
+      }
+      sleep(retryMs)
+    }
+  }
+}
+
 export class OwnedProcessRegistry {
+  private readonly ledgerPaths: string[]
   private readonly currentPid: number
   private readonly platform: NodeJS.Platform
   private readonly now: () => string
@@ -44,6 +138,10 @@ export class OwnedProcessRegistry {
   private readonly schedule: Schedule
 
   constructor(private readonly options: OwnedProcessRegistryOptions) {
+    const ledgerPaths = Array.isArray(options.ledgerPath)
+      ? options.ledgerPath
+      : [options.ledgerPath]
+    this.ledgerPaths = Array.from(new Set(ledgerPaths))
     this.currentPid = options.currentPid ?? process.pid
     this.platform = options.platform ?? process.platform
     this.now = options.now ?? (() => new Date().toISOString())
@@ -109,8 +207,14 @@ export class OwnedProcessRegistry {
   }
 
   private readRecords(): OwnedProcessRecord[] {
+    return dedupeRecords(
+      this.ledgerPaths.flatMap((ledgerPath) => this.readLedgerRecords(ledgerPath))
+    )
+  }
+
+  private readLedgerRecords(ledgerPath: string): OwnedProcessRecord[] {
     try {
-      const parsed = JSON.parse(this.readFile(this.options.ledgerPath)) as unknown
+      const parsed = JSON.parse(this.readFile(ledgerPath)) as unknown
       if (!Array.isArray(parsed)) {
         return []
       }
@@ -121,8 +225,10 @@ export class OwnedProcessRegistry {
   }
 
   private writeRecords(records: OwnedProcessRecord[]): void {
-    this.makeDir(dirname(this.options.ledgerPath))
-    this.writeFile(this.options.ledgerPath, `${JSON.stringify(records, null, 2)}\n`)
+    for (const ledgerPath of this.ledgerPaths) {
+      this.makeDir(dirname(ledgerPath))
+      this.writeFile(ledgerPath, `${JSON.stringify(records, null, 2)}\n`)
+    }
   }
 }
 
@@ -151,4 +257,8 @@ function isOwnedProcessRecord(value: unknown): value is OwnedProcessRecord {
 
 function validPid(pid: unknown): pid is number {
   return typeof pid === 'number' && Number.isInteger(pid) && pid > 1
+}
+
+function sleepSync(delayMs: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delayMs)
 }

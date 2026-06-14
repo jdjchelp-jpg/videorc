@@ -8,21 +8,27 @@ import { assertSourceCompleteCompositorHealthy } from './lib/native-preview-sour
 import { analyzeRecording, writeReports } from './lib/recording-analyzer.mjs'
 import { summarizeNativePreviewRecordingDiagnostics } from './lib/native-preview-diagnostics.mjs'
 import { createPreviewSurfaceOutputGuard } from './lib/smoke-output-guards.mjs'
-import { analyzeStartupResolution, writeStartupReports } from './lib/startup-resolution-analyzer.mjs'
+import {
+  analyzeStartupResolution,
+  writeStartupReports
+} from './lib/startup-resolution-analyzer.mjs'
 import { connectBackend, request } from './smoke-recording-session.mjs'
 
 const repoRoot = resolve(import.meta.dirname, '..')
 const outputDirectory = resolve(
-  process.env.VIDEORC_SMOKE_OUTPUT_DIR ?? join(tmpdir(), `videorc-recording-native-preview-${Date.now()}`)
+  process.env.VIDEORC_SMOKE_OUTPUT_DIR ??
+    join(tmpdir(), `videorc-recording-native-preview-${Date.now()}`)
 )
 const ffmpegPath = process.env.VIDEORC_SMOKE_FFMPEG_PATH ?? 'ffmpeg'
-const ffprobePath = process.env.VIDEORC_SMOKE_FFPROBE_PATH ?? resolveSiblingFfprobe(ffmpegPath) ?? 'ffprobe'
+const ffprobePath =
+  process.env.VIDEORC_SMOKE_FFPROBE_PATH ?? resolveSiblingFfprobe(ffmpegPath) ?? 'ffprobe'
 const timeoutMs = Number(process.env.VIDEORC_SMOKE_TIMEOUT_MS ?? 120000)
 const launchAttempts = Number(process.env.VIDEORC_NATIVE_PREVIEW_LAUNCH_ATTEMPTS ?? 2)
 const recordingMs = Number(process.env.VIDEORC_NATIVE_PREVIEW_RECORDING_MS ?? 15000)
 const warmupMs = Number(process.env.VIDEORC_NATIVE_PREVIEW_WARMUP_MS ?? 5000)
 const previewMeasurementMs = Number(
-  process.env.VIDEORC_NATIVE_PREVIEW_MEASUREMENT_MS ?? Math.max(3000, Math.min(6000, recordingMs - 1500))
+  process.env.VIDEORC_NATIVE_PREVIEW_MEASUREMENT_MS ??
+    Math.max(3000, Math.min(6000, recordingMs - 1500))
 )
 const minSpeed = Number(process.env.VIDEORC_NATIVE_PREVIEW_MIN_SPEED ?? 0.98)
 const maxSkewMs = Number(process.env.VIDEORC_NATIVE_PREVIEW_MAX_AV_SKEW_MS ?? 250)
@@ -34,18 +40,27 @@ const maxPreviewInputToPresentLatencyP95Ms = Number(
 const maxPreviewInputToPresentLatencyP99Ms = Number(
   process.env.VIDEORC_NATIVE_PREVIEW_MAX_INPUT_TO_PRESENT_P99_MS ?? 100
 )
-const maxPreviewCompositorFrameLag = Number(process.env.VIDEORC_NATIVE_PREVIEW_MAX_COMPOSITOR_FRAME_LAG ?? 2)
+const maxPreviewCompositorFrameLag = Number(
+  process.env.VIDEORC_NATIVE_PREVIEW_MAX_COMPOSITOR_FRAME_LAG ?? 2
+)
 const layoutStressUpdates = Number(process.env.VIDEORC_NATIVE_PREVIEW_LAYOUT_STRESS_UPDATES ?? 0)
-const layoutStressIntervalMs = Number(process.env.VIDEORC_NATIVE_PREVIEW_LAYOUT_STRESS_INTERVAL_MS ?? 750)
+const layoutStressIntervalMs = Number(
+  process.env.VIDEORC_NATIVE_PREVIEW_LAYOUT_STRESS_INTERVAL_MS ?? 750
+)
 const includeHiddenPreviewScenario = process.env.VIDEORC_NATIVE_PREVIEW_INCLUDE_HIDDEN === '1'
 const sourceCompleteScene = process.env.VIDEORC_NATIVE_PREVIEW_SOURCE_COMPLETE_SCENE === '1'
 const bridgeVideoToolboxProbe = process.env.VIDEORC_ENCODER_BRIDGE_VIDEOTOOLBOX_PROBE === '1'
-const bridgeVideoOutput = process.env.VIDEORC_ENCODER_BRIDGE_VIDEO_OUTPUT ?? 'videotoolbox-h264-mpegts'
+const bridgeVideoOutput =
+  process.env.VIDEORC_ENCODER_BRIDGE_VIDEO_OUTPUT ?? 'videotoolbox-h264-mpegts'
 const reportOnly = process.env.VIDEORC_NATIVE_PREVIEW_REPORT_ONLY === '1'
 const expectedSurfaceTransport =
-  process.env.VIDEORC_EXPECT_NATIVE_METAL_PREVIEW === '1' ? 'native-surface' : 'electron-proof-surface'
+  process.env.VIDEORC_EXPECT_NATIVE_METAL_PREVIEW === '1'
+    ? 'native-surface'
+    : 'electron-proof-surface'
 const expectedSurfaceBacking =
-  process.env.VIDEORC_EXPECT_NATIVE_METAL_PREVIEW === '1' ? 'cametal-layer' : 'electron-browser-window'
+  process.env.VIDEORC_EXPECT_NATIVE_METAL_PREVIEW === '1'
+    ? 'cametal-layer'
+    : 'electron-browser-window'
 
 const visibleScenarios = [
   ...(process.env.VIDEORC_NATIVE_PREVIEW_INCLUDE_1440 === '1'
@@ -103,7 +118,9 @@ async function runNativePreviewRecordingSmoke(connection, smoke) {
 
     const health = await request(ws, timeoutMs, 'health.ping', { ffmpegPath })
     if (!health?.ffmpeg?.available) {
-      throw new Error(health?.ffmpeg?.message ?? 'FFmpeg is unavailable for native-preview recording smoke.')
+      throw new Error(
+        health?.ffmpeg?.message ?? 'FFmpeg is unavailable for native-preview recording smoke.'
+      )
     }
     await assertFfprobeAvailable()
     console.log(`Native-preview recording smoke using FFmpeg: ${ffmpegPath}`)
@@ -150,14 +167,23 @@ async function runNativePreviewRecordingSmoke(connection, smoke) {
   }
 }
 
-async function runNativePreviewRecordingScenario(ws, smoke, samples, previewSurfaceSamples, scenario, previousSurface) {
+async function runNativePreviewRecordingScenario(
+  ws,
+  smoke,
+  samples,
+  previewSurfaceSamples,
+  scenario,
+  previousSurface
+) {
   samples.length = 0
   previewSurfaceSamples.length = 0
   const expectsPreview = scenario.previewVisible !== false
   const scenarioStartedAt = Date.now()
   const started = await request(ws, timeoutMs, 'session.start', sessionParams(scenario))
   if (started.state !== 'recording') {
-    throw new Error(`[${scenario.label}] Expected recording state after start, got ${started.state}.`)
+    throw new Error(
+      `[${scenario.label}] Expected recording state after start, got ${started.state}.`
+    )
   }
   const recordingStartedAt = Date.now()
   const activeSceneRevision = Date.now()
@@ -200,7 +226,9 @@ async function runNativePreviewRecordingScenario(ws, smoke, samples, previewSurf
   const stopped = await request(ws, timeoutMs, 'session.stop')
   const outputPath = stopped.outputPath ?? started.outputPath
   if (!outputPath || !existsSync(outputPath)) {
-    throw new Error(`[${scenario.label}] Recording output was not created: ${outputPath ?? 'missing path'}`)
+    throw new Error(
+      `[${scenario.label}] Recording output was not created: ${outputPath ?? 'missing path'}`
+    )
   }
   const size = statSync(outputPath).size
   if (size <= 0) {
@@ -246,7 +274,12 @@ async function runNativePreviewRecordingScenario(ws, smoke, samples, previewSurf
   })
   assertRecordingDurationHealthy(scenario, recordingReport, expectedDurationMs)
 
-  assertStatsHealthy(scenario, stats, { startupReport, recordingReport }, { previewExpected: expectsPreview })
+  assertStatsHealthy(
+    scenario,
+    stats,
+    { startupReport, recordingReport },
+    { previewExpected: expectsPreview }
+  )
   if (expectsPreview) {
     if (stats.nativePreviewSamples === 0) {
       throw new Error(
@@ -264,9 +297,12 @@ async function runNativePreviewRecordingScenario(ws, smoke, samples, previewSurf
 
   const skew = await audioVideoSkewMs(outputPath)
   if (skew > maxSkewMs) {
-    failOrWarn(`[${scenario.label}] Audio/video duration skew ${skew.toFixed(1)}ms exceeded ${maxSkewMs}ms.`)
+    failOrWarn(
+      `[${scenario.label}] Audio/video duration skew ${skew.toFixed(1)}ms exceeded ${maxSkewMs}ms.`
+    )
   }
-  const measuredCompositorLag = measurement?.compositorFrameLag ?? stats.maxPreviewCompositorFrameLag
+  const measuredCompositorLag =
+    measurement?.compositorFrameLag ?? stats.maxPreviewCompositorFrameLag
   const previewSummary = expectsPreview
     ? `preview ${format(measurement.measuredFps)}fps, p95 ${format(measurement.intervalP95Ms)}ms, diagnostic present ${format(stats.minPreviewPresentFps)}fps, source-to-present p95 ${format(stats.maxPreviewInputToPresentLatencyP95Ms)}ms/p99 ${format(stats.maxPreviewInputToPresentLatencyP99Ms)}ms, compositor lag ${format(measuredCompositorLag)} frame(s)`
     : `preview hidden, live preview samples ${stats.nativePreviewSamples}`
@@ -303,7 +339,9 @@ async function hideNativePreviewSurface(ws, smoke) {
 async function assertSameRunningSession(ws, sessionId) {
   const status = await request(ws, timeoutMs, 'recording.status')
   if (status.sessionId !== sessionId || status.state !== 'recording') {
-    throw new Error(`Scene update restarted or stopped recording: expected ${sessionId}/recording, got ${status.sessionId}/${status.state}.`)
+    throw new Error(
+      `Scene update restarted or stopped recording: expected ${sessionId}/recording, got ${status.sessionId}/${status.state}.`
+    )
   }
 }
 
@@ -498,7 +536,9 @@ async function waitForNativeSurface(ws, previousFrames = -1) {
     }
     await sleep(150)
   }
-  throw new Error(`Native preview surface did not become live. Last status: ${JSON.stringify(lastStatus)}`)
+  throw new Error(
+    `Native preview surface did not become live. Last status: ${JSON.stringify(lastStatus)}`
+  )
 }
 
 async function waitForHiddenNativeSurface(ws) {
@@ -516,7 +556,9 @@ async function waitForHiddenNativeSurface(ws) {
     }
     await sleep(150)
   }
-  throw new Error(`Native preview surface did not stay hidden. Last status: ${JSON.stringify(lastStatus)}`)
+  throw new Error(
+    `Native preview surface did not stay hidden. Last status: ${JSON.stringify(lastStatus)}`
+  )
 }
 
 function assertHiddenNativeSurfaceStatus(scenario, status) {
@@ -526,7 +568,9 @@ function assertHiddenNativeSurfaceStatus(scenario, status) {
     status.backing !== 'none' ||
     (status.framesRendered ?? 0) !== 0
   ) {
-    throw new Error(`[${scenario.label}] Expected hidden native preview surface, got ${JSON.stringify(status)}.`)
+    throw new Error(
+      `[${scenario.label}] Expected hidden native preview surface, got ${JSON.stringify(status)}.`
+    )
   }
 }
 
@@ -560,22 +604,32 @@ function assertNativeBootstrap(result, options = {}) {
   if (!result.hasStage || !result.hasSurface) {
     throw new Error(`Preview stage did not render: ${JSON.stringify(result)}`)
   }
-  if (!result.hasVideorcBridge || !result.hasCreateNativePreviewSurface || !result.hasUpdateNativePreviewSurfaceBounds) {
+  if (
+    !result.hasVideorcBridge ||
+    !result.hasCreateNativePreviewSurface ||
+    !result.hasUpdateNativePreviewSurfaceBounds
+  ) {
     throw new Error(`Native preview bridge is incomplete: ${JSON.stringify(result)}`)
   }
   if (options.requireNativePreview) {
     if (!result.hasNativePlaceholder) {
-      throw new Error(`Preview stage did not render the native surface placeholder: ${JSON.stringify(result)}`)
+      throw new Error(
+        `Preview stage did not render the native surface placeholder: ${JSON.stringify(result)}`
+      )
     }
     if ((result.previewImageCount ?? 0) !== 0 || result.hasJpegPollingPreviewImage) {
-      throw new Error(`Native preview rendered a JPEG/MJPEG fallback image: ${JSON.stringify(result)}`)
+      throw new Error(
+        `Native preview rendered a JPEG/MJPEG fallback image: ${JSON.stringify(result)}`
+      )
     }
   }
 }
 
 function assertNativeMeasurement(measurement) {
   if ((measurement.measuredFps ?? 0) < minPreviewFps) {
-    throw new Error(`Native preview measured ${format(measurement.measuredFps)}fps, below ${minPreviewFps}.`)
+    throw new Error(
+      `Native preview measured ${format(measurement.measuredFps)}fps, below ${minPreviewFps}.`
+    )
   }
   if ((measurement.intervalP95Ms ?? Number.POSITIVE_INFINITY) > maxPreviewIntervalP95Ms) {
     throw new Error(
@@ -598,7 +652,10 @@ function assertNativeMeasurement(measurement) {
       `Native preview source-to-present p99 ${format(measurement.inputToPresentLatencyP99Ms)}ms exceeded ${format(maxPreviewInputToPresentLatencyP99Ms)}ms.`
     )
   }
-  if (measurement.compositorFrameLag != null && measurement.compositorFrameLag > maxPreviewCompositorFrameLag) {
+  if (
+    measurement.compositorFrameLag != null &&
+    measurement.compositorFrameLag > maxPreviewCompositorFrameLag
+  ) {
     throw new Error(
       `Native preview compositor lag ${format(measurement.compositorFrameLag)} frame(s) exceeded ${format(maxPreviewCompositorFrameLag)}.`
     )
@@ -620,8 +677,12 @@ function assertAnalyzerReportHealthy(scenario, name, report, context = {}) {
   if (report.verdict.pass) {
     return
   }
-  const failures = report.verdict.failures?.length ? report.verdict.failures.join('; ') : 'unknown failure'
-  const diagnostics = context.diagnosticsSummary ? `; diagnostics: ${context.diagnosticsSummary}` : ''
+  const failures = report.verdict.failures?.length
+    ? report.verdict.failures.join('; ')
+    : 'unknown failure'
+  const diagnostics = context.diagnosticsSummary
+    ? `; diagnostics: ${context.diagnosticsSummary}`
+    : ''
   const reportPath = context.reportPath ? `; report ${context.reportPath}` : ''
   failOrWarn(`[${scenario.label}] ${name} analyzer failed: ${failures}${diagnostics}${reportPath}`)
 }
@@ -633,7 +694,10 @@ function assertRecordingDurationHealthy(scenario, report, expectedDurationMs) {
     throw new Error(`[${scenario.label}] Final recording duration was unavailable.`)
   }
   const toleranceSeconds = 1.5
-  if (duration < expectedSeconds - toleranceSeconds || duration > expectedSeconds + toleranceSeconds) {
+  if (
+    duration < expectedSeconds - toleranceSeconds ||
+    duration > expectedSeconds + toleranceSeconds
+  ) {
     failOrWarn(
       `[${scenario.label}] Final recording duration ${duration.toFixed(2)}s was outside ${expectedSeconds.toFixed(2)}s ± ${toleranceSeconds.toFixed(2)}s.`
     )
@@ -650,27 +714,35 @@ function assertStatsHealthy(scenario, stats, reports = {}, options = {}) {
 
 function assertStatsHealthyStrict(scenario, stats, reports = {}, options = {}) {
   if (stats.minSpeed === null) {
-    throw new Error(`[${scenario.label}] No encoder speed diagnostics were captured after ${warmupMs}ms warm-up.`)
+    throw new Error(
+      `[${scenario.label}] No encoder speed diagnostics were captured after ${warmupMs}ms warm-up.`
+    )
   }
   if (stats.minSpeed < minSpeed) {
     const startupPassed = reports.startupReport?.verdict?.pass === true
     const recordingPassed = reports.recordingReport?.verdict?.pass === true
     if (!startupPassed || !recordingPassed) {
-      throw new Error(`[${scenario.label}] Encoder speed ${format(stats.minSpeed)}x fell below ${minSpeed}x.`)
+      throw new Error(
+        `[${scenario.label}] Encoder speed ${format(stats.minSpeed)}x fell below ${minSpeed}x.`
+      )
     }
     console.warn(
       `[${scenario.label}] Encoder progress speed dipped to ${format(stats.minSpeed)}x below ${minSpeed}x, but decoded startup and final-file gates passed.`
     )
   }
   if (stats.minFps === null) {
-    throw new Error(`[${scenario.label}] No FPS diagnostics were captured after ${warmupMs}ms warm-up.`)
+    throw new Error(
+      `[${scenario.label}] No FPS diagnostics were captured after ${warmupMs}ms warm-up.`
+    )
   }
   const minFps = scenario.fps * 0.9
   if (stats.minFps < minFps) {
     const startupPassed = reports.startupReport?.verdict?.pass === true
     const recordingPassed = reports.recordingReport?.verdict?.pass === true
     if (!startupPassed || !recordingPassed) {
-      throw new Error(`[${scenario.label}] FPS ${format(stats.minFps)} fell below ${format(minFps)}.`)
+      throw new Error(
+        `[${scenario.label}] FPS ${format(stats.minFps)} fell below ${format(minFps)}.`
+      )
     }
     console.warn(
       `[${scenario.label}] Live diagnostics FPS dipped to ${format(stats.minFps)} below ${format(minFps)}, but decoded startup and final-file gates passed.`
@@ -701,13 +773,19 @@ function assertStatsHealthyStrict(scenario, stats, reports = {}, options = {}) {
     videoOutput: bridgeVideoOutput
   })
   if (stats.micDroppedFrames > 0) {
-    throw new Error(`[${scenario.label}] Native microphone reported ${stats.micDroppedFrames} dropped frame(s).`)
+    throw new Error(
+      `[${scenario.label}] Native microphone reported ${stats.micDroppedFrames} dropped frame(s).`
+    )
   }
   if (stats.maintenanceSamples > 0) {
-    throw new Error(`[${scenario.label}] Recording overlapped ${stats.maintenanceSamples} maintenance FFmpeg sample(s).`)
+    throw new Error(
+      `[${scenario.label}] Recording overlapped ${stats.maintenanceSamples} maintenance FFmpeg sample(s).`
+    )
   }
   if (stats.duplicateCaptureSamples > 0) {
-    throw new Error(`[${scenario.label}] Recording reported ${stats.duplicateCaptureSamples} duplicate capture diagnostic sample(s).`)
+    throw new Error(
+      `[${scenario.label}] Recording reported ${stats.duplicateCaptureSamples} duplicate capture diagnostic sample(s).`
+    )
   }
 }
 
@@ -721,7 +799,9 @@ function failOrWarn(message) {
 
 function assertVisiblePreviewStats(scenario, stats) {
   if (stats.minPreviewPresentFps === null) {
-    throw new Error(`[${scenario.label}] No preview-present diagnostics were captured after ${warmupMs}ms warm-up.`)
+    throw new Error(
+      `[${scenario.label}] No preview-present diagnostics were captured after ${warmupMs}ms warm-up.`
+    )
   }
   const minPreviewPresentFps = scenario.fps * 0.9
   if (stats.minPreviewPresentFps < minPreviewPresentFps) {
@@ -729,13 +809,18 @@ function assertVisiblePreviewStats(scenario, stats) {
       `[${scenario.label}] Preview compositor-present diagnostics dipped to ${format(stats.minPreviewPresentFps)} below ${format(minPreviewPresentFps)}, but direct proof-host measurement passed.`
     )
   }
-  if (stats.maxPreviewRenderFrameTimeP95Ms !== null && stats.maxPreviewRenderFrameTimeP95Ms > maxPreviewIntervalP95Ms) {
+  if (
+    stats.maxPreviewRenderFrameTimeP95Ms !== null &&
+    stats.maxPreviewRenderFrameTimeP95Ms > maxPreviewIntervalP95Ms
+  ) {
     console.warn(
       `[${scenario.label}] Preview render-interval diagnostics reached ${format(stats.maxPreviewRenderFrameTimeP95Ms)}ms above ${format(maxPreviewIntervalP95Ms)}ms, but direct proof-host interval measurement passed.`
     )
   }
   if (stats.maxPreviewInputToPresentLatencyP95Ms === null) {
-    throw new Error(`[${scenario.label}] No preview source-to-present p95 diagnostics were captured after ${warmupMs}ms warm-up.`)
+    throw new Error(
+      `[${scenario.label}] No preview source-to-present p95 diagnostics were captured after ${warmupMs}ms warm-up.`
+    )
   }
   if (stats.maxPreviewInputToPresentLatencyP95Ms > maxPreviewInputToPresentLatencyP95Ms) {
     throw new Error(
@@ -743,14 +828,19 @@ function assertVisiblePreviewStats(scenario, stats) {
     )
   }
   if (stats.maxPreviewInputToPresentLatencyP99Ms === null) {
-    throw new Error(`[${scenario.label}] No preview source-to-present p99 diagnostics were captured after ${warmupMs}ms warm-up.`)
+    throw new Error(
+      `[${scenario.label}] No preview source-to-present p99 diagnostics were captured after ${warmupMs}ms warm-up.`
+    )
   }
   if (stats.maxPreviewInputToPresentLatencyP99Ms > maxPreviewInputToPresentLatencyP99Ms) {
     throw new Error(
       `[${scenario.label}] Preview source-to-present p99 ${format(stats.maxPreviewInputToPresentLatencyP99Ms)}ms exceeded ${format(maxPreviewInputToPresentLatencyP99Ms)}ms.`
     )
   }
-  if (stats.maxPreviewCompositorFrameLag !== null && stats.maxPreviewCompositorFrameLag > maxPreviewCompositorFrameLag) {
+  if (
+    stats.maxPreviewCompositorFrameLag !== null &&
+    stats.maxPreviewCompositorFrameLag > maxPreviewCompositorFrameLag
+  ) {
     throw new Error(
       `[${scenario.label}] Preview compositor lag ${format(stats.maxPreviewCompositorFrameLag)} frame(s) exceeded ${format(maxPreviewCompositorFrameLag)}.`
     )
@@ -759,7 +849,9 @@ function assertVisiblePreviewStats(scenario, stats) {
 
 function assertHiddenPreviewStats(scenario, stats) {
   if (stats.nativePreviewSamples > 0) {
-    throw new Error(`[${scenario.label}] Hidden-preview recording still reported ${stats.nativePreviewSamples} live preview sample(s).`)
+    throw new Error(
+      `[${scenario.label}] Hidden-preview recording still reported ${stats.nativePreviewSamples} live preview sample(s).`
+    )
   }
   const staleFields = [
     ['previewPresentFps', stats.minPreviewPresentFps],
@@ -816,7 +908,9 @@ async function assertFfprobeAvailable() {
       throw new Error(result.stderr.trim() || `exit ${result.status}`)
     }
   } catch (error) {
-    throw new Error(`FFprobe is required for A/V skew checks. Set VIDEORC_SMOKE_FFPROBE_PATH. ${error.message}`)
+    throw new Error(
+      `FFprobe is required for A/V skew checks. Set VIDEORC_SMOKE_FFPROBE_PATH. ${error.message}`
+    )
   }
 }
 
@@ -880,6 +974,7 @@ function launchAndReadConnections() {
       detached: true,
       env: {
         ...process.env,
+        VIDEORC_DISABLE_BACKEND_REAP: process.env.VIDEORC_DISABLE_BACKEND_REAP ?? '1',
         VIDEORC_SMOKE_OUTPUT_DIR: outputDirectory,
         VIDEORC_NATIVE_PREVIEW_SURFACE: '1',
         VIDEORC_SMOKE_PREVIEW_MOTION: '1',
@@ -907,7 +1002,9 @@ function launchAndReadConnections() {
     appProcess.on('exit', (code, signal) => {
       clearTimeout(timer)
       rejectConnections(
-        new Error(`Native-preview recording app exited before smoke completed: code=${code} signal=${signal}`)
+        new Error(
+          `Native-preview recording app exited before smoke completed: code=${code} signal=${signal}`
+        )
       )
     })
   })

@@ -4,6 +4,9 @@
 // process prints, and resolves once every required marker has been seen. Factored out
 // of the per-smoke launch boilerplate so the real-source baseline harness (and future
 // honest-gate harnesses) reuse one battle-tested launch/teardown path.
+//
+// Harnesses default to not reaping globally-recorded owner backends. Product
+// launches and lifecycle smokes can pass VIDEORC_DISABLE_BACKEND_REAP=0.
 
 import { spawn } from 'node:child_process'
 import { mkdtempSync } from 'node:fs'
@@ -29,14 +32,16 @@ export function launchDevApp({
   env = {},
   timeoutMs = 120000,
   requiredMarkers = ['backend-ready'],
-  onLine,
+  onLine
 } = {}) {
   return new Promise((resolveLaunch, rejectLaunch) => {
     const connections = {}
     let settled = false
     let stopping = false
     const userDataDir =
-      env.VIDEORC_USER_DATA_DIR ?? process.env.VIDEORC_USER_DATA_DIR ?? mkdtempSync(join(tmpdir(), 'videorc-smoke-user-data-'))
+      env.VIDEORC_USER_DATA_DIR ??
+      process.env.VIDEORC_USER_DATA_DIR ??
+      mkdtempSync(join(tmpdir(), 'videorc-smoke-user-data-'))
 
     const child = spawn('pnpm', ['dev'], {
       cwd: repoRoot,
@@ -44,10 +49,11 @@ export function launchDevApp({
       env: {
         ...process.env,
         VIDEORC_SMOKE_PRINT_BACKEND_READY: '1',
+        VIDEORC_DISABLE_BACKEND_REAP: process.env.VIDEORC_DISABLE_BACKEND_REAP ?? '1',
         VIDEORC_USER_DATA_DIR: userDataDir,
-        ...env,
+        ...env
       },
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['ignore', 'pipe', 'pipe']
     })
 
     const stop = () => stopProcess(child, () => (stopping = true))
@@ -56,7 +62,9 @@ export function launchDevApp({
       if (settled) return
       settled = true
       void stop()
-      rejectLaunch(new Error(`Timed out waiting for [${requiredMarkers.join(', ')}] after ${timeoutMs}ms.`))
+      rejectLaunch(
+        new Error(`Timed out waiting for [${requiredMarkers.join(', ')}] after ${timeoutMs}ms.`)
+      )
     }, timeoutMs)
 
     const settleIfReady = () => {
@@ -102,7 +110,9 @@ export function launchDevApp({
       if (settled) return
       settled = true
       clearTimeout(timer)
-      rejectLaunch(new Error(`Dev app exited before handshake completed: code=${code} signal=${signal}`))
+      rejectLaunch(
+        new Error(`Dev app exited before handshake completed: code=${code} signal=${signal}`)
+      )
     })
   })
 }
