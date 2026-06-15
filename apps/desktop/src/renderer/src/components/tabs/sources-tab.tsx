@@ -10,19 +10,18 @@ import {
   Warning,
   Waveform
 } from '@phosphor-icons/react'
-import { useEffect, useRef, useState, type ReactElement } from 'react'
+import { useRef, useState, type ReactElement } from 'react'
 
 import { PanelSection } from '@/components/panel-section'
 import { SourceSelect } from '@/components/source-select'
 import { StatusBadge, type StatusTone } from '@/components/status-badge'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
+import { PowerSlider } from '@/components/power-slider'
 import { Button } from '@/components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Empty, EmptyDescription, EmptyTitle } from '@/components/ui/empty'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { Input } from '@/components/ui/input'
-import { Slider } from '@/components/ui/slider'
 import { Switch } from '@/components/ui/switch'
 import { useStudio } from '@/hooks/use-studio'
 import {
@@ -33,7 +32,6 @@ import {
   isScreenCaptureKitCaptureDevice,
   normalizeMicrophoneSyncOffsetMs,
   parseAudioSyncRecommendationJson,
-  parseMicrophoneSyncOffsetInput,
   resetAudioSyncCalibration,
   type AudioSyncRecommendationReport
 } from '@/lib/capture'
@@ -136,8 +134,6 @@ export function SourcesTab(): ReactElement {
   const hasCapturePermissionRequired = captureDevices.some(
     (device) => device.status === 'permission-required'
   )
-  const syncOffsetMs = captureConfig.audio.microphoneSyncOffsetMs
-  const [syncOffsetDraft, setSyncOffsetDraft] = useState(() => String(syncOffsetMs))
   const [syncRecommendation, setSyncRecommendation] =
     useState<AudioSyncRecommendationReport | null>(null)
   const [syncCalibrationMessage, setSyncCalibrationMessage] = useState<string | null>(null)
@@ -190,30 +186,6 @@ export function SourcesTab(): ReactElement {
       return
     }
     setCaptureConfig((current) => ({ ...current, sources }))
-  }
-
-  useEffect(() => {
-    setSyncOffsetDraft(String(syncOffsetMs))
-  }, [syncOffsetMs])
-
-  const commitSyncOffsetDraft = (nextDraft: string, resetInvalid = false): void => {
-    const parsed = parseMicrophoneSyncOffsetInput(nextDraft, syncOffsetMs)
-    if (parsed === null) {
-      if (resetInvalid) {
-        setSyncOffsetDraft(String(syncOffsetMs))
-      }
-      return
-    }
-
-    setSyncOffsetDraft(String(parsed))
-    setCaptureConfig((current) => ({
-      ...current,
-      audio: {
-        ...current.audio,
-        microphoneSyncOffsetMs: parsed,
-        microphoneSyncOffsetUserSet: true
-      }
-    }))
   }
 
   const importSyncMeasurementFile = async (file: File | null): Promise<void> => {
@@ -437,77 +409,42 @@ export function SourcesTab(): ReactElement {
               }
             />
           </div>
+          <PowerSlider
+            bipolar
+            label="Gain"
+            max={24}
+            min={-24}
+            numericInput
+            suffix=" dB"
+            value={captureConfig.audio.microphoneGainDb}
+            onChange={(microphoneGainDb) =>
+              setCaptureConfig((current) => ({
+                ...current,
+                audio: { ...current.audio, microphoneGainDb }
+              }))
+            }
+          />
           <div className="grid gap-2">
-            <div className="flex items-center justify-between gap-3">
-              <span className="text-xs font-medium text-muted-foreground">Gain</span>
-              <span className="font-mono text-xs tabular-nums">
-                {captureConfig.audio.microphoneGainDb > 0 ? '+' : ''}
-                {captureConfig.audio.microphoneGainDb} dB
-              </span>
-            </div>
-            <Slider
-              max={24}
-              min={-24}
-              step={1}
-              value={[captureConfig.audio.microphoneGainDb]}
-              onValueChange={([microphoneGainDb]) =>
+            <PowerSlider
+              bipolar
+              label="Sync"
+              largeStep={5}
+              max={MICROPHONE_SYNC_OFFSET_MAX_MS}
+              min={MICROPHONE_SYNC_OFFSET_MIN_MS}
+              numericInput
+              suffix=" ms"
+              value={captureConfig.audio.microphoneSyncOffsetMs}
+              onChange={(microphoneSyncOffsetMs) =>
                 setCaptureConfig((current) => ({
                   ...current,
-                  audio: { ...current.audio, microphoneGainDb: microphoneGainDb ?? 0 }
+                  audio: {
+                    ...current.audio,
+                    microphoneSyncOffsetMs: normalizeMicrophoneSyncOffsetMs(microphoneSyncOffsetMs),
+                    microphoneSyncOffsetUserSet: true
+                  }
                 }))
               }
             />
-          </div>
-          <div className="grid gap-2">
-            <div className="flex items-center justify-between gap-3">
-              <span className="text-xs font-medium text-muted-foreground">Sync</span>
-              <span className="font-mono text-xs tabular-nums">
-                {captureConfig.audio.microphoneSyncOffsetMs > 0 ? '+' : ''}
-                {captureConfig.audio.microphoneSyncOffsetMs} ms
-              </span>
-            </div>
-            <div className="grid grid-cols-[1fr_auto] items-center gap-3">
-              <Slider
-                max={MICROPHONE_SYNC_OFFSET_MAX_MS}
-                min={MICROPHONE_SYNC_OFFSET_MIN_MS}
-                step={5}
-                value={[captureConfig.audio.microphoneSyncOffsetMs]}
-                onValueChange={([microphoneSyncOffsetMs]) =>
-                  setCaptureConfig((current) => ({
-                    ...current,
-                    audio: {
-                      ...current.audio,
-                      microphoneSyncOffsetMs: normalizeMicrophoneSyncOffsetMs(
-                        microphoneSyncOffsetMs,
-                        current.audio.microphoneSyncOffsetMs
-                      ),
-                      microphoneSyncOffsetUserSet: true
-                    }
-                  }))
-                }
-              />
-              <Input
-                aria-label="Microphone sync offset milliseconds"
-                className="w-24 font-mono text-xs tabular-nums"
-                max={MICROPHONE_SYNC_OFFSET_MAX_MS}
-                min={MICROPHONE_SYNC_OFFSET_MIN_MS}
-                step={1}
-                type="number"
-                value={syncOffsetDraft}
-                onBlur={() => commitSyncOffsetDraft(syncOffsetDraft, true)}
-                onChange={(event) => {
-                  const nextDraft = event.currentTarget.value
-                  setSyncOffsetDraft(nextDraft)
-                  commitSyncOffsetDraft(nextDraft)
-                }}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') {
-                    commitSyncOffsetDraft(syncOffsetDraft, true)
-                    event.currentTarget.blur()
-                  }
-                }}
-              />
-            </div>
             <div className="grid gap-2 rounded-md border border-border/70 bg-muted/20 p-2.5">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <Badge

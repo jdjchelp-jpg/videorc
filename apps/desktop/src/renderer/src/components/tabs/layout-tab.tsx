@@ -18,9 +18,7 @@ import { ScreensTab } from '@/components/tabs/screens-tab'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Field, FieldContent, FieldLabel } from '@/components/ui/field'
-import { Label } from '@/components/ui/label'
 import { Separator } from '@/components/ui/separator'
-import { Slider } from '@/components/ui/slider'
 import { Switch } from '@/components/ui/switch'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { useBackgroundAssets } from '@/hooks/use-background-assets'
@@ -370,11 +368,11 @@ export function LayoutTab(): ReactElement {
                     </Field>
                   </div>
 
-                  <SliderField
+                  <PowerSlider
                     label="Margin"
                     max={96}
                     min={8}
-                    step={1}
+                    numericInput
                     suffix="px"
                     value={layout.cameraMargin}
                     onChange={(cameraMargin) => patchLayout({ cameraMargin })}
@@ -407,27 +405,32 @@ export function LayoutTab(): ReactElement {
                 />
               </Field>
 
-              <SliderField
+              <PowerSlider
                 label="Zoom"
                 max={200}
                 min={100}
+                numericInput
                 step={5}
                 suffix="%"
                 value={layout.cameraZoom}
                 onChange={(cameraZoom) => patchLayout({ cameraZoom })}
               />
-              <SliderField
+              <PowerSlider
+                bipolar
                 label="Pan X"
                 max={100}
                 min={-100}
+                numericInput
                 step={5}
                 value={layout.cameraOffsetX}
                 onChange={(cameraOffsetX) => patchLayout({ cameraOffsetX })}
               />
-              <SliderField
+              <PowerSlider
+                bipolar
                 label="Pan Y"
                 max={100}
                 min={-100}
+                numericInput
                 step={5}
                 value={layout.cameraOffsetY}
                 onChange={(cameraOffsetY) => patchLayout({ cameraOffsetY })}
@@ -600,41 +603,4 @@ function transformLabel(source: SceneSource): string {
     `w ${Math.round(transform.width * 100)}%`,
     `h ${Math.round(transform.height * 100)}%`
   ].join(' · ')
-}
-
-function SliderField({
-  label,
-  value,
-  min,
-  max,
-  step,
-  suffix = '',
-  onChange
-}: {
-  label: string
-  value: number
-  min: number
-  max: number
-  step: number
-  suffix?: string
-  onChange: (value: number) => void
-}): ReactElement {
-  return (
-    <Field>
-      <div className="flex items-center justify-between">
-        <Label>{label}</Label>
-        <span className="text-sm font-medium tabular-nums text-muted-foreground">
-          {value}
-          {suffix}
-        </span>
-      </div>
-      <Slider
-        max={max}
-        min={min}
-        step={step}
-        value={[value]}
-        onValueChange={([next]) => onChange(next)}
-      />
-    </Field>
-  )
 }
