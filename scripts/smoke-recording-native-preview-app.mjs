@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 
@@ -19,6 +19,9 @@ const outputDirectory = resolve(
   process.env.VIDEORC_SMOKE_OUTPUT_DIR ??
     join(tmpdir(), `videorc-recording-native-preview-${Date.now()}`)
 )
+const userDataDir =
+  process.env.VIDEORC_USER_DATA_DIR ??
+  mkdtempSync(join(tmpdir(), 'videorc-native-preview-smoke-user-data-'))
 const ffmpegPath = process.env.VIDEORC_SMOKE_FFMPEG_PATH ?? 'ffmpeg'
 const ffprobePath =
   process.env.VIDEORC_SMOKE_FFPROBE_PATH ?? resolveSiblingFfprobe(ffmpegPath) ?? 'ffprobe'
@@ -975,6 +978,7 @@ function launchAndReadConnections() {
       env: {
         ...process.env,
         VIDEORC_DISABLE_BACKEND_REAP: process.env.VIDEORC_DISABLE_BACKEND_REAP ?? '1',
+        VIDEORC_USER_DATA_DIR: userDataDir,
         VIDEORC_SMOKE_OUTPUT_DIR: outputDirectory,
         VIDEORC_NATIVE_PREVIEW_SURFACE: '1',
         VIDEORC_SMOKE_PREVIEW_MOTION: '1',

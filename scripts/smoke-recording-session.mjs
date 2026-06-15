@@ -1,5 +1,14 @@
 import { existsSync, mkdirSync, statSync } from 'node:fs'
 
+import { analyzeRecording, writeReports } from './lib/recording-analyzer.mjs'
+
+const SMOKE_VIDEO_FPS = 30
+const TEST_PATTERN_GATES = Object.freeze({
+  // Synthetic source/layout smoke proves file health and timing. Some synthetic
+  // layouts are intentionally static, so motion artifacts remain warnings here.
+  requireMotion: false
+})
+
 export const LAYOUT_PRESET_SCENARIOS = [
   { preset: 'screen-camera', label: 'Screen + camera' },
   { preset: 'screen-only', label: 'Screen only' },
@@ -10,10 +19,12 @@ export const LAYOUT_PRESET_SCENARIOS = [
 export async function runBackendRecordingSmoke({
   connection,
   ffmpegPath,
+  ffprobePath = resolveSiblingFfprobe(ffmpegPath) ?? 'ffprobe',
   outputDirectory,
   timeoutMs = 45000,
-  recordingMs = 1000,
+  recordingMs = 2000,
   label = 'App',
+  analyze = true,
   onHealth,
   scenarios = LAYOUT_PRESET_SCENARIOS
 }) {
@@ -29,6 +40,9 @@ export async function runBackendRecordingSmoke({
 
     await onHealth?.({ health, ffmpegPath })
     console.log(`${label} smoke using FFmpeg: ${ffmpegPath}`)
+    if (analyze) {
+      console.log(`${label} smoke using FFprobe: ${ffprobePath}`)
+    }
 
     // Drive every layout preset through real FFmpeg with the test pattern so each
     // composed filtergraph (overlay, screen-only, camera-only, side-by-side) is
@@ -36,7 +50,17 @@ export async function runBackendRecordingSmoke({
     const results = []
     for (const scenario of scenarios) {
       results.push(
-        await recordScenario({ ws, timeoutMs, recordingMs, label, outputDirectory, ffmpegPath, scenario })
+        await recordScenario({
+          ws,
+          timeoutMs,
+          recordingMs,
+          label,
+          outputDirectory,
+          ffmpegPath,
+          ffprobePath,
+          analyze,
+          scenario
+        })
       )
     }
     return results
@@ -45,7 +69,17 @@ export async function runBackendRecordingSmoke({
   }
 }
 
-async function recordScenario({ ws, timeoutMs, recordingMs, label, outputDirectory, ffmpegPath, scenario }) {
+async function recordScenario({
+  ws,
+  timeoutMs,
+  recordingMs,
+  label,
+  outputDirectory,
+  ffmpegPath,
+  ffprobePath,
+  analyze,
+  scenario
+}) {
   const started = await request(
     ws,
     timeoutMs,
@@ -53,7 +87,9 @@ async function recordScenario({ ws, timeoutMs, recordingMs, label, outputDirecto
     sessionParams({ outputDirectory, ffmpegPath, preset: scenario.preset })
   )
   if (!['recording', 'streaming'].includes(started.state)) {
-    throw new Error(`[${scenario.label}] Expected recording state after start, got ${started.state}.`)
+    throw new Error(
+      `[${scenario.label}] Expected recording state after start, got ${started.state}.`
+    )
   }
 
   await sleep(recordingMs)
@@ -61,7 +97,9 @@ async function recordScenario({ ws, timeoutMs, recordingMs, label, outputDirecto
   const stopped = await request(ws, timeoutMs, 'session.stop')
   const outputPath = stopped.outputPath ?? started.outputPath
   if (!outputPath || !existsSync(outputPath)) {
-    throw new Error(`[${scenario.label}] Recording output was not created: ${outputPath ?? 'missing path'}`)
+    throw new Error(
+      `[${scenario.label}] Recording output was not created: ${outputPath ?? 'missing path'}`
+    )
   }
 
   const size = statSync(outputPath).size
@@ -70,7 +108,33 @@ async function recordScenario({ ws, timeoutMs, recordingMs, label, outputDirecto
   }
 
   console.log(`${label} smoke [${scenario.label}] recording created: ${outputPath} (${size} bytes)`)
-  return { preset: scenario.preset, outputPath, size }
+
+  if (!analyze) {
+    return { preset: scenario.preset, outputPath, size }
+  }
+
+  const quality = await analyzeRecording(outputPath, {
+    ffmpegPath,
+    ffprobePath,
+    intendedFps: SMOKE_VIDEO_FPS,
+    expectAudio: true,
+    gates: TEST_PATTERN_GATES
+  })
+  const reportPaths = writeReports(quality)
+  if (!quality.verdict.pass) {
+    throw new Error(
+      `[${scenario.label}] Recording quality gate failed: ${quality.verdict.failures.join('; ')} ` +
+        `(report: ${reportPaths.mdPath})`
+    )
+  }
+
+  console.log(
+    `${label} smoke [${scenario.label}] quality PASS: ` +
+      `${quality.metrics.observedFrames ?? 'n/a'} frame(s), ` +
+      `A/V skew ${formatMetricMs(quality.metrics.avSkewMs)} ` +
+      `(report: ${reportPaths.mdPath})`
+  )
+  return { preset: scenario.preset, outputPath, size, quality, reportPaths }
 }
 
 export function connectBackend(connection, timeoutMs) {
@@ -82,16 +146,24 @@ export function connectBackend(connection, timeoutMs) {
       rejectConnection(new Error(`Timed out connecting to ${url}.`))
     }, timeoutMs)
     ws = new WebSocket(url)
-    ws.addEventListener('open', () => {
-      clearTimeout(timer)
-      resolveConnection(ws)
-    }, { once: true })
-    ws.addEventListener('error', () => {
-      clearTimeout(timer)
-      rejectConnection(new Error(`Could not connect to ${url}`))
-    }, {
-      once: true
-    })
+    ws.addEventListener(
+      'open',
+      () => {
+        clearTimeout(timer)
+        resolveConnection(ws)
+      },
+      { once: true }
+    )
+    ws.addEventListener(
+      'error',
+      () => {
+        clearTimeout(timer)
+        rejectConnection(new Error(`Could not connect to ${url}`))
+      },
+      {
+        once: true
+      }
+    )
   })
 }
 
@@ -175,4 +247,15 @@ function sessionParams({ outputDirectory, ffmpegPath, preset = 'screen-camera' }
 
 function sleep(ms) {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, ms))
+}
+
+function resolveSiblingFfprobe(ffmpegPath) {
+  if (typeof ffmpegPath !== 'string' || !ffmpegPath.endsWith('ffmpeg')) {
+    return null
+  }
+  return `${ffmpegPath.slice(0, -'ffmpeg'.length)}ffprobe`
+}
+
+function formatMetricMs(value) {
+  return typeof value === 'number' && Number.isFinite(value) ? `${value.toFixed(0)}ms` : 'n/a'
 }
