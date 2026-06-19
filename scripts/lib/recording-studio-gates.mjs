@@ -56,6 +56,16 @@ export function buildRecordingStudioGateSteps({
         args: ['smoke:screens']
       },
       {
+        label: 'detached native preview surface reattach smoke',
+        command: 'pnpm',
+        args: ['smoke:preview-surface'],
+        env: {
+          VIDEORC_PREVIEW_SURFACE_MIN_FPS: '30',
+          VIDEORC_PREVIEW_SURFACE_MAX_INTERVAL_P95_MS: '120',
+          VIDEORC_PREVIEW_SURFACE_MAX_INPUT_TO_PRESENT_P95_MS: '100'
+        }
+      },
+      {
         label: 'real ScreenCaptureKit screen recording smoke',
         command: 'pnpm',
         args: ['smoke:screen-recording-real']

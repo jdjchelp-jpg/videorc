@@ -20,6 +20,7 @@ describe('buildRecordingStudioGateSteps', () => {
       'backend audio pipeline tests',
       'dev app all-layout recording artifact smoke',
       'imported screen image recording smoke',
+      'detached native preview surface reattach smoke',
       'real ScreenCaptureKit screen recording smoke'
     ])
     assert.deepEqual(steps[0].args, [
@@ -32,8 +33,12 @@ describe('buildRecordingStudioGateSteps', () => {
       'native-preview-present-policy.test.ts'
     ])
     assert.deepEqual(steps[1].args, ['test:scripts'])
-    assert.deepEqual(steps.at(-3).args, ['smoke:dev'])
-    assert.deepEqual(steps.at(-2).args, ['smoke:screens'])
+    assert.deepEqual(steps.at(-4).args, ['smoke:dev'])
+    assert.deepEqual(steps.at(-3).args, ['smoke:screens'])
+    assert.deepEqual(steps.at(-2).args, ['smoke:preview-surface'])
+    assert.equal(steps.at(-2).env.VIDEORC_PREVIEW_SURFACE_MIN_FPS, '30')
+    assert.equal(steps.at(-2).env.VIDEORC_PREVIEW_SURFACE_MAX_INTERVAL_P95_MS, '120')
+    assert.equal(steps.at(-2).env.VIDEORC_PREVIEW_SURFACE_MAX_INPUT_TO_PRESENT_P95_MS, '100')
     assert.deepEqual(steps.at(-1).args, ['smoke:screen-recording-real'])
   })
 
@@ -58,7 +63,9 @@ describe('buildRecordingStudioGateSteps', () => {
     assert.match(report, /live_layout::tests::/)
     assert.match(report, /smoke:dev/)
     assert.match(report, /smoke:screens/)
+    assert.match(report, /smoke:preview-surface/)
     assert.match(report, /smoke:screen-recording-real/)
+    assert.match(report, /VIDEORC_PREVIEW_SURFACE_MAX_INPUT_TO_PRESENT_P95_MS=100/)
     assert.match(report, /VIDEORC_NATIVE_PREVIEW_SOURCE_COMPLETE_SCENE=1/)
     assert.match(report, /VIDEORC_NATIVE_PREVIEW_LAYOUT_STRESS_UPDATES=4/)
     assert.match(report, /pnpm smoke:recording-native-preview/)

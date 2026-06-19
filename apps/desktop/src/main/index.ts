@@ -641,6 +641,36 @@ function pushPreviewWindowPlacement(): void {
   })
 }
 
+function nativePreviewSurfaceWindowExists(): boolean {
+  return Boolean(nativePreviewSurfaceWindow && !nativePreviewSurfaceWindow.isDestroyed())
+}
+
+function nativePreviewSurfaceNeedsPlacementReconcile(): boolean {
+  if (!previewWindowIsOpenForSurface() || !previewWindowSurfaceBounds()) {
+    return false
+  }
+  return (
+    !nativePreviewSurfaceWindowExists() ||
+    nativePreviewSurfaceStatus.state !== 'live' ||
+    !nativePreviewSurfaceStatus.bounds
+  )
+}
+
+async function reconcileNativePreviewSurfaceForPreviewWindow(
+  options: { force?: boolean } = {}
+): Promise<void> {
+  const bounds = previewWindowSurfaceBounds()
+  if (!bounds) {
+    return
+  }
+  if (!options.force && !nativePreviewSurfaceNeedsPlacementReconcile()) {
+    return
+  }
+  await applyNativePreviewHostCommands([
+    { kind: nativePreviewSurfaceWindowExists() ? 'update-bounds' : 'create', bounds }
+  ])
+}
+
 const PREVIEW_WINDOW_HTML = `<!doctype html><html><head><meta charset="utf-8"><style>
   /* The whole window is a drag surface: the native video floats above the area
      below the bar and ignores mouse events, so every grab lands here. The bar
@@ -679,6 +709,7 @@ async function openPreviewWindow(): Promise<PreviewWindowState> {
       existingWindow.restore()
     }
     existingWindow.show()
+    pushPreviewWindowPlacement()
     existingWindow.focus()
     emitPreviewWindowState()
     return previewWindowState()
@@ -1808,6 +1839,7 @@ async function updateNativePreviewSurfaceScene(
 ): Promise<PreviewSurfaceStatus> {
   await waitForNativePreviewSurfaceMutation()
   nativePreviewSurfaceScene = buildPreviewSurfaceScene(params)
+  await reconcileNativePreviewSurfaceForPreviewWindow({ force: true })
   const surfaceWindow = nativePreviewSurfaceWindow
   if (surfaceWindow && !surfaceWindow.isDestroyed()) {
     await waitForNativePreviewSurfaceScript()
@@ -1818,6 +1850,9 @@ async function updateNativePreviewSurfaceScene(
         true
       )
     }
+  }
+  if (!nativePreviewSurfaceFramePollingSuppressed) {
+    await showNativePreviewProofSurfaceIfVisible()
   }
 
   const hasScreen = nativePreviewSurfaceScene.sources.some(
@@ -1885,6 +1920,7 @@ async function presentNativePreviewSurfaceCompositor(
   if (compositorScene) {
     nativePreviewSurfaceScene = compositorScene
   }
+  await reconcileNativePreviewSurfaceForPreviewWindow()
   const realSurfaceAttempt = await tryPresentNativePreviewRealSurfaceCompositor(
     effectiveStatus,
     mainTiming
@@ -1898,10 +1934,7 @@ async function presentNativePreviewSurfaceCompositor(
     nativePreviewLastRealSurfaceFallbackLogKey = fallbackLogKey
     logBackend('warn', realSurfaceAttempt.reason)
   }
-  if (
-    effectiveStatus.suppressFramePolling !== true &&
-    (!nativeSurfaceOwnsPlacement() || compositorFrameSceneRevisionMismatch(effectiveStatus))
-  ) {
+  if (effectiveStatus.suppressFramePolling !== true) {
     await showNativePreviewProofSurfaceIfVisible()
   }
   let metrics: Record<string, unknown> | null = null
@@ -2422,6 +2455,7 @@ function delay(ms: number): Promise<void> {
 function destroyNativePreviewSurface(): PreviewSurfaceStatus {
   resetNativePreviewMainHandoffMetrics()
   nativePreviewSurfaceCompositorRequestSerial += 1
+  clearNativePreviewNativePlacementAuthority()
   void applyNativePreviewRealSurfaceHostCommands([{ kind: 'destroy' }], { startIfNeeded: false })
   if (nativePreviewSurfaceWindow && !nativePreviewSurfaceWindow.isDestroyed()) {
     nativePreviewSurfaceWindow.close()
@@ -3262,6 +3296,57 @@ async function runSmokePreviewMotionCommand(
     )
     return {
       ...result,
+      updateLatencyMs: performance.now() - startedAt
+    }
+  }
+
+  if (command === 'exercise-native-preview-scene-after-surface-loss') {
+    if (!previewWindowIsOpenForSurface()) {
+      throw new Error('Preview window is not open for scene reattach exercise.')
+    }
+    destroyNativePreviewSurface()
+    await delay(50)
+    const fallbackStatus = smokeCompositorStatusFromSceneParams(smokePreviewSceneParams(3, 0.74))
+    const backendStatus = backendConnection
+      ? await requestBackendJson<CompositorStatus>(
+          `http://${backendConnection.host}:${backendConnection.port}/compositor/status?${new URLSearchParams({ token: backendConnection.token }).toString()}`
+        ).catch(() => null)
+      : null
+    const finalStatus: PreviewSurfaceCompositorUpdateParams =
+      backendStatus?.state === 'live' ? backendStatus : fallbackStatus
+    const finalScene = buildPreviewSurfaceSceneFromCompositorStatus(finalStatus)
+    const startedAt = performance.now()
+    const status = await updateNativePreviewSurfaceCompositor(finalStatus)
+    const surfaceWindow = nativePreviewSurfaceWindow
+    let metrics: Record<string, unknown> | null = null
+    if (surfaceWindow && !surfaceWindow.isDestroyed()) {
+      await waitForNativePreviewSurfaceScript()
+      const sceneScript = finalScene
+        ? `window.__videorcSetPreviewScene?.(${jsonForInlineScript(finalScene)});`
+        : ''
+      const statusScript = `window.__videorcSetCompositorStatus?.(${jsonForInlineScript(finalStatus)});`
+      metrics = await surfaceWindow.webContents.executeJavaScript(
+        `${sceneScript}${statusScript}window.__videorcPresentNativePreviewNow?.();window.__videorcNativePreviewMetrics?.() ?? null`,
+        true
+      )
+    }
+    return {
+      previewWindowOpen: previewWindowIsOpenForSurface(),
+      surfaceExists: Boolean(surfaceWindow && !surfaceWindow.isDestroyed()),
+      surfaceVisible: Boolean(
+        surfaceWindow && !surfaceWindow.isDestroyed() && surfaceWindow.isVisible()
+      ),
+      nativeOwnsPlacement: nativeSurfaceOwnsPlacement(),
+      status,
+      targetSceneRevision:
+        typeof finalStatus.sceneRevision === 'number' ? finalStatus.sceneRevision : null,
+      sceneRevision: nativePreviewSurfaceScene?.revision ?? null,
+      compositorSceneRevision:
+        typeof metrics?.compositorSceneRevision === 'number'
+          ? metrics.compositorSceneRevision
+          : null,
+      sceneMatchesCompositor: metrics?.sceneMatchesCompositor ?? null,
+      layerCount: typeof metrics?.layerCount === 'number' ? metrics.layerCount : null,
       updateLatencyMs: performance.now() - startedAt
     }
   }

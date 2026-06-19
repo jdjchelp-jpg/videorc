@@ -94,6 +94,13 @@ async function runPreviewSurfaceSmoke(connection, smoke) {
     assertNativePreviewBadge(badges)
     const sceneExercise = await smokeCommand(smoke, 'exercise-native-preview-scene')
     assertSceneExercise(sceneExercise)
+    const sceneReattach = await smokeCommand(
+      smoke,
+      'exercise-native-preview-scene-after-surface-loss'
+    )
+    assertSceneReattach(sceneReattach)
+    const reattachedStatus = await waitForNativeSurface(ws, firstStatus.framesRendered)
+    const reattachedMainStatus = await waitForMainNativeSurface(smoke, firstStatus.framesRendered)
 
     const firstMeasurement = await smokeCommand(smoke, 'measure-native-preview-surface', {
       durationMs: measurementMs
@@ -156,11 +163,14 @@ async function runPreviewSurfaceSmoke(connection, smoke) {
       movedStatus,
       restoredStatus,
       resizedDiagnostics,
-      sceneExercise
+      sceneExercise,
+      sceneReattach,
+      reattachedStatus,
+      reattachedMainStatus
     })
 
     console.log(
-      `Preview surface smoke: native ${format(firstMeasurement.measuredFps)}fps initial, ${format(resizedMeasurement.measuredFps)}fps after resize, ${format(restoredMeasurement.measuredFps)}fps after restore, scene update ${format(sceneExercise.updateLatencyMs)}ms, frames ${restoredStatus.framesRendered}, p95 ${format(restoredMeasurement.intervalP95Ms)}ms, resize count ${resizedDiagnostics.previewSurfaceResizeCount}${surfaceBoundsChanged ? '' : ' (bounds unchanged)'}, report ${reportPath}`
+      `Preview surface smoke: native ${format(firstMeasurement.measuredFps)}fps initial, ${format(resizedMeasurement.measuredFps)}fps after resize, ${format(restoredMeasurement.measuredFps)}fps after restore, scene update ${format(sceneExercise.updateLatencyMs)}ms, reattach ${format(sceneReattach.updateLatencyMs)}ms, reattached frames ${reattachedStatus.framesRendered}, final frames ${restoredStatus.framesRendered}, p95 ${format(restoredMeasurement.intervalP95Ms)}ms, resize count ${resizedDiagnostics.previewSurfaceResizeCount}${surfaceBoundsChanged ? '' : ' (bounds unchanged)'}, report ${reportPath}`
     )
   } finally {
     ws.close()
@@ -205,6 +215,27 @@ async function waitForNativeSurface(ws, previousFrames = -1) {
   }
   throw new Error(
     `Native preview surface did not become live. Last status: ${JSON.stringify(lastStatus)}`
+  )
+}
+
+async function waitForMainNativeSurface(smoke, previousFrames = -1) {
+  const deadline = Date.now() + timeoutMs
+  let lastStatus = null
+  while (Date.now() < deadline) {
+    lastStatus = await smokeCommand(smoke, 'native-preview-surface-status')
+    if (
+      lastStatus.state === 'live' &&
+      lastStatus.transport === expectedSurfaceTransport &&
+      lastStatus.backing === expectedSurfaceBacking &&
+      (lastStatus.targetFps ?? 0) >= 60 &&
+      lastStatus.framesRendered > previousFrames
+    ) {
+      return lastStatus
+    }
+    await sleep(150)
+  }
+  throw new Error(
+    `Main native preview surface did not return to ${expectedSurfaceTransport}. Last status: ${JSON.stringify(lastStatus)}`
   )
 }
 
@@ -376,6 +407,63 @@ function assertSceneExercise(result) {
   }
 }
 
+function assertSceneReattach(result) {
+  if (!result.previewWindowOpen) {
+    throw new Error(`Preview window was not open during scene reattach: ${JSON.stringify(result)}`)
+  }
+  if (!result.surfaceExists) {
+    throw new Error(
+      `Native preview scene update did not recreate the detached surface: ${JSON.stringify(result)}`
+    )
+  }
+  if (result.status?.state !== 'live') {
+    throw new Error(
+      `Native preview reattach status is ${result.status?.state}, expected live: ${JSON.stringify(result)}`
+    )
+  }
+  if (
+    result.status?.transport !== 'native-surface' &&
+    result.status?.transport !== 'electron-proof-surface'
+  ) {
+    throw new Error(
+      `Native preview reattach transport is ${result.status?.transport}, expected an active detached surface: ${JSON.stringify(result)}`
+    )
+  }
+  if (
+    !result.status?.bounds ||
+    result.status.bounds.width <= 0 ||
+    result.status.bounds.height <= 0
+  ) {
+    throw new Error(`Native preview reattach had invalid bounds: ${JSON.stringify(result)}`)
+  }
+  if (result.status.transport === 'electron-proof-surface' && result.surfaceVisible !== true) {
+    throw new Error(
+      `Electron proof surface was not visible after reattach: ${JSON.stringify(result)}`
+    )
+  }
+  if (result.status.transport === 'native-surface' && result.nativeOwnsPlacement !== true) {
+    throw new Error(
+      `Native surface did not own placement after reattach: ${JSON.stringify(result)}`
+    )
+  }
+  if (
+    typeof result.targetSceneRevision === 'number' &&
+    result.compositorSceneRevision !== result.targetSceneRevision
+  ) {
+    throw new Error(
+      `Native preview reattach compositor scene revision was ${result.compositorSceneRevision}, expected ${result.targetSceneRevision}.`
+    )
+  }
+  if (typeof result.targetSceneRevision === 'number' && result.sceneMatchesCompositor !== true) {
+    throw new Error(`Native preview reattach scene mismatch: ${JSON.stringify(result)}`)
+  }
+  if ((result.layerCount ?? 0) < 1) {
+    throw new Error(
+      `Native preview reattach rendered ${result.layerCount ?? 0} layer(s), expected at least 1.`
+    )
+  }
+}
+
 function writePreviewSurfaceGateReport(summary) {
   mkdirSync(outputDirectory, { recursive: true })
   const reportPath = join(outputDirectory, 'preview-surface-gate.json')
@@ -391,8 +479,11 @@ function writePreviewSurfaceGateReport(summary) {
           resized: measurementSummary(summary.resizedMeasurement, summary.resizedStatus),
           moved: statusSummary(summary.movedStatus),
           restored: measurementSummary(summary.restoredMeasurement, summary.restoredStatus),
+          reattached: statusSummary(summary.reattachedStatus),
+          reattachedMain: statusSummary(summary.reattachedMainStatus),
           resizeCount: summary.resizedDiagnostics.previewSurfaceResizeCount,
-          sceneUpdateLatencyMs: summary.sceneExercise.updateLatencyMs
+          sceneUpdateLatencyMs: summary.sceneExercise.updateLatencyMs,
+          sceneReattachLatencyMs: summary.sceneReattach.updateLatencyMs
         },
         manualByEyeChecks: [
           {
@@ -523,6 +614,7 @@ function launchAndReadConnections() {
         ...process.env,
         VIDEORC_DISABLE_BACKEND_REAP: process.env.VIDEORC_DISABLE_BACKEND_REAP ?? '1',
         VIDEORC_SMOKE_OUTPUT_DIR: outputDirectory,
+        VIDEORC_USER_DATA_DIR: join(outputDirectory, 'user-data'),
         VIDEORC_NATIVE_PREVIEW_SURFACE: '1',
         VIDEORC_SMOKE_PREVIEW_MOTION: '1',
         VIDEORC_SMOKE_PRINT_BACKEND_READY: '1'
