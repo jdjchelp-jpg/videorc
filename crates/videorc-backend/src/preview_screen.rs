@@ -400,7 +400,18 @@ pub async fn start_preview_screen(
                 Arc::clone(&shared),
                 target_fps,
             ));
-            let status = PreviewScreenStatus {
+            let initial_frame = {
+                let guard = shared
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                (
+                    guard.frames_captured,
+                    guard.dropped_frames,
+                    guard.source_fps,
+                    guard.frame_store.latest(),
+                )
+            };
+            let mut status = PreviewScreenStatus {
                 state: PreviewScreenState::Live,
                 source_id: Some(source.source_id),
                 source_kind: Some(source.source_kind),
@@ -424,6 +435,19 @@ pub async fn start_preview_screen(
                 updated_at: Utc::now().to_rfc3339(),
                 message,
             };
+            status.frames_captured = initial_frame.0;
+            status.dropped_frames = initial_frame.1;
+            status.source_fps = initial_frame.2.or(Some(selected_fps));
+            if let Some(frame) = initial_frame.3 {
+                status.width = Some(frame.width);
+                status.height = Some(frame.height);
+                status.actual_width = Some(frame.width);
+                status.actual_height = Some(frame.height);
+                status.iosurface_available =
+                    Some(frame.source_iosurface.is_some() || frame.source_pixel_buffer.is_some());
+                status.sequence = Some(frame.sequence);
+                status.frame_age_ms = Some(frame.captured_at.elapsed().as_millis() as u64);
+            }
             {
                 let mut slot = state.preview_screen.lock().await;
                 slot.status = status.clone();
@@ -847,12 +871,21 @@ async fn reuse_current_screen_source(
     if !can_reuse {
         return None;
     }
+    if matches!(slot.status.state, PreviewScreenState::Live)
+        && !screen_status_has_renderable_frame(&slot.status)
+    {
+        return None;
+    }
 
     let mut status = slot.status.clone();
     status.updated_at = Utc::now().to_rfc3339();
     status.message = Some("Native screen preview source reused.".to_string());
     slot.status = status.clone();
     Some(status)
+}
+
+fn screen_status_has_renderable_frame(status: &PreviewScreenStatus) -> bool {
+    status.frames_captured > 0 && status.sequence.is_some()
 }
 
 async fn poll_screen_metrics(
@@ -1284,6 +1317,16 @@ mod macos {
                 })?;
         }
         let start_handler = start_capture(&stream, &shared);
+        if let Err(error) = wait_for_first_frame(&shared, SCREEN_CAPTUREKIT_STREAM_START_TIMEOUT) {
+            stop_stream(&stream);
+            unsafe {
+                let _ = stream.removeStreamOutput_type_error(
+                    ProtocolObject::from_ref(&*delegate),
+                    SCStreamOutputType::Screen,
+                );
+            }
+            return Err(error);
+        }
 
         let selected_fps = f64::from(capture_request.requested_fps);
         let message = Some(format!(
@@ -1499,6 +1542,33 @@ mod macos {
             stream.startCaptureWithCompletionHandler(Some(&handler));
         }
         handler
+    }
+
+    fn wait_for_first_frame(
+        shared: &Arc<StdMutex<PreviewScreenShared>>,
+        timeout: Duration,
+    ) -> Result<(), NativeScreenStartup> {
+        let started_at = Instant::now();
+        loop {
+            {
+                let guard = shared
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if guard.frames_captured > 0 {
+                    return Ok(());
+                }
+                if let Some(error) = guard.last_error.clone() {
+                    return Err(NativeScreenStartup::Failed(error));
+                }
+            }
+            if started_at.elapsed() >= timeout {
+                return Err(NativeScreenStartup::Failed(format!(
+                    "ScreenCaptureKit stream started but did not deliver a frame within {:.0}s.",
+                    timeout.as_secs_f64()
+                )));
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
     }
 
     fn stop_stream(stream: &SCStream) {
@@ -2128,5 +2198,52 @@ mod tests {
             status.message.as_deref(),
             Some("Native screen preview source reused.")
         );
+    }
+
+    #[tokio::test]
+    async fn same_screen_source_reuse_rejects_live_status_without_frames() {
+        let state = test_state();
+        let source_key = SourceKey::screen("screen:screencapturekit:5");
+        let (stop_tx, _stop_rx) = std_mpsc::channel();
+        let video = test_video();
+        {
+            let mut slot = state.preview_screen.lock().await;
+            slot.source_key = Some(source_key.clone());
+            slot.run_id = Some("run-1".to_string());
+            slot.status = PreviewScreenStatus {
+                state: PreviewScreenState::Live,
+                source_id: Some(source_key.id.clone()),
+                source_kind: Some(PreviewScreenSourceKind::Screen),
+                target_fps: video.fps,
+                width: Some(video.width),
+                height: Some(video.height),
+                native_width: Some(video.width),
+                native_height: Some(video.height),
+                requested_width: Some(video.width),
+                requested_height: Some(video.height),
+                actual_width: None,
+                actual_height: None,
+                iosurface_available: None,
+                source_fps: Some(f64::from(video.fps)),
+                frame_age_ms: None,
+                frames_captured: 0,
+                dropped_frames: 0,
+                sequence: None,
+                include_cursor: true,
+                exclude_current_process_windows: true,
+                updated_at: Utc::now().to_rfc3339(),
+                message: Some("Live without frames".to_string()),
+            };
+            slot.active = Some(NativeScreenPreviewThread {
+                stop_tx,
+                join_handle: None,
+                shared: Arc::new(StdMutex::new(PreviewScreenShared::default())),
+                video: video.clone(),
+            });
+        }
+
+        let status = reuse_current_screen_source(&state, &source_key, &video, video.fps).await;
+
+        assert!(status.is_none());
     }
 }
