@@ -1274,7 +1274,7 @@ mod macos {
     ) -> Result<ScreenSession, NativeScreenStartup> {
         if !CGPreflightScreenCaptureAccess() {
             return Err(NativeScreenStartup::PermissionNeeded(
-                "macOS Screen Recording permission is not granted for the process launching Videorc. Grant Screen Recording permission, then quit and relaunch Videorc before running native ScreenCaptureKit gates.".to_string(),
+                screen_capture_permission_message(),
             ));
         }
 
@@ -1569,6 +1569,15 @@ mod macos {
             }
             thread::sleep(Duration::from_millis(50));
         }
+    }
+
+    fn screen_capture_permission_message() -> String {
+        let target = std::env::current_exe()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|_| "the Videorc capture helper".to_string());
+        format!(
+            "macOS Screen Recording permission is not granted for {target}. Grant Screen Recording permission to this capture helper, then quit and relaunch Videorc."
+        )
     }
 
     fn stop_stream(stream: &SCStream) {

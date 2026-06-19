@@ -1705,6 +1705,8 @@ export interface RuntimeInfo {
   isPackaged: boolean
   permissionTargetName: string
   permissionTargetPath: string
+  capturePermissionTargetName: string
+  capturePermissionTargetPath: string
   nativePreviewSurfaceProofEnabled: boolean
   previewSmokeMode?: boolean
   disableAutoPreview?: boolean

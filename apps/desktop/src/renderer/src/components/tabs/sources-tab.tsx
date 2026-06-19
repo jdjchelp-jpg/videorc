@@ -134,6 +134,8 @@ export function SourcesTab(): ReactElement {
   const hasCapturePermissionRequired = captureDevices.some(
     (device) => device.status === 'permission-required'
   )
+  const capturePermissionTargetName =
+    runtimeInfo?.capturePermissionTargetName ?? runtimeInfo?.permissionTargetName ?? 'Videorc'
   const [syncRecommendation, setSyncRecommendation] =
     useState<AudioSyncRecommendationReport | null>(null)
   const [syncCalibrationMessage, setSyncCalibrationMessage] = useState<string | null>(null)
@@ -251,8 +253,7 @@ export function SourcesTab(): ReactElement {
           <Alert variant="warning">
             <Warning weight="fill" />
             <AlertTitle>
-              Screen Recording permission is required for{' '}
-              {runtimeInfo?.permissionTargetName ?? 'Videorc'}.
+              Screen Recording permission is required for {capturePermissionTargetName}.
             </AlertTitle>
             <AlertDescription className="flex flex-wrap gap-2 pt-2">
               <Button size="sm" variant="outline" onClick={() => void openPreviewPermissions()}>
@@ -261,7 +262,7 @@ export function SourcesTab(): ReactElement {
               </Button>
               <Button size="sm" variant="ghost" onClick={() => void revealPermissionTarget()}>
                 <UploadSimple data-icon="inline-start" />
-                Show App
+                Show Capture Helper
               </Button>
             </AlertDescription>
           </Alert>

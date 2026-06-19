@@ -10,6 +10,7 @@ export const MACOS_PERMISSION_URLS: Record<SystemPermissionPane, string> = {
 
 export interface RuntimeInfoInput {
   execPath: string
+  captureExecPath?: string
   env: Partial<
     Pick<
       NodeJS.ProcessEnv,
@@ -31,6 +32,14 @@ export function permissionTargetPath(execPath: string): string {
   return execPath.slice(0, markerIndex + '.app'.length)
 }
 
+function permissionTargetName(path: string, fallback: string): string {
+  const name = path.split(/[/\\]/).filter(Boolean).at(-1)
+  if (!name) {
+    return fallback
+  }
+  return name.endsWith('.app') ? name.slice(0, -'.app'.length) : name
+}
+
 export function permissionUrlForPane(pane: SystemPermissionPane = 'privacy'): string {
   return MACOS_PERMISSION_URLS[pane] ?? MACOS_PERMISSION_URLS.privacy
 }
@@ -41,14 +50,21 @@ export function assertPermissionShortcutSupported(platform: NodeJS.Platform): vo
   }
 }
 
-export function buildRuntimeInfo({ execPath, env }: RuntimeInfoInput): RuntimeInfo {
+export function buildRuntimeInfo({
+  execPath,
+  captureExecPath,
+  env
+}: RuntimeInfoInput): RuntimeInfo {
   const targetPath = permissionTargetPath(execPath)
   const isPackaged = !targetPath.endsWith('/Electron.app')
+  const captureTargetPath = permissionTargetPath(captureExecPath ?? execPath)
 
   return {
     isPackaged,
     permissionTargetName: isPackaged ? 'Videorc' : 'Electron',
     permissionTargetPath: targetPath,
+    capturePermissionTargetName: permissionTargetName(captureTargetPath, 'Videorc capture helper'),
+    capturePermissionTargetPath: captureTargetPath,
     nativePreviewSurfaceProofEnabled: env.VIDEORC_NATIVE_PREVIEW_SURFACE !== '0',
     previewSmokeMode: env.VIDEORC_SMOKE_PREVIEW_MOTION === '1',
     disableAutoPreview: env.VIDEORC_DISABLE_AUTO_PREVIEW === '1',

@@ -40,7 +40,6 @@ import { loadNativePreviewRealSurfaceDriver } from './native-preview-real-surfac
 import {
   assertPermissionShortcutSupported,
   buildRuntimeInfo,
-  permissionTargetPath,
   permissionUrlForPane
 } from './runtime-info'
 import {
@@ -89,6 +88,7 @@ let nativePreviewSurfaceCompositorRequestSerial = 0
 let nativePreviewSurfaceMutationInFlight: Promise<PreviewSurfaceStatus> | null = null
 let nativePreviewSurfaceFramePollingSuppressed = false
 let backendProcess: ChildProcessWithoutNullStreams | null = null
+let backendPermissionTargetPath: string | null = null
 let ownedProcessRegistry: OwnedProcessRegistry | null = null
 let ownedProcessRegistryLockDepth = 0
 let backendConnection: BackendConnection | null = null
@@ -2660,6 +2660,22 @@ function resolvePackagedBackendBinary(): string {
   )
 }
 
+function resolveDevBackendBinary(root = workspaceRoot()): string {
+  return join(
+    root,
+    'target',
+    'debug',
+    process.platform === 'win32' ? 'videorc-backend.exe' : 'videorc-backend'
+  )
+}
+
+function resolveBackendPermissionTargetPath(): string {
+  if (backendPermissionTargetPath) {
+    return backendPermissionTargetPath
+  }
+  return app.isPackaged ? resolvePackagedBackendBinary() : resolveDevBackendBinary()
+}
+
 function resolvePackagedFfmpegBinDir(): string | null {
   if (!app.isPackaged) {
     return null
@@ -2722,6 +2738,7 @@ function startBackendWithRegistryLock(): void {
   const args = app.isPackaged
     ? []
     : ['run', '--quiet', '-p', 'videorc-backend', '--bin', 'videorc-backend']
+  backendPermissionTargetPath = app.isPackaged ? command : resolveDevBackendBinary(root)
   const pathEntries = [ffmpegBinDir, cargoBinDir, process.env.PATH].filter(Boolean)
 
   logBackend('info', `Launching backend from ${root}`)
@@ -2992,6 +3009,7 @@ async function primeScreenCapturePermission(): Promise<void> {
   }
 
   try {
+    const info = runtimeInfo()
     const status = systemPreferences.getMediaAccessStatus('screen')
     if (status === 'granted') {
       return
@@ -3005,14 +3023,14 @@ async function primeScreenCapturePermission(): Promise<void> {
       const nextStatus = systemPreferences.getMediaAccessStatus('screen')
       logBackend(
         nextStatus === 'granted' ? 'info' : 'warn',
-        `Screen Recording permission request resolved as ${nextStatus} for ${runtimeInfo().permissionTargetName}.`
+        `Screen Recording permission request resolved as ${nextStatus} for ${info.permissionTargetName}; capture runs in ${info.capturePermissionTargetName}.`
       )
       return
     }
 
     logBackend(
       'warn',
-      `Screen Recording permission is ${status} for ${runtimeInfo().permissionTargetName}; open Screen Recording settings, grant access, then quit and relaunch Videorc.`
+      `Screen Recording permission is ${status} for ${info.permissionTargetName}; capture runs in ${info.capturePermissionTargetName}. Open Screen Recording settings, grant access, then quit and relaunch Videorc.`
     )
   } catch (error) {
     logBackend('warn', `Could not request Screen Recording permission: ${errorMessage(error)}`)
@@ -3920,12 +3938,13 @@ async function openSystemPermissions(pane: SystemPermissionPane = 'privacy'): Pr
 function runtimeInfo(): RuntimeInfo {
   return buildRuntimeInfo({
     execPath: process.execPath,
+    captureExecPath: resolveBackendPermissionTargetPath(),
     env: process.env
   })
 }
 
 async function revealPermissionTarget(): Promise<void> {
-  shell.showItemInFolder(permissionTargetPath(process.execPath))
+  shell.showItemInFolder(resolveBackendPermissionTargetPath())
 }
 
 async function revealPath(targetPath: string): Promise<void> {

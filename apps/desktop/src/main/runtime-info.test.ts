@@ -23,7 +23,41 @@ describe('runtime info helpers', () => {
     expect(info).toMatchObject({
       isPackaged: false,
       permissionTargetName: 'Electron',
-      permissionTargetPath: '/Applications/Electron.app'
+      permissionTargetPath: '/Applications/Electron.app',
+      capturePermissionTargetName: 'Electron',
+      capturePermissionTargetPath: '/Applications/Electron.app'
+    })
+  })
+
+  it('reports the backend helper as the capture permission target when provided', () => {
+    const info = buildRuntimeInfo({
+      execPath: '/Applications/Electron.app/Contents/MacOS/Electron',
+      captureExecPath: '/Users/orcdev/projects/videogre/target/debug/videorc-backend',
+      env: {}
+    })
+
+    expect(info).toMatchObject({
+      isPackaged: false,
+      permissionTargetName: 'Electron',
+      permissionTargetPath: '/Applications/Electron.app',
+      capturePermissionTargetName: 'videorc-backend',
+      capturePermissionTargetPath: '/Users/orcdev/projects/videogre/target/debug/videorc-backend'
+    })
+  })
+
+  it('reports the packaged backend helper as the capture permission target', () => {
+    const info = buildRuntimeInfo({
+      execPath: '/Applications/Videorc.app/Contents/MacOS/Videorc',
+      captureExecPath: '/Applications/Videorc.app/Contents/Resources/videorc-backend',
+      env: {}
+    })
+
+    expect(info).toMatchObject({
+      isPackaged: true,
+      permissionTargetName: 'Videorc',
+      permissionTargetPath: '/Applications/Videorc.app',
+      capturePermissionTargetName: 'videorc-backend',
+      capturePermissionTargetPath: '/Applications/Videorc.app/Contents/Resources/videorc-backend'
     })
   })
 
@@ -41,6 +75,7 @@ describe('runtime info helpers', () => {
     expect(info).toMatchObject({
       isPackaged: true,
       permissionTargetName: 'Videorc',
+      capturePermissionTargetName: 'Videorc',
       nativePreviewSurfaceProofEnabled: false,
       previewSmokeMode: true,
       disableAutoPreview: true,

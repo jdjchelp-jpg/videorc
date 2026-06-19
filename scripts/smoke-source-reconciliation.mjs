@@ -42,13 +42,13 @@ try {
   assert.equal(typeof reconcileSourceSelection, 'function')
 
   const devices = [
-    device('screen-new', 'Built-in Display', 'screen'),
-    device('screen-other', 'Studio Monitor', 'screen'),
-    device('window-1', 'Editor', 'window'),
-    device('camera-new', 'FaceTime HD Camera', 'camera'),
-    device('camera-other', 'Desk Camera', 'camera'),
-    device('mic-new', 'Podcast Mic', 'microphone'),
-    device('mic-other', 'Laptop Mic', 'microphone')
+    device('screen:screencapturekit:222', 'Built-in Display', 'screen'),
+    device('screen:screencapturekit:333', 'Studio Monitor', 'screen'),
+    device('window:screencapturekit:111', 'Editor', 'window'),
+    device('camera:avfoundation-native:face-time', 'FaceTime HD Camera', 'camera'),
+    device('camera:avfoundation-native:desk', 'Desk Camera', 'camera'),
+    device('microphone:coreaudio:podcast', 'Podcast Mic', 'microphone'),
+    device('microphone:coreaudio:laptop', 'Laptop Mic', 'microphone')
   ]
 
   localStorage.setItem(
@@ -79,13 +79,13 @@ try {
   })
   const reloadedSources = reconcileSourceSelection(loaded.sources, devices)
   assert.deepEqual(reloadedSources, {
-    screenId: 'screen-new',
+    screenId: 'screen:screencapturekit:222',
     screenName: 'Built-in Display',
     windowId: undefined,
     windowName: undefined,
-    cameraId: 'camera-new',
+    cameraId: 'camera:avfoundation-native:face-time',
     cameraName: 'FaceTime HD Camera',
-    microphoneId: 'mic-new',
+    microphoneId: 'microphone:coreaudio:podcast',
     microphoneName: 'Podcast Mic'
   })
   assert.deepEqual(sourceSelectionChangeMessages(loaded.sources, reloadedSources), [
@@ -132,13 +132,13 @@ try {
       devices
     ),
     {
-      screenId: 'screen-new',
+      screenId: 'screen:screencapturekit:222',
       screenName: 'Built-in Display',
       windowId: undefined,
       windowName: undefined,
-      cameraId: 'camera-new',
+      cameraId: 'camera:avfoundation-native:face-time',
       cameraName: 'FaceTime HD Camera',
-      microphoneId: 'mic-new',
+      microphoneId: 'microphone:coreaudio:podcast',
       microphoneName: 'Podcast Mic'
     }
   )
@@ -146,13 +146,13 @@ try {
   assert.deepEqual(
     reconcileSourceSelection(
       {
-        windowId: 'window-1',
+        windowId: 'window:screencapturekit:111',
         windowName: 'Editor',
         screenId: 'screen-old',
         screenName: 'Built-in Display',
-        cameraId: 'camera-other',
+        cameraId: 'camera:avfoundation-native:desk',
         cameraName: 'Desk Camera',
-        microphoneId: 'mic-other',
+        microphoneId: 'microphone:coreaudio:laptop',
         microphoneName: 'Laptop Mic'
       },
       devices
@@ -160,11 +160,11 @@ try {
     {
       screenId: undefined,
       screenName: undefined,
-      windowId: 'window-1',
+      windowId: 'window:screencapturekit:111',
       windowName: 'Editor',
-      cameraId: 'camera-other',
+      cameraId: 'camera:avfoundation-native:desk',
       cameraName: 'Desk Camera',
-      microphoneId: 'mic-other',
+      microphoneId: 'microphone:coreaudio:laptop',
       microphoneName: 'Laptop Mic'
     }
   )
@@ -177,50 +177,55 @@ try {
     microphoneId: 'missing-mic',
     microphoneName: 'Missing Mic'
   }
+  assert.deepEqual(reconcileSourceSelection(missingSources, devices), {
+    screenId: 'screen:screencapturekit:222',
+    screenName: 'Built-in Display',
+    windowId: undefined,
+    windowName: undefined,
+    cameraId: 'camera:avfoundation-native:face-time',
+    cameraName: 'FaceTime HD Camera',
+    microphoneId: 'microphone:coreaudio:podcast',
+    microphoneName: 'Podcast Mic'
+  })
   assert.deepEqual(
-    reconcileSourceSelection(missingSources, devices),
-    {
-      screenId: 'screen-new',
-      screenName: 'Built-in Display',
-      windowId: undefined,
-      windowName: undefined,
-      cameraId: 'camera-new',
-      cameraName: 'FaceTime HD Camera',
-      microphoneId: 'mic-new',
-      microphoneName: 'Podcast Mic'
-    }
+    sourceSelectionChangeMessages(
+      missingSources,
+      reconcileSourceSelection(missingSources, devices)
+    ),
+    [
+      'Capture source "Missing Display" is unavailable, so Videorc selected "Built-in Display".',
+      'Camera "Missing Camera" is unavailable, so Videorc selected "FaceTime HD Camera".',
+      'Microphone "Missing Mic" is unavailable, so Videorc selected "Podcast Mic".'
+    ]
   )
-  assert.deepEqual(sourceSelectionChangeMessages(missingSources, reconcileSourceSelection(missingSources, devices)), [
-    'Capture source "Missing Display" is unavailable, so Videorc selected "Built-in Display".',
-    'Camera "Missing Camera" is unavailable, so Videorc selected "FaceTime HD Camera".',
-    'Microphone "Missing Mic" is unavailable, so Videorc selected "Podcast Mic".'
-  ])
 
   assert.deepEqual(
     reconcileSourceSelection(
       {
-        screenId: 'screen-new',
+        screenId: 'screen:screencapturekit:222',
         screenName: 'Built-in Display',
-        cameraId: 'camera-new',
+        cameraId: 'camera:avfoundation-native:face-time',
         cameraName: 'FaceTime HD Camera',
-        microphoneId: 'mic-new',
+        microphoneId: 'microphone:coreaudio:podcast',
         microphoneName: 'Podcast Mic'
       },
       devices.map((item) => (item.kind === 'camera' ? { ...item, status: 'unavailable' } : item))
     ),
     {
-      screenId: 'screen-new',
+      screenId: 'screen:screencapturekit:222',
       screenName: 'Built-in Display',
       windowId: undefined,
       windowName: undefined,
       cameraId: undefined,
       cameraName: undefined,
-      microphoneId: 'mic-new',
+      microphoneId: 'microphone:coreaudio:podcast',
       microphoneName: 'Podcast Mic'
     }
   )
 
-  console.log('Source reconciliation smoke OK - persisted IDs, name rematch, and fallback behavior verified.')
+  console.log(
+    'Source reconciliation smoke OK - persisted IDs, name rematch, and fallback behavior verified.'
+  )
 } finally {
   await rm(tempDir, { recursive: true, force: true })
 }
