@@ -2187,8 +2187,7 @@ async function applyNativePreviewHostCommands(
   commands: NativePreviewHostCommand[],
   generation = previewWindowSurfaceGeneration()
 ): Promise<PreviewSurfaceStatus> {
-  const nonDestroyCommands = commands.filter((command) => command.kind !== 'destroy')
-  if (nonDestroyCommands.length > 0 && !previewWindowSurfaceGenerationIsCurrent(generation)) {
+  if (!previewWindowSurfaceGenerationIsCurrent(generation)) {
     return nativePreviewSurfaceStatus
   }
   // No preview window, no surface — period. A renderer holding a stale window
@@ -2216,12 +2215,12 @@ async function applyNativePreviewHostCommands(
   }
   await applyNativePreviewRealSurfaceHostCommands(commands)
   if (!previewWindowIsOpenForSurface()) {
-    return destroyNativePreviewSurface()
+    return destroyNativePreviewSurface(generation)
   }
   let status = nativePreviewSurfaceStatus
   for (const command of commands) {
     if (command.kind === 'destroy') {
-      status = destroyNativePreviewSurface()
+      status = destroyNativePreviewSurface(generation)
       continue
     }
 
@@ -2958,7 +2957,12 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolveDelay) => setTimeout(resolveDelay, ms))
 }
 
-function destroyNativePreviewSurface(): PreviewSurfaceStatus {
+function destroyNativePreviewSurface(
+  generation = previewWindowSurfaceGeneration()
+): PreviewSurfaceStatus {
+  if (!previewWindowSurfaceGenerationIsCurrent(generation)) {
+    return nativePreviewSurfaceStatus
+  }
   resetNativePreviewMainHandoffMetrics()
   nativePreviewSurfaceCompositorRequestSerial += 1
   clearNativePreviewNativePlacementAuthority()
@@ -2973,6 +2977,12 @@ function destroyNativePreviewSurface(): PreviewSurfaceStatus {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+function previewSurfaceGenerationFromIpc(generation: unknown): number {
+  return typeof generation === 'number' && Number.isSafeInteger(generation) && generation >= 0
+    ? generation
+    : previewWindowSurfaceGeneration()
 }
 
 function ensureNativePreviewRealSurfaceDriver(): NativePreviewRealSurfaceDriver | null {
@@ -3913,8 +3923,9 @@ async function runSmokePreviewMotionCommand(
     if (!Array.isArray(params.commands)) {
       throw new Error('Native preview host command smoke requires a commands array.')
     }
+    const generation = previewSurfaceGenerationFromIpc(params.generation)
     return runNativePreviewSurfaceMutation(() =>
-      applyNativePreviewHostCommands(params.commands as NativePreviewHostCommand[])
+      applyNativePreviewHostCommands(params.commands as NativePreviewHostCommand[], generation)
     )
   }
 
@@ -4915,22 +4926,27 @@ app.whenReady().then(async () => {
   ipcMain.handle('notes-window:save-document', (_event, patch: Partial<NotesDocument>) =>
     saveNotesDocument(patch ?? {})
   )
-  ipcMain.handle('preview-surface:create', (_event, bounds: PreviewSurfaceBounds) => {
-    const generation = previewWindowSurfaceGeneration()
-    return runNativePreviewSurfaceMutation(() => createNativePreviewSurface(bounds, generation))
-  })
-  ipcMain.handle('preview-surface:update-bounds', (_event, bounds: PreviewSurfaceBounds) => {
-    const generation = previewWindowSurfaceGeneration()
+  ipcMain.handle('preview-surface:create', (_event, bounds: PreviewSurfaceBounds, generation) => {
+    const requestedGeneration = previewSurfaceGenerationFromIpc(generation)
     return runNativePreviewSurfaceMutation(() =>
-      updateNativePreviewSurfaceBounds(bounds, generation)
+      createNativePreviewSurface(bounds, requestedGeneration)
     )
   })
   ipcMain.handle(
-    'preview-surface:apply-host-commands',
-    (_event, commands: NativePreviewHostCommand[]) => {
-      const generation = previewWindowSurfaceGeneration()
+    'preview-surface:update-bounds',
+    (_event, bounds: PreviewSurfaceBounds, generation) => {
+      const requestedGeneration = previewSurfaceGenerationFromIpc(generation)
       return runNativePreviewSurfaceMutation(() =>
-        applyNativePreviewHostCommands(commands, generation)
+        updateNativePreviewSurfaceBounds(bounds, requestedGeneration)
+      )
+    }
+  )
+  ipcMain.handle(
+    'preview-surface:apply-host-commands',
+    (_event, commands: NativePreviewHostCommand[], generation) => {
+      const requestedGeneration = previewSurfaceGenerationFromIpc(generation)
+      return runNativePreviewSurfaceMutation(() =>
+        applyNativePreviewHostCommands(commands, requestedGeneration)
       )
     }
   )
@@ -4945,8 +4961,10 @@ app.whenReady().then(async () => {
   ipcMain.handle('preview-surface:set-frame-polling-suppressed', (_event, suppressed: boolean) =>
     setNativePreviewSurfaceFramePollingSuppressed(suppressed)
   )
-  ipcMain.handle('preview-surface:destroy', () =>
-    runNativePreviewSurfaceMutation(() => destroyNativePreviewSurface())
+  ipcMain.handle('preview-surface:destroy', (_event, generation) =>
+    runNativePreviewSurfaceMutation(() =>
+      destroyNativePreviewSurface(previewSurfaceGenerationFromIpc(generation))
+    )
   )
   ipcMain.handle('preview-surface:status', () => nativePreviewSurfaceStatus)
 

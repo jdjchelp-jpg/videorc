@@ -54,6 +54,9 @@ async function main() {
 
   for (let cycle = 1; cycle <= cycles; cycle += 1) {
     await toggleOpen(`cycle ${cycle}: toggle open`)
+    if (cycle === 1) {
+      await assertStaleDestroyIgnored('cycle 1: stale destroy is ignored')
+    }
     await toggleClosed(`cycle ${cycle}: toggle close`)
     if (cycle === 1 || cycle === cycles || cycle % 10 === 0) {
       console.log(`OK   completed ${cycle}/${cycles} preview lifecycle cycles`)
@@ -107,6 +110,30 @@ async function toggleClosed(label) {
     { expected: lastSupervisorGeneration, state: toggled }
   )
   await waitUntilClosed(`${label}: preview fully closed`)
+}
+
+async function assertStaleDestroyIgnored(label) {
+  const currentGeneration = lastSupervisorGeneration
+  if (currentGeneration <= 0) {
+    return
+  }
+  const before = await waitForState(
+    (candidate) => candidate.open === true && candidate.surface.exists === true,
+    8000
+  )
+  assertProbe(before.ok, `${label}: preview surface exists before stale destroy`, before.last)
+  await smokeCommand('apply-native-preview-host-commands', {
+    commands: [{ kind: 'destroy' }],
+    generation: currentGeneration - 1
+  })
+  const after = await waitForState(
+    (candidate) =>
+      candidate.open === true &&
+      candidate.surface.exists === true &&
+      supervisorGeneration(candidate) === currentGeneration,
+    2000
+  )
+  assertProbe(after.ok, `${label}: current surface survived old generation destroy`, after.last)
 }
 
 async function ensureClosed(label) {

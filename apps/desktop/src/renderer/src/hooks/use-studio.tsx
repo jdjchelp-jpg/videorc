@@ -343,7 +343,10 @@ export type StudioContextValue = {
   revealPermissionTarget: () => Promise<void>
   exportSupportBundle: () => Promise<void>
   registerPreviewSurfaceResize: () => void
-  syncNativePreviewSurfaceBounds: (bounds: PreviewSurfaceBounds) => Promise<void>
+  syncNativePreviewSurfaceBounds: (
+    bounds: PreviewSurfaceBounds,
+    generation?: number
+  ) => Promise<void>
   sampleAudioMeter: () => Promise<void>
   startSession: () => Promise<void>
   stopSession: () => Promise<void>
@@ -690,6 +693,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
   const nativePreviewScreenKeyRef = useRef<string | null>(null)
   const nativePreviewSurfaceSceneRevisionRef = useRef(0)
   const nativePreviewSurfaceBoundsPendingRef = useRef<PreviewSurfaceBounds | null>(null)
+  const nativePreviewSurfaceBoundsPendingGenerationRef = useRef<number | undefined>(undefined)
   const nativePreviewSurfaceBoundsSyncInFlightRef = useRef(false)
   const nativePreviewSurfaceCreatedRef = useRef(false)
   const nativePreviewSurfaceLastSyncedBoundsRef = useRef<PreviewSurfaceBounds | null>(null)
@@ -1788,6 +1792,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       }
       nativePreviewSurfaceCreatedRef.current = false
       nativePreviewSurfaceLastSyncedBoundsRef.current = null
+      nativePreviewSurfaceBoundsPendingGenerationRef.current = undefined
       nativePreviewSurfacePresentReportPendingRef.current = null
       nativePreviewSurfacePresentReportInFlightRef.current = false
       nativePreviewSurfacePresentReportLastSentAtRef.current = 0
@@ -2410,7 +2415,9 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
   ])
 
   const syncNativePreviewSurfaceBounds = useCallback(
-    async (bounds: PreviewSurfaceBounds) => {
+    async (bounds: PreviewSurfaceBounds, generation?: number) => {
+      const generationIsCurrent = (candidate: number | undefined): boolean =>
+        candidate === undefined || previewWindowRef.current.supervisor.generation === candidate
       if (!nativePreviewSurfaceEnabled || !client || wsStatus !== 'connected') {
         return
       }
@@ -2429,6 +2436,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
         return
       }
       nativePreviewSurfaceBoundsPendingRef.current = bounds
+      nativePreviewSurfaceBoundsPendingGenerationRef.current = generation
       if (nativePreviewSurfaceBoundsSyncInFlightRef.current) {
         return
       }
@@ -2437,7 +2445,12 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       try {
         while (nativePreviewSurfaceBoundsPendingRef.current) {
           const nextBounds = nativePreviewSurfaceBoundsPendingRef.current
+          const nextGeneration = nativePreviewSurfaceBoundsPendingGenerationRef.current
           nativePreviewSurfaceBoundsPendingRef.current = null
+          nativePreviewSurfaceBoundsPendingGenerationRef.current = undefined
+          if (!generationIsCurrent(nextGeneration)) {
+            continue
+          }
           const applyHostCommands = window.videorc?.applyNativePreviewHostCommands
           const current = previewSurfaceStatusRef.current
           const surfaceAlreadyCreated =
@@ -2463,7 +2476,10 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
           // the native hosts, then inform the backend and drop its stale echo below.
           const directlyApplied = surfaceAlreadyCreated && applyHostCommands
           if (directlyApplied) {
-            await applyHostCommands([{ kind: 'update-bounds', bounds: nextBounds }])
+            await applyHostCommands([{ kind: 'update-bounds', bounds: nextBounds }], nextGeneration)
+          }
+          if (!generationIsCurrent(nextGeneration)) {
+            continue
           }
           const backendStatus = surfaceAlreadyCreated
             ? await client.request<PreviewSurfaceStatus>('preview.surface.update_bounds', {
@@ -2497,10 +2513,13 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
             : queuedCommands
           const hostStatus =
             hostCommands.length > 0 && applyHostCommands
-              ? await applyHostCommands(hostCommands)
+              ? await applyHostCommands(hostCommands, nextGeneration)
               : surfaceAlreadyCreated
-                ? await window.videorc.updateNativePreviewSurfaceBounds(nextBounds)
-                : await window.videorc.createNativePreviewSurface(nextBounds)
+                ? await window.videorc.updateNativePreviewSurfaceBounds(nextBounds, nextGeneration)
+                : await window.videorc.createNativePreviewSurface(nextBounds, nextGeneration)
+          if (!generationIsCurrent(nextGeneration)) {
+            continue
+          }
           nativePreviewSurfaceCreatedRef.current =
             nativePreviewSurfaceCreatedRef.current || hostStatus.state === 'live'
           const backendStatusAfterHostDrain =
@@ -2616,14 +2635,17 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
 
   // Closing the preview window must cost nothing: tear the surface session down
   // (helper window, proof window, backend session) instead of merely hiding it.
-  const teardownDetachedPreviewSurface = useCallback(async () => {
+  const teardownDetachedPreviewSurface = useCallback(async (generation?: number) => {
+    const generationIsCurrent = (): boolean =>
+      generation === undefined || previewWindowRef.current.supervisor.generation === generation
     nativePreviewSurfaceCreatedRef.current = false
     nativePreviewSurfaceLastSyncedBoundsRef.current = null
+    nativePreviewSurfaceBoundsPendingGenerationRef.current = undefined
     try {
       if (window.videorc?.applyNativePreviewHostCommands) {
-        await window.videorc.applyNativePreviewHostCommands([{ kind: 'destroy' }])
+        await window.videorc.applyNativePreviewHostCommands([{ kind: 'destroy' }], generation)
       }
-      if (clientRef.current && wsStatusRef.current === 'connected') {
+      if (generationIsCurrent() && clientRef.current && wsStatusRef.current === 'connected') {
         await clientRef.current.request('preview.surface.destroy')
       }
     } catch (error) {
@@ -2652,12 +2674,12 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
         visible: previewWindow.visible
       }
       previewWindowSurfaceActiveRef.current = true
-      void syncNativePreviewSurfaceBounds(bounds)
+      void syncNativePreviewSurfaceBounds(bounds, previewWindow.supervisor.generation)
       return
     }
     if (!previewWindow.open && previewWindowSurfaceActiveRef.current) {
       previewWindowSurfaceActiveRef.current = false
-      void teardownDetachedPreviewSurface()
+      void teardownDetachedPreviewSurface(previewWindow.supervisor.generation)
     }
   }, [
     nativePreviewSurfaceEnabled,

@@ -61,18 +61,20 @@ const api: VideorcApi = {
     ipcRenderer.on('notes-window:document', listener)
     return () => ipcRenderer.removeListener('notes-window:document', listener)
   },
-  createNativePreviewSurface: (bounds) => ipcRenderer.invoke('preview-surface:create', bounds),
-  updateNativePreviewSurfaceBounds: (bounds) =>
-    ipcRenderer.invoke('preview-surface:update-bounds', bounds),
-  applyNativePreviewHostCommands: (commands) =>
-    ipcRenderer.invoke('preview-surface:apply-host-commands', commands),
+  createNativePreviewSurface: (bounds, generation) =>
+    ipcRenderer.invoke('preview-surface:create', bounds, generation),
+  updateNativePreviewSurfaceBounds: (bounds, generation) =>
+    ipcRenderer.invoke('preview-surface:update-bounds', bounds, generation),
+  applyNativePreviewHostCommands: (commands, generation) =>
+    ipcRenderer.invoke('preview-surface:apply-host-commands', commands, generation),
   updateNativePreviewSurfaceScene: (scene) =>
     ipcRenderer.invoke('preview-surface:update-scene', scene),
   updateNativePreviewSurfaceCompositor: (status) =>
     ipcRenderer.invoke('preview-surface:update-compositor', status),
   setNativePreviewSurfaceFramePollingSuppressed: (suppressed) =>
     ipcRenderer.invoke('preview-surface:set-frame-polling-suppressed', suppressed),
-  destroyNativePreviewSurface: () => ipcRenderer.invoke('preview-surface:destroy'),
+  destroyNativePreviewSurface: (generation) =>
+    ipcRenderer.invoke('preview-surface:destroy', generation),
   getNativePreviewSurfaceStatus: () => ipcRenderer.invoke('preview-surface:status'),
   openSystemPermissions: (pane) => ipcRenderer.invoke('system:open-permissions', pane),
   revealPermissionTarget: () => ipcRenderer.invoke('system:reveal-permission-target'),

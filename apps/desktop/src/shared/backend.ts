@@ -1718,8 +1718,9 @@ export interface RuntimeInfo {
   nativePreviewSurfaceStageSuspended?: boolean
 }
 
-// Detached preview window: main is the bounds authority; the renderer uses this
-// state to create and destroy the backend preview surface session.
+// Detached preview window: main is the lifecycle and bounds authority; renderer
+// surface requests must carry this generation so stale effects cannot mutate the
+// active preview.
 export interface PreviewWindowState {
   open: boolean
   visible: boolean
@@ -1830,10 +1831,17 @@ export interface VideorcApi {
   saveNotesDocument: (patch: Partial<NotesDocument>) => Promise<NotesDocument>
   onNotesWindowState: (callback: (state: NotesWindowState) => void) => () => void
   onNotesDocument: (callback: (document: NotesDocument) => void) => () => void
-  createNativePreviewSurface: (bounds: PreviewSurfaceBounds) => Promise<PreviewSurfaceStatus>
-  updateNativePreviewSurfaceBounds: (bounds: PreviewSurfaceBounds) => Promise<PreviewSurfaceStatus>
+  createNativePreviewSurface: (
+    bounds: PreviewSurfaceBounds,
+    generation?: number
+  ) => Promise<PreviewSurfaceStatus>
+  updateNativePreviewSurfaceBounds: (
+    bounds: PreviewSurfaceBounds,
+    generation?: number
+  ) => Promise<PreviewSurfaceStatus>
   applyNativePreviewHostCommands: (
-    commands: NativePreviewHostCommand[]
+    commands: NativePreviewHostCommand[],
+    generation?: number
   ) => Promise<PreviewSurfaceStatus>
   updateNativePreviewSurfaceScene: (
     scene: PreviewSurfaceSceneUpdateParams
@@ -1850,7 +1858,7 @@ export interface VideorcApi {
   setNativePreviewSurfaceFramePollingSuppressed: (
     suppressed: boolean
   ) => Promise<PreviewSurfaceStatus>
-  destroyNativePreviewSurface: () => Promise<PreviewSurfaceStatus>
+  destroyNativePreviewSurface: (generation?: number) => Promise<PreviewSurfaceStatus>
   getNativePreviewSurfaceStatus: () => Promise<PreviewSurfaceStatus>
   openSystemPermissions: (pane?: SystemPermissionPane) => Promise<void>
   revealPermissionTarget: () => Promise<void>
