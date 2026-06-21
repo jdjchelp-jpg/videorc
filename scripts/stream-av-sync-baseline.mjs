@@ -21,6 +21,7 @@
 //
 //   node scripts/stream-av-sync-baseline.mjs [--gate] [--skip-record-only]
 //   node scripts/stream-av-sync-baseline.mjs --gate --skip-record-only --require-split-output-4k-record
+//   node scripts/stream-av-sync-baseline.mjs --gate --skip-record-only --require-youtube-4k-stream
 //
 // Env:
 //   VIDEORC_BASELINE_RECORDING_MS    per-session length (default 60000; >=600000 makes the drift gate binding)
@@ -47,12 +48,14 @@ import {
   fitOffsetDrift,
   summarizeStreamAvSyncEvidence
 } from './lib/stream-av-sync.mjs'
+import { evaluateYoutube4kStreamEvidence } from './lib/youtube-4k-stream-gate.mjs'
 
 const argv = process.argv.slice(2).filter((arg) => arg !== '--')
 const config = {
   gate: argv.includes('--gate'),
   skipRecordOnly: argv.includes('--skip-record-only'),
   requireSplitOutput4kRecord: argv.includes('--require-split-output-4k-record'),
+  requireYoutube4kStream: argv.includes('--require-youtube-4k-stream'),
   recordingMs: Number(process.env.VIDEORC_BASELINE_RECORDING_MS ?? 60000),
   streamPort: Number(process.env.VIDEORC_BASELINE_STREAM_PORT ?? 19501),
   ffmpegPath: process.env.VIDEORC_SMOKE_FFMPEG_PATH ?? 'ffmpeg',
@@ -80,6 +83,12 @@ try {
 process.exit(exitCode)
 
 async function main() {
+  if (config.requireSplitOutput4kRecord && config.requireYoutube4kStream) {
+    throw new Error(
+      '--require-split-output-4k-record and --require-youtube-4k-stream are mutually exclusive baseline profiles.'
+    )
+  }
+
   mkdirSync(config.outputRoot, { recursive: true })
   const recordOnlyDir = join(config.outputRoot, 'record-only')
   const recordStreamDir = join(config.outputRoot, 'record-stream')
@@ -128,7 +137,7 @@ async function main() {
   await runBaselineSession({
     outputDir: recordStreamDir,
     env: {
-      ...splitOutput4kRecordEnv(),
+      ...streamProfileEnv(),
       VIDEORC_ENCODER_BRIDGE_VIDEO_OUTPUT: null, // backend default selector decides
       VIDEORC_BASELINE_STREAM: '1',
       VIDEORC_BASELINE_STREAM_SERVER_URL: serverUrl,
@@ -179,10 +188,20 @@ async function main() {
     ? evaluateSplitOutput4kRecordEvidence({
         manifest: recordStreamEvidence,
         receivedStreamProbe: receivedFlvProbe,
-        streamAvSyncVerdict: verdict,
+        streamAvSyncVerdict: verdict
       })
     : null
-  const pass = verdict.pass && (splitOutput4kRecordVerdict?.pass ?? true)
+  const youtube4kStreamVerdict = config.requireYoutube4kStream
+    ? evaluateYoutube4kStreamEvidence({
+        manifest: recordStreamEvidence,
+        receivedStreamProbe: receivedFlvProbe,
+        streamAvSyncVerdict: verdict
+      })
+    : null
+  const pass =
+    verdict.pass &&
+    (splitOutput4kRecordVerdict?.pass ?? true) &&
+    (youtube4kStreamVerdict?.pass ?? true)
 
   const evidencePath = join(config.outputRoot, 'stream-av-sync-evidence.json')
   writeFileSync(
@@ -227,7 +246,14 @@ async function main() {
           ? {
               required: true,
               verdict: splitOutput4kRecordVerdict,
-              receivedStreamProbe: receivedFlvProbe,
+              receivedStreamProbe: receivedFlvProbe
+            }
+          : { required: false },
+        youtube4kStream: youtube4kStreamVerdict
+          ? {
+              required: true,
+              verdict: youtube4kStreamVerdict,
+              receivedStreamProbe: receivedFlvProbe
             }
           : { required: false },
         verdict
@@ -246,6 +272,7 @@ async function main() {
     driftEvidence,
     verdict,
     splitOutput4kRecordVerdict,
+    youtube4kStreamVerdict,
     evidencePath
   })
   return config.gate && !pass ? 1 : 0
@@ -281,8 +308,13 @@ function runBaselineSession({ outputDir, env }) {
   })
 }
 
+function streamProfileEnv() {
+  if (config.requireYoutube4kStream) return youtube4kStreamEnv()
+  if (config.requireSplitOutput4kRecord) return splitOutput4kRecordEnv()
+  return {}
+}
+
 function splitOutput4kRecordEnv() {
-  if (!config.requireSplitOutput4kRecord) return {}
   return {
     VIDEORC_BASELINE_WIDTH: '3840',
     VIDEORC_BASELINE_HEIGHT: '2160',
@@ -293,8 +325,24 @@ function splitOutput4kRecordEnv() {
     VIDEORC_BASELINE_STREAM_BITRATE_KBPS: '6000',
     VIDEORC_BASELINE_LAYOUT_PRESET: process.env.VIDEORC_BASELINE_LAYOUT_PRESET ?? 'screen-only',
     VIDEORC_BASELINE_NO_CAMERA: process.env.VIDEORC_BASELINE_NO_CAMERA ?? '1',
-    VIDEORC_BASELINE_NO_PREVIEW_SURFACE:
-      process.env.VIDEORC_BASELINE_NO_PREVIEW_SURFACE ?? '1',
+    VIDEORC_BASELINE_NO_PREVIEW_SURFACE: process.env.VIDEORC_BASELINE_NO_PREVIEW_SURFACE ?? '1'
+  }
+}
+
+function youtube4kStreamEnv() {
+  return {
+    VIDEORC_BASELINE_WIDTH: '3840',
+    VIDEORC_BASELINE_HEIGHT: '2160',
+    VIDEORC_BASELINE_FPS: '30',
+    VIDEORC_BASELINE_BITRATE_KBPS: '30000',
+    VIDEORC_BASELINE_STREAMING_SETTINGS: '1',
+    VIDEORC_BASELINE_STREAM_OUTPUT_PRESET: 'stream-youtube-4k30',
+    VIDEORC_BASELINE_STREAM_BITRATE_KBPS: '30000',
+    VIDEORC_BASELINE_STREAM_TARGET_PLATFORM: 'youtube',
+    VIDEORC_BASELINE_STREAM_TARGET_ID: 'youtube',
+    VIDEORC_BASELINE_LAYOUT_PRESET: process.env.VIDEORC_BASELINE_LAYOUT_PRESET ?? 'screen-only',
+    VIDEORC_BASELINE_NO_CAMERA: process.env.VIDEORC_BASELINE_NO_CAMERA ?? '1',
+    VIDEORC_BASELINE_NO_PREVIEW_SURFACE: process.env.VIDEORC_BASELINE_NO_PREVIEW_SURFACE ?? '1'
   }
 }
 
@@ -418,7 +466,7 @@ async function probeOrNull(filePath) {
   if (!filePath) return null
   try {
     return await probeMedia(filePath, {
-      ffprobePath: config.ffprobePath ?? resolveSiblingFfprobe(config.ffmpegPath),
+      ffprobePath: config.ffprobePath ?? resolveSiblingFfprobe(config.ffmpegPath)
     })
   } catch (error) {
     console.error(`probeMedia failed for ${filePath}: ${error?.message ?? error}`)
@@ -441,6 +489,7 @@ function printSummary({
   driftEvidence,
   verdict,
   splitOutput4kRecordVerdict,
+  youtube4kStreamVerdict,
   evidencePath
 }) {
   console.log('\n=== Stream A/V sync summary ===')
@@ -481,9 +530,42 @@ function printSummary({
         : 'FAIL — split-output 4K recording evidence outside the gate.'
     )
   }
+  if (youtube4kStreamVerdict) {
+    console.log('\n=== YouTube 4K stream summary ===')
+    console.log(
+      `recording output       ${formatOutputProfile(youtube4kStreamVerdict.summary.recordingOutput)}`
+    )
+    console.log(
+      `stream output          ${formatOutputProfile(youtube4kStreamVerdict.summary.streamOutput)}`
+    )
+    console.log(
+      `RTMP-received stream   ${formatOutputProfile(youtube4kStreamVerdict.summary.receivedStream)}`
+    )
+    console.log(
+      `stream platform        ${youtube4kStreamVerdict.summary.streamTargetPlatform ?? 'n/a'}`
+    )
+    console.log(
+      `VT output encoders     ${youtube4kStreamVerdict.summary.activeVideoToolboxOutputEncoders ?? 'n/a'}`
+    )
+    console.log(
+      `separate encoders      ${formatBoolean(youtube4kStreamVerdict.summary.separateOutputEncodersActive)}`
+    )
+    console.log(
+      `media quality mode     ${youtube4kStreamVerdict.summary.mediaQualityMode ?? 'n/a'}`
+    )
+    for (const warning of youtube4kStreamVerdict.warnings) console.log(`WARN: ${warning}`)
+    for (const failure of youtube4kStreamVerdict.failures) console.log(`FAIL: ${failure}`)
+    console.log(
+      youtube4kStreamVerdict.pass
+        ? 'PASS — YouTube 4K30 stream output proved.'
+        : 'FAIL — YouTube 4K30 stream evidence outside the gate.'
+    )
+  }
   console.log(`Evidence: ${evidencePath}`)
   console.log(
-    verdict.pass && (splitOutput4kRecordVerdict?.pass ?? true)
+    verdict.pass &&
+      (splitOutput4kRecordVerdict?.pass ?? true) &&
+      (youtube4kStreamVerdict?.pass ?? true)
       ? 'PASS — stream baseline inside the requested gate(s).'
       : 'FAIL — stream baseline outside the requested gate(s).'
   )
@@ -533,8 +615,7 @@ function resolveSiblingFfprobe(ffmpegPath) {
 function formatOutputProfile(profile) {
   if (!profile) return 'not reported'
   const fps = profile.fps ?? profile.avgFps ?? profile.nominalFps ?? 'n/a'
-  const bitrate =
-    typeof profile.bitrateKbps === 'number' ? `, ${profile.bitrateKbps}kbps` : ''
+  const bitrate = typeof profile.bitrateKbps === 'number' ? `, ${profile.bitrateKbps}kbps` : ''
   return `${profile.width ?? 'n/a'}x${profile.height ?? 'n/a'} @ ${fps}fps${bitrate}`
 }
 

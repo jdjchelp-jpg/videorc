@@ -33,6 +33,8 @@
 //   VIDEORC_BASELINE_STREAMING_SETTINGS=1      send modern per-target streaming settings
 //   VIDEORC_BASELINE_STREAM_OUTPUT_PRESET      modern stream output preset (default stream-safe-1080p30)
 //   VIDEORC_BASELINE_STREAM_BITRATE_KBPS       modern stream bitrate (default 6000)
+//   VIDEORC_BASELINE_STREAM_TARGET_PLATFORM    modern target platform (default custom)
+//   VIDEORC_BASELINE_STREAM_TARGET_ID          modern target id (default target platform)
 //   VIDEORC_SMOKE_OUTPUT_DIR        where recordings + reports land
 //   VIDEORC_BASELINE_SCREEN_ID / _CAMERA_ID / _MIC_ID   force a specific device id
 //   VIDEORC_BASELINE_NO_SCREEN / _NO_CAMERA / _NO_MIC   omit that source
@@ -91,6 +93,11 @@ const config = {
   streamingSettingsEnabled: process.env.VIDEORC_BASELINE_STREAMING_SETTINGS === '1',
   streamOutputPreset: process.env.VIDEORC_BASELINE_STREAM_OUTPUT_PRESET ?? 'stream-safe-1080p30',
   streamBitrateKbps: Number(process.env.VIDEORC_BASELINE_STREAM_BITRATE_KBPS ?? 6000),
+  streamTargetPlatform: process.env.VIDEORC_BASELINE_STREAM_TARGET_PLATFORM ?? 'custom',
+  streamTargetId:
+    process.env.VIDEORC_BASELINE_STREAM_TARGET_ID ??
+    process.env.VIDEORC_BASELINE_STREAM_TARGET_PLATFORM ??
+    'custom',
   fallbackLivePreview: process.env.VIDEORC_BASELINE_FALLBACK_LIVE_PREVIEW === '1',
   noPreviewSurface: process.env.VIDEORC_BASELINE_NO_PREVIEW_SURFACE === '1',
   screenMotionStimulus: process.env.VIDEORC_BASELINE_SCREEN_MOTION_STIMULUS === '1',
@@ -1794,6 +1801,8 @@ function realSourceGateRequest() {
     streamingSettingsEnabled: config.streamingSettingsEnabled,
     streamOutputPreset: config.streamingSettingsEnabled ? config.streamOutputPreset : null,
     streamBitrateKbps: config.streamingSettingsEnabled ? config.streamBitrateKbps : null,
+    streamTargetId: config.streamingSettingsEnabled ? config.streamTargetId : null,
+    streamTargetPlatform: config.streamingSettingsEnabled ? config.streamTargetPlatform : null,
     requireMotion: config.requireMotion,
     screenMotionStimulus: config.screenMotionStimulus,
     avSyncStimulus: config.avSyncStimulus,
@@ -2500,18 +2509,20 @@ function sessionParams(sources) {
 
 function streamingSettings() {
   const timestamp = new Date().toISOString()
+  const targetId = config.streamTargetId
+  const platform = config.streamTargetPlatform
   return {
     enabled: true,
     mode: 'single',
-    selectedTargetId: 'custom',
+    selectedTargetId: targetId,
     defaultOutputPreset: config.streamOutputPreset,
     defaultBitrateKbps: config.streamBitrateKbps,
-    enabledTargetIds: ['custom'],
+    enabledTargetIds: [targetId],
     targets: [
       {
-        id: 'custom',
-        platform: 'custom',
-        label: 'Local RTMP sink',
+        id: targetId,
+        platform,
+        label: `Local ${streamTargetLabel(platform)} RTMP sink`,
         enabled: true,
         serverUrl: config.streamServerUrl,
         urlMode: 'server-and-key',
@@ -2522,6 +2533,19 @@ function streamingSettings() {
         updatedAt: timestamp,
       },
     ],
+  }
+}
+
+function streamTargetLabel(platform) {
+  switch (platform) {
+    case 'youtube':
+      return 'YouTube'
+    case 'twitch':
+      return 'Twitch'
+    case 'x':
+      return 'X'
+    default:
+      return 'custom'
   }
 }
 
