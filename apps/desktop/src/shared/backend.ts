@@ -490,6 +490,8 @@ export interface StreamTargetSettings {
   accountLabel?: string
   platformBroadcastId?: string
   platformStreamId?: string
+  outputPreset?: VideoPreset
+  outputBitrateKbps?: number
   status?: StreamTargetStatus
   createdAt: string
   updatedAt: string

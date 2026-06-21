@@ -27,8 +27,10 @@ import {
   reconcileSourceSelection,
   resetAudioSyncCalibration,
   smokePreviewCompositorCaptureConfig,
+  streamOutputVideoForTarget,
   sourceSelectionChangeMessages,
   streamOutputVideoSettings,
+  streamOutputVideosForTargets,
   videoProfileCompatibility,
   videoPresets
 } from './capture'
@@ -573,6 +575,47 @@ describe('videoProfileCompatibility', () => {
     })
   })
 
+  it('resolves mixed destination outputs from a YouTube 4K default profile', () => {
+    const config = captureConfigFixture()
+    config.video = videoPresets['record-4k30']
+    config.streaming = {
+      ...config.streaming,
+      enabled: true,
+      defaultOutputPreset: 'stream-youtube-4k30',
+      defaultBitrateKbps: 30000,
+      targets: config.streaming.targets.map((target) => ({
+        ...target,
+        enabled: target.platform === 'youtube' || target.platform === 'twitch'
+      }))
+    }
+
+    const outputs = streamOutputVideosForTargets(config.video, config.streaming)
+    const youtube = outputs.find((output) => output.target?.platform === 'youtube')
+    const twitch = outputs.find((output) => output.target?.platform === 'twitch')
+
+    expect(youtube?.video).toEqual(videoPresets['stream-youtube-4k30'])
+    expect(twitch?.video).toEqual(videoPresets['stream-safe-1080p30'])
+  })
+
+  it('lets an explicit target output override the platform default', () => {
+    const config = captureConfigFixture()
+    config.streaming = {
+      ...config.streaming,
+      enabled: true
+    }
+    const twitch = {
+      ...config.streaming.targets.find((target) => target.platform === 'twitch')!,
+      enabled: true,
+      outputPreset: 'stream-safe-1080p60' as const,
+      outputBitrateKbps: 5500
+    }
+
+    expect(streamOutputVideoForTarget(config.video, config.streaming, twitch)).toEqual({
+      ...videoPresets['stream-safe-1080p60'],
+      bitrateKbps: 5500
+    })
+  })
+
   it('allows 4K local recording with a stream-safe split output profile', () => {
     const config = captureConfigFixture()
     config.recordEnabled = true
@@ -623,7 +666,7 @@ describe('videoProfileCompatibility', () => {
     expect(result.warning).toContain('normal latency')
   })
 
-  it('blocks YouTube 4K30 streaming when Twitch is also enabled', () => {
+  it('allows YouTube 4K30 streaming with a Twitch stream-safe companion output', () => {
     const config = captureConfigFixture()
     config.recordEnabled = true
     config.streamEnabled = true
@@ -639,9 +682,10 @@ describe('videoProfileCompatibility', () => {
       }))
     }
 
-    expect(videoProfileCompatibility(config).blockingReason).toContain(
-      'exactly one enabled YouTube destination'
-    )
+    const result = videoProfileCompatibility(config)
+
+    expect(result.blockingReason).toBeNull()
+    expect(result.warning).toContain('non-YouTube destinations use stream-safe 1080p')
   })
 
   it('blocks YouTube 4K30 streaming without local 4K recording during acceptance', () => {

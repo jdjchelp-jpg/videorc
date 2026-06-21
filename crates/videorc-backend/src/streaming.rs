@@ -97,6 +97,10 @@ pub struct StreamTargetSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub platform_stream_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_preset: Option<VideoPreset>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_bitrate_kbps: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<StreamTargetStatus>,
     pub created_at: String,
     pub updated_at: String,
@@ -519,6 +523,8 @@ fn default_stream_target(
         account_label: None,
         platform_broadcast_id: None,
         platform_stream_id: None,
+        output_preset: None,
+        output_bitrate_kbps: None,
         status: Some(StreamTargetStatus {
             state: StreamTargetState::NotConfigured,
             message: None,
@@ -687,6 +693,41 @@ mod tests {
         assert!(json.contains("\"platform\":\"custom\""));
         let restored: StreamingSettings = serde_json::from_str(&json).unwrap();
         assert_eq!(restored, settings);
+    }
+
+    #[test]
+    fn stream_target_output_profile_round_trips_through_camel_case_json() {
+        let mut settings = streaming_from_legacy_rtmp(
+            &rtmp(
+                RtmpPreset::YouTube,
+                "rtmp://a.rtmp.youtube.com/live2",
+                "yt-key",
+            ),
+            true,
+        );
+        let youtube = settings
+            .targets
+            .iter_mut()
+            .find(|t| t.platform == StreamPlatform::Youtube)
+            .unwrap();
+        youtube.output_preset = Some(VideoPreset::StreamYoutube4k30);
+        youtube.output_bitrate_kbps = Some(30_000);
+
+        let json = serde_json::to_string(&settings).unwrap();
+        assert!(json.contains("\"outputPreset\":\"stream-youtube-4k30\""));
+        assert!(json.contains("\"outputBitrateKbps\":30000"));
+
+        let restored: StreamingSettings = serde_json::from_str(&json).unwrap();
+        let restored_youtube = restored
+            .targets
+            .iter()
+            .find(|t| t.platform == StreamPlatform::Youtube)
+            .unwrap();
+        assert_eq!(
+            restored_youtube.output_preset,
+            Some(VideoPreset::StreamYoutube4k30)
+        );
+        assert_eq!(restored_youtube.output_bitrate_kbps, Some(30_000));
     }
 
     #[test]
