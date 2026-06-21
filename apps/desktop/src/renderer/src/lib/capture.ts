@@ -258,7 +258,7 @@ export function videoProfileCompatibility(
   }
 ): VideoProfileCompatibility {
   const { recordEnabled, streamEnabled, video, streaming } = config
-  const streamVideo = streamEnabled ? resolveStreamOutputVideo(video, streaming) : video
+  const streamVideo = streamEnabled ? streamOutputVideoSettings(video, streaming) : video
   const splitStreamOutput = streamEnabled && Boolean(streaming?.enabled)
 
   if (streamEnabled && is4kVideo(video) && !recordEnabled) {
@@ -328,7 +328,7 @@ export function videoProfileCompatibility(
   return { blockingReason: null, warning: null }
 }
 
-function resolveStreamOutputVideo(
+export function streamOutputVideoSettings(
   fallback: VideoSettings,
   streaming: StreamingSettings | undefined
 ): VideoSettings {

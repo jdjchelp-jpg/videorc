@@ -28,6 +28,7 @@ import {
   resetAudioSyncCalibration,
   smokePreviewCompositorCaptureConfig,
   sourceSelectionChangeMessages,
+  streamOutputVideoSettings,
   videoProfileCompatibility,
   videoPresets
 } from './capture'
@@ -547,6 +548,22 @@ describe('videoPresets', () => {
 })
 
 describe('videoProfileCompatibility', () => {
+  it('resolves the stream output video from enabled streaming defaults', () => {
+    const config = captureConfigFixture()
+    config.video = videoPresets['record-4k30']
+    config.streaming = {
+      ...config.streaming,
+      enabled: true,
+      defaultOutputPreset: 'stream-safe-1080p30',
+      defaultBitrateKbps: 4500
+    }
+
+    expect(streamOutputVideoSettings(config.video, config.streaming)).toEqual({
+      ...videoPresets['stream-safe-1080p30'],
+      bitrateKbps: 4500
+    })
+  })
+
   it('allows 4K local recording with a stream-safe split output profile', () => {
     const config = captureConfigFixture()
     config.recordEnabled = true

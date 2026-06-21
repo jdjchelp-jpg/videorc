@@ -55,11 +55,16 @@ import type {
   StreamTargetRuntime,
   StreamTargetSettings,
   StreamUrlMode,
+  VideoSettings,
   TwitchCategory,
   XNativeLiveCapability,
   YouTubeChannel
 } from '@/lib/backend'
-import { isStreamTargetReady, videoProfileCompatibility } from '@/lib/capture'
+import {
+  isStreamTargetReady,
+  streamOutputVideoSettings,
+  videoProfileCompatibility
+} from '@/lib/capture'
 import { entitlementDisabledReason } from '@/lib/entitlements'
 import { streamKeyPlatformMismatch, streamKeyTailHint } from '@/lib/stream-key-format'
 import { cn } from '@/lib/utils'
@@ -108,6 +113,15 @@ export function StreamingTab(): ReactElement {
   } = useStudio()
   const streaming = captureConfig.streaming
   const { video } = captureConfig
+  const streamVideo = streamOutputVideoSettings(
+    video,
+    captureConfig.streamEnabled ? streaming : undefined
+  )
+  const splitOutputActive =
+    captureConfig.recordEnabled &&
+    captureConfig.streamEnabled &&
+    streaming.enabled &&
+    !sameVideoOutput(video, streamVideo)
   const compatibility = videoProfileCompatibility(captureConfig)
   const compatibilityMessage = compatibility.blockingReason ?? compatibility.warning
   const livestreamingEntitlementReason = entitlementDisabledReason(entitlements, 'livestreaming')
@@ -228,12 +242,13 @@ export function StreamingTab(): ReactElement {
           </div>
         ) : null}
         <StreamingReadiness
-          bitrateKbps={video.bitrateKbps}
           ffmpegReady={Boolean(health?.ffmpeg.available)}
           profileCompatible={!compatibility.blockingReason}
           recordEnabled={captureConfig.recordEnabled}
+          recordingVideo={video}
+          splitOutputActive={splitOutputActive}
+          streamVideo={streamVideo}
           targets={streaming.targets}
-          video={`${video.width}×${video.height} @ ${video.fps}`}
         />
       </div>
     </div>
@@ -1386,27 +1401,29 @@ function platformLabel(platform: StreamPlatform): string {
 
 function StreamingReadiness({
   targets,
-  bitrateKbps,
   ffmpegReady,
   profileCompatible,
   recordEnabled,
-  video
+  recordingVideo,
+  splitOutputActive,
+  streamVideo
 }: {
   targets: StreamTargetSettings[]
-  bitrateKbps: number
   ffmpegReady: boolean
   profileCompatible: boolean
   recordEnabled: boolean
-  video: string
+  recordingVideo: VideoSettings
+  splitOutputActive: boolean
+  streamVideo: VideoSettings
 }): ReactElement {
   const enabled = targets.filter((target) => target.enabled)
   const readyCount = enabled.filter(isStreamTargetReady).length
   const allReady = enabled.length > 0 && readyCount === enabled.length
-  const presetOk = profileCompatible && bitrateKbps <= 6000
+  const presetOk = profileCompatible && streamVideo.bitrateKbps <= 6000
   const uploadMbps = enabled.length
-    ? Math.round((((bitrateKbps + 128) * enabled.length * 1.1) / 1000) * 10) / 10
+    ? Math.round((((streamVideo.bitrateKbps + 128) * enabled.length * 1.1) / 1000) * 10) / 10
     : 0
-  const diskMbPerMin = Math.round((bitrateKbps / 8 / 1000) * 60)
+  const diskMbPerMin = Math.round((recordingVideo.bitrateKbps / 8 / 1000) * 60)
 
   return (
     <PanelSection icon={Gauge} title="Multistream readiness">
@@ -1417,9 +1434,15 @@ function StreamingReadiness({
         label="Destination credentials saved"
         ok={allReady}
       />
+      {splitOutputActive ? (
+        <InfoRow
+          detail={`${formatVideoOutput(recordingVideo)} · ${recordingVideo.bitrateKbps} kbps`}
+          label="Recording output"
+        />
+      ) : null}
       <ChecklistRow
-        detail={`${video} · ${bitrateKbps} kbps${presetOk ? '' : ' · choose stream-safe 1080p'}`}
-        label="Output preset compatible"
+        detail={`${formatVideoOutput(streamVideo)} · ${streamVideo.bitrateKbps} kbps${presetOk ? '' : ' · choose stream-safe 1080p'}`}
+        label={splitOutputActive ? 'Stream output compatible' : 'Output preset compatible'}
         ok={presetOk}
       />
       <ChecklistRow
@@ -1438,11 +1461,25 @@ function StreamingReadiness({
       {recordEnabled ? <InfoRow detail={`~${diskMbPerMin} MB/min`} label="Estimated disk" /> : null}
 
       <p className="text-xs text-muted-foreground">
-        v1 streams the same encode to every destination via FFmpeg, so the bitrate is capped by the
-        strictest platform (Twitch ~6000 kbps).
+        {splitOutputActive
+          ? 'Recording and livestreaming use separate output encoders; the stream leg stays platform-safe for every destination.'
+          : 'v1 streams the same encode to every destination via FFmpeg, so the bitrate is capped by the strictest platform (Twitch ~6000 kbps).'}
       </p>
     </PanelSection>
   )
+}
+
+function sameVideoOutput(left: VideoSettings, right: VideoSettings): boolean {
+  return (
+    left.width === right.width &&
+    left.height === right.height &&
+    left.fps === right.fps &&
+    left.bitrateKbps === right.bitrateKbps
+  )
+}
+
+function formatVideoOutput(video: VideoSettings): string {
+  return `${video.width}×${video.height} @ ${video.fps}`
 }
 
 function ChecklistRow({
