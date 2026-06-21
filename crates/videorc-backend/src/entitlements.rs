@@ -21,6 +21,10 @@ const PREMIUM_STREAMING_MAX_HEIGHT: u32 = 1080;
 const PREMIUM_STREAMING_MAX_FPS: u32 = 30;
 const PREMIUM_STREAMING_MAX_BITRATE_KBPS: u32 = 6000;
 const PREMIUM_STREAMING_MAX_DESTINATIONS: u32 = 3;
+const DEVELOPER_STREAMING_MAX_WIDTH: u32 = 3840;
+const DEVELOPER_STREAMING_MAX_HEIGHT: u32 = 2160;
+const DEVELOPER_STREAMING_MAX_FPS: u32 = 30;
+const DEVELOPER_STREAMING_MAX_BITRATE_KBPS: u32 = 30_000;
 
 const MULTISTREAMING_DISABLED_REASON: &str =
     "Multistreaming requires Videorc Premium. Basic can stream to one destination at HD.";
@@ -88,6 +92,7 @@ pub fn premium_entitlements(source: EntitlementSource) -> EntitlementsSnapshot {
 fn developer_entitlements() -> EntitlementsSnapshot {
     let mut snapshot = premium_entitlements(EntitlementSource::EnvOverride);
     snapshot.tier = EntitlementTier::Developer;
+    snapshot.limits = developer_limits();
     for capability in &mut snapshot.capabilities {
         capability.state = EntitlementState::DeveloperOverride;
         capability.reason = Some(DEVELOPER_OVERRIDE_REASON.to_string());
@@ -145,6 +150,24 @@ fn premium_limits() -> EntitlementLimits {
             max_height: PREMIUM_STREAMING_MAX_HEIGHT,
             max_fps: PREMIUM_STREAMING_MAX_FPS,
             max_bitrate_kbps: PREMIUM_STREAMING_MAX_BITRATE_KBPS,
+            max_destinations: PREMIUM_STREAMING_MAX_DESTINATIONS,
+        },
+    }
+}
+
+fn developer_limits() -> EntitlementLimits {
+    EntitlementLimits {
+        recording: RecordingEntitlementLimits {
+            max_width: PREMIUM_RECORDING_MAX_WIDTH,
+            max_height: PREMIUM_RECORDING_MAX_HEIGHT,
+            max_fps: PREMIUM_RECORDING_MAX_FPS,
+            max_bitrate_kbps: None,
+        },
+        streaming: StreamingEntitlementLimits {
+            max_width: DEVELOPER_STREAMING_MAX_WIDTH,
+            max_height: DEVELOPER_STREAMING_MAX_HEIGHT,
+            max_fps: DEVELOPER_STREAMING_MAX_FPS,
+            max_bitrate_kbps: DEVELOPER_STREAMING_MAX_BITRATE_KBPS,
             max_destinations: PREMIUM_STREAMING_MAX_DESTINATIONS,
         },
     }
@@ -255,6 +278,9 @@ mod tests {
                 .state,
             EntitlementState::DeveloperOverride
         );
+        assert_eq!(snapshot.limits.streaming.max_width, 3840);
+        assert_eq!(snapshot.limits.streaming.max_height, 2160);
+        assert_eq!(snapshot.limits.streaming.max_bitrate_kbps, 30_000);
     }
 
     #[test]

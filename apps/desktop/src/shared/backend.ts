@@ -422,6 +422,7 @@ export type VideoPreset =
   | 'record-4k60-experimental'
   | 'stream-safe-1080p30'
   | 'stream-safe-1080p60'
+  | 'stream-youtube-4k30'
   | 'stream-1080p60'
   | 'custom'
 

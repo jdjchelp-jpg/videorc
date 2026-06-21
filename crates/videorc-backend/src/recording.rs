@@ -5162,6 +5162,24 @@ fn validate_session_entitlements(
                 destination_count
             );
         }
+        let stream_video = resolve_stream_output_video(params)?;
+        if stream_video.width > snapshot.limits.streaming.max_width
+            || stream_video.height > snapshot.limits.streaming.max_height
+            || stream_video.fps > snapshot.limits.streaming.max_fps
+            || stream_video.bitrate_kbps > snapshot.limits.streaming.max_bitrate_kbps
+        {
+            bail!(
+                "This plan allows livestreaming up to {}x{}@{}fps, {} kbps; selected stream output is {}x{}@{}fps, {} kbps.",
+                snapshot.limits.streaming.max_width,
+                snapshot.limits.streaming.max_height,
+                snapshot.limits.streaming.max_fps,
+                snapshot.limits.streaming.max_bitrate_kbps,
+                stream_video.width,
+                stream_video.height,
+                stream_video.fps,
+                stream_video.bitrate_kbps
+            );
+        }
     }
 
     Ok(())
@@ -5245,7 +5263,9 @@ fn validate_video_profile_policy(params: &StartSessionParams) -> Result<()> {
             .stream
             .as_ref()
             .unwrap_or(&params.output.video);
-        if stream_video.bitrate_kbps > 6000 {
+        if is_true_4k_stream_output(stream_video) {
+            validate_true_4k_stream_profile(params, stream_video)?;
+        } else if stream_video.bitrate_kbps > 6000 {
             bail!(
                 "Streaming bitrate must be 6000 kbps or lower for the v1 platform-safe path. Select stream-safe-1080p30/60 or reduce the custom bitrate."
             );
@@ -5397,6 +5417,10 @@ fn resolve_stream_output_video(params: &StartSessionParams) -> Result<VideoSetti
         None => params.output.video.clone(),
     };
 
+    if is_true_4k_stream_output(&stream_video) {
+        validate_true_4k_stream_profile(params, &stream_video)?;
+        return Ok(stream_video);
+    }
     if stream_video.width > 1920 || stream_video.height > 1080 {
         bail!(
             "Stream output preset {:?} resolves to {}x{}; v1 stream output must be 1080p or lower.",
@@ -5410,6 +5434,60 @@ fn resolve_stream_output_video(params: &StartSessionParams) -> Result<VideoSetti
     }
 
     Ok(stream_video)
+}
+
+fn is_true_4k_stream_output(video: &VideoSettings) -> bool {
+    video.width >= 3840 || video.height >= 2160
+}
+
+fn validate_true_4k_stream_profile(
+    params: &StartSessionParams,
+    stream_video: &VideoSettings,
+) -> Result<()> {
+    if !matches!(stream_video.preset, VideoPreset::StreamYoutube4k30) {
+        bail!("True 4K streaming requires the YouTube 4K30 stream profile.");
+    }
+    require_video_profile(stream_video, 3840, 2160, 30, 30_000)?;
+    if !params.output.record_enabled
+        || !matches!(params.output.video.preset, VideoPreset::Record4k30)
+    {
+        bail!(
+            "YouTube 4K30 streaming requires the Record 4K30 local recording profile during v1 acceptance."
+        );
+    }
+    let targets = enabled_streaming_targets(params);
+    if targets.len() != 1 || targets[0].platform != StreamPlatform::Youtube {
+        bail!("YouTube 4K30 streaming requires exactly one enabled YouTube destination.");
+    }
+    if compositor_encoder_bridge_disabled(
+        params.output.record_enabled,
+        params.output.stream_enabled,
+    ) {
+        bail!(
+            "YouTube 4K30 streaming requires the VideoToolbox encoder bridge path. Remove encoder bridge legacy/disabled overrides for this mode."
+        );
+    }
+    let bridge_video_output = recording_encoder_bridge_video_output(
+        params.output.record_enabled,
+        params.output.stream_enabled,
+    );
+    ensure_encoded_bridge_video_output(bridge_video_output)?;
+    Ok(())
+}
+
+fn enabled_streaming_targets(params: &StartSessionParams) -> Vec<&StreamTargetSettings> {
+    params
+        .streaming
+        .as_ref()
+        .filter(|streaming| streaming.enabled)
+        .map(|streaming| {
+            streaming
+                .targets
+                .iter()
+                .filter(|target| target.enabled)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn video_preset_defaults(preset: VideoPreset) -> VideoSettings {
@@ -5456,6 +5534,13 @@ fn video_preset_defaults(preset: VideoPreset) -> VideoSettings {
             fps: 60,
             bitrate_kbps: 6000,
         },
+        VideoPreset::StreamYoutube4k30 => VideoSettings {
+            preset,
+            width: 3840,
+            height: 2160,
+            fps: 30,
+            bitrate_kbps: 30_000,
+        },
         VideoPreset::Stream1080p60 => VideoSettings {
             preset,
             width: 1920,
@@ -5479,6 +5564,7 @@ fn validate_named_video_profile(video: &VideoSettings) -> Result<()> {
         VideoPreset::Record4k60Experimental => require_video_profile(video, 3840, 2160, 60, 50_000),
         VideoPreset::StreamSafe1080p30 => require_video_profile(video, 1920, 1080, 30, 6000),
         VideoPreset::StreamSafe1080p60 => require_video_profile(video, 1920, 1080, 60, 6000),
+        VideoPreset::StreamYoutube4k30 => require_video_profile(video, 3840, 2160, 30, 30_000),
         _ => Ok(()),
     }
 }
@@ -5968,6 +6054,7 @@ pub type LivePreviewSlot = Arc<Mutex<LivePreviewState>>;
 mod tests {
     use super::*;
     use crate::capture_input::AVFOUNDATION_VIDEO_PIXEL_FORMAT;
+    use crate::protocol::EntitlementSource;
     use crate::protocol::PreviewSurfaceState;
     use crate::protocol::{
         CameraCorner, CameraFit, CameraShape, CameraSize, CameraTransform, LayoutPreset,
@@ -8922,7 +9009,14 @@ mod tests {
 
     #[test]
     fn entitlement_guard_allows_one_basic_livestream() {
-        let params = base_params(false, true);
+        let mut params = base_params(false, true);
+        params.output.video = VideoSettings {
+            preset: VideoPreset::StreamSafe1080p30,
+            width: 1920,
+            height: 1080,
+            fps: 30,
+            bitrate_kbps: 6000,
+        };
         let snapshot = entitlements::entitlements_from_env_value(None);
 
         validate_session_entitlements(&params, &snapshot).unwrap();
@@ -8952,7 +9046,14 @@ mod tests {
 
     #[test]
     fn entitlement_guard_allows_livestreaming_with_developer_override() {
-        let params = base_params(false, true);
+        let mut params = base_params(false, true);
+        params.output.video = VideoSettings {
+            preset: VideoPreset::StreamSafe1080p30,
+            width: 1920,
+            height: 1080,
+            fps: 30,
+            bitrate_kbps: 6000,
+        };
         let snapshot = entitlements::entitlements_from_env_value(Some("1"));
 
         validate_session_entitlements(&params, &snapshot).unwrap();
@@ -8973,6 +9074,59 @@ mod tests {
                 "twitch-key",
             ),
         ]));
+        let snapshot = entitlements::entitlements_from_env_value(Some("1"));
+
+        validate_session_entitlements(&params, &snapshot).unwrap();
+    }
+
+    #[test]
+    fn entitlement_guard_blocks_true_4k_streaming_without_developer_limits() {
+        let mut params = base_params(true, true);
+        params.output.video = VideoSettings {
+            preset: VideoPreset::Record4k30,
+            width: 3840,
+            height: 2160,
+            fps: 30,
+            bitrate_kbps: 30_000,
+        };
+        let mut streaming = streaming_for(&[(
+            StreamPlatform::Youtube,
+            "rtmp://a.rtmp.youtube.com/live2",
+            "youtube-key",
+        )]);
+        streaming.default_output_preset = VideoPreset::StreamYoutube4k30;
+        streaming.default_bitrate_kbps = 30_000;
+        params.streaming = Some(streaming);
+        let snapshot = entitlements::premium_entitlements(EntitlementSource::Creem);
+        let error = validate_session_entitlements(&params, &snapshot)
+            .expect_err("Premium should stay 1080p until product enables true 4K streaming");
+
+        assert!(
+            error
+                .to_string()
+                .contains("allows livestreaming up to 1920x1080"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn entitlement_guard_allows_true_4k_streaming_with_developer_override() {
+        let mut params = base_params(true, true);
+        params.output.video = VideoSettings {
+            preset: VideoPreset::Record4k30,
+            width: 3840,
+            height: 2160,
+            fps: 30,
+            bitrate_kbps: 30_000,
+        };
+        let mut streaming = streaming_for(&[(
+            StreamPlatform::Youtube,
+            "rtmp://a.rtmp.youtube.com/live2",
+            "youtube-key",
+        )]);
+        streaming.default_output_preset = VideoPreset::StreamYoutube4k30;
+        streaming.default_bitrate_kbps = 30_000;
+        params.streaming = Some(streaming);
         let snapshot = entitlements::entitlements_from_env_value(Some("1"));
 
         validate_session_entitlements(&params, &snapshot).unwrap();
@@ -9221,6 +9375,47 @@ mod tests {
     }
 
     #[test]
+    fn split_output_profiles_resolve_youtube_4k30_true_stream() {
+        let mut params = base_params(true, true);
+        params.output.video = VideoSettings {
+            preset: VideoPreset::Record4k30,
+            width: 3840,
+            height: 2160,
+            fps: 30,
+            bitrate_kbps: 30_000,
+        };
+        let mut streaming = streaming_for(&[(
+            StreamPlatform::Youtube,
+            "rtmp://a.rtmp.youtube.com/live2",
+            "yt",
+        )]);
+        streaming.default_output_preset = VideoPreset::StreamYoutube4k30;
+        streaming.default_bitrate_kbps = 30_000;
+        params.streaming = Some(streaming);
+
+        let profiles = resolve_split_output_profiles(&params).unwrap();
+
+        assert_eq!(
+            profiles.stream,
+            Some(VideoSettings {
+                preset: VideoPreset::StreamYoutube4k30,
+                width: 3840,
+                height: 2160,
+                fps: 30,
+                bitrate_kbps: 30_000,
+            })
+        );
+        assert_eq!(
+            recording_compositor_stream_output(
+                &params,
+                EncoderBridgeVideoOutput::VideoToolboxH264AnnexB,
+            )
+            .unwrap(),
+            None
+        );
+    }
+
+    #[test]
     fn video_profile_policy_characterizes_plan_006_v1_boundaries() {
         // Plans 005/006 accepted split-output behavior: 4K local recording may
         // stream only through an explicit <=1080p output profile, while
@@ -9288,6 +9483,76 @@ mod tests {
         params.streaming = Some(streaming);
 
         validate_outputs(&params).unwrap();
+    }
+
+    #[test]
+    fn accepts_youtube_4k30_stream_with_record_4k30_profile() {
+        let mut params = base_params(true, true);
+        params.output.video = VideoSettings {
+            preset: VideoPreset::Record4k30,
+            width: 3840,
+            height: 2160,
+            fps: 30,
+            bitrate_kbps: 30_000,
+        };
+        let mut streaming = streaming_for(&[(
+            StreamPlatform::Youtube,
+            "rtmp://a.rtmp.youtube.com/live2",
+            "yt",
+        )]);
+        streaming.default_output_preset = VideoPreset::StreamYoutube4k30;
+        streaming.default_bitrate_kbps = 30_000;
+        params.streaming = Some(streaming);
+
+        validate_outputs(&params).unwrap();
+    }
+
+    #[test]
+    fn rejects_youtube_4k30_stream_when_twitch_is_enabled() {
+        let mut params = base_params(true, true);
+        params.output.video = VideoSettings {
+            preset: VideoPreset::Record4k30,
+            width: 3840,
+            height: 2160,
+            fps: 30,
+            bitrate_kbps: 30_000,
+        };
+        let mut streaming = streaming_for(&[
+            (
+                StreamPlatform::Youtube,
+                "rtmp://a.rtmp.youtube.com/live2",
+                "yt",
+            ),
+            (StreamPlatform::Twitch, "rtmp://live.twitch.tv/app", "tw"),
+        ]);
+        streaming.default_output_preset = VideoPreset::StreamYoutube4k30;
+        streaming.default_bitrate_kbps = 30_000;
+        params.streaming = Some(streaming);
+
+        let error = validate_outputs(&params).unwrap_err().to_string();
+        assert!(
+            error.contains("requires exactly one enabled YouTube destination"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn rejects_youtube_4k30_stream_without_local_recording_acceptance_profile() {
+        let mut params = base_params(false, true);
+        let mut streaming = streaming_for(&[(
+            StreamPlatform::Youtube,
+            "rtmp://a.rtmp.youtube.com/live2",
+            "yt",
+        )]);
+        streaming.default_output_preset = VideoPreset::StreamYoutube4k30;
+        streaming.default_bitrate_kbps = 30_000;
+        params.streaming = Some(streaming);
+
+        let error = validate_outputs(&params).unwrap_err().to_string();
+        assert!(
+            error.contains("requires the Record 4K30 local recording profile"),
+            "{error}"
+        );
     }
 
     #[test]

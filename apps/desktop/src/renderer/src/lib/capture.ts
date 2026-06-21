@@ -207,6 +207,13 @@ export const videoPresets: Record<VideoPreset, VideoSettings> = {
     fps: 60,
     bitrateKbps: 6000
   },
+  'stream-youtube-4k30': {
+    preset: 'stream-youtube-4k30',
+    width: 3840,
+    height: 2160,
+    fps: 30,
+    bitrateKbps: 30000
+  },
   'stream-1080p60': {
     preset: 'stream-1080p60',
     width: 1920,
@@ -238,7 +245,8 @@ export const recordingVideoPresetOptions: VideoPresetOption[] = [
 
 export const streamingVideoPresetOptions: VideoPresetOption[] = [
   { value: 'stream-safe-1080p30', label: 'Stream-safe 1080p30' },
-  { value: 'stream-safe-1080p60', label: 'Stream-safe 1080p60' }
+  { value: 'stream-safe-1080p60', label: 'Stream-safe 1080p60' },
+  { value: 'stream-youtube-4k30', label: 'YouTube 4K30' }
 ]
 
 export const legacyVideoPresetOptions: VideoPresetOption[] = [
@@ -252,6 +260,48 @@ export interface VideoProfileCompatibility {
   warning: string | null
 }
 
+export type StreamPlatformOutputCapability = {
+  maxWidth: number
+  maxHeight: number
+  maxFps: number
+  maxBitrateKbps: number
+  true4k: boolean
+}
+
+export const streamPlatformOutputCapabilities: Record<
+  StreamPlatform,
+  StreamPlatformOutputCapability
+> = {
+  youtube: {
+    maxWidth: 3840,
+    maxHeight: 2160,
+    maxFps: 30,
+    maxBitrateKbps: 30000,
+    true4k: true
+  },
+  twitch: {
+    maxWidth: 1920,
+    maxHeight: 1080,
+    maxFps: 60,
+    maxBitrateKbps: 6000,
+    true4k: false
+  },
+  x: {
+    maxWidth: 1920,
+    maxHeight: 1080,
+    maxFps: 30,
+    maxBitrateKbps: 6000,
+    true4k: false
+  },
+  custom: {
+    maxWidth: 1920,
+    maxHeight: 1080,
+    maxFps: 30,
+    maxBitrateKbps: 6000,
+    true4k: false
+  }
+}
+
 export function videoProfileCompatibility(
   config: Pick<CaptureConfig, 'recordEnabled' | 'streamEnabled' | 'video'> & {
     streaming?: StreamingSettings
@@ -260,6 +310,9 @@ export function videoProfileCompatibility(
   const { recordEnabled, streamEnabled, video, streaming } = config
   const streamVideo = streamEnabled ? streamOutputVideoSettings(video, streaming) : video
   const splitStreamOutput = streamEnabled && Boolean(streaming?.enabled)
+  const streamTargets = streaming?.targets.filter((target) => target.enabled) ?? []
+  const true4kStreamOutput = streamEnabled && is4kVideo(streamVideo)
+  let true4kStreamWarning: string | null = null
 
   if (streamEnabled && is4kVideo(video) && !recordEnabled) {
     return {
@@ -276,14 +329,35 @@ export function videoProfileCompatibility(
     }
   }
 
-  if (streamEnabled && (streamVideo.width > 1920 || streamVideo.height > 1080)) {
+  if (true4kStreamOutput) {
+    const youtube4kCompatibility = youtube4kStreamCompatibility({
+      recordEnabled,
+      recordingVideo: video,
+      streamVideo,
+      targets: streamTargets
+    })
+    if (youtube4kCompatibility.blockingReason) {
+      return youtube4kCompatibility
+    }
+    true4kStreamWarning = youtube4kCompatibility.warning
+  }
+
+  if (
+    streamEnabled &&
+    (streamVideo.width > 1920 || streamVideo.height > 1080) &&
+    streamVideo.preset !== 'stream-youtube-4k30'
+  ) {
     return {
       blockingReason: 'Stream output must be 1080p or lower for the v1 platform-safe path.',
       warning: null
     }
   }
 
-  if (streamEnabled && streamVideo.bitrateKbps > 6000) {
+  if (
+    streamEnabled &&
+    streamVideo.bitrateKbps > 6000 &&
+    streamVideo.preset !== 'stream-youtube-4k30'
+  ) {
     return {
       blockingReason:
         'Livestream bitrate must be 6000 kbps or lower for the v1 platform-safe path.',
@@ -317,6 +391,7 @@ export function videoProfileCompatibility(
   if (
     streamEnabled &&
     !streamVideo.preset.startsWith('stream-safe-') &&
+    streamVideo.preset !== 'stream-youtube-4k30' &&
     streamVideo.preset !== 'custom'
   ) {
     return {
@@ -325,7 +400,49 @@ export function videoProfileCompatibility(
     }
   }
 
-  return { blockingReason: null, warning: null }
+  return { blockingReason: null, warning: true4kStreamWarning }
+}
+
+function youtube4kStreamCompatibility({
+  recordEnabled,
+  recordingVideo,
+  streamVideo,
+  targets
+}: {
+  recordEnabled: boolean
+  recordingVideo: VideoSettings
+  streamVideo: VideoSettings
+  targets: StreamTargetSettings[]
+}): VideoProfileCompatibility {
+  if (streamVideo.preset !== 'stream-youtube-4k30') {
+    return {
+      blockingReason: 'True 4K streaming requires the YouTube 4K30 stream profile.',
+      warning: null
+    }
+  }
+  if (!recordEnabled || !is4kVideo(recordingVideo)) {
+    return {
+      blockingReason:
+        'YouTube 4K30 streaming requires local 4K recording to stay enabled during v1 acceptance.',
+      warning: null
+    }
+  }
+  if (streamVideo.fps !== 30 || streamVideo.bitrateKbps !== 30000) {
+    return {
+      blockingReason: 'YouTube 4K30 streaming requires 3840x2160 @ 30fps and 30000 kbps.',
+      warning: null
+    }
+  }
+  if (targets.length !== 1 || targets[0]?.platform !== 'youtube') {
+    return {
+      blockingReason: 'YouTube 4K30 streaming requires exactly one enabled YouTube destination.',
+      warning: null
+    }
+  }
+  return {
+    blockingReason: null,
+    warning: 'YouTube 4K30 uses normal latency and needs stable upload above 30 Mbps.'
+  }
 }
 
 export function streamOutputVideoSettings(

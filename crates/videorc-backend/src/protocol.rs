@@ -668,6 +668,8 @@ pub enum VideoPreset {
     StreamSafe1080p30,
     #[serde(rename = "stream-safe-1080p60")]
     StreamSafe1080p60,
+    #[serde(rename = "stream-youtube-4k30")]
+    StreamYoutube4k30,
     #[serde(rename = "stream-1080p60")]
     Stream1080p60,
     Custom,
@@ -2240,6 +2242,10 @@ mod tests {
         assert_eq!(
             serde_json::to_value(VideoPreset::StreamSafe1080p60).unwrap(),
             serde_json::json!("stream-safe-1080p60")
+        );
+        assert_eq!(
+            serde_json::to_value(VideoPreset::StreamYoutube4k30).unwrap(),
+            serde_json::json!("stream-youtube-4k30")
         );
     }
 

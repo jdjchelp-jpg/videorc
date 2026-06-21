@@ -537,12 +537,21 @@ describe('videoPresets', () => {
       fps: 60,
       bitrateKbps: 6000
     })
+    expect(videoPresets['stream-youtube-4k30']).toMatchObject({
+      width: 3840,
+      height: 2160,
+      fps: 30,
+      bitrateKbps: 30000
+    })
   })
 
   it('normalizes persisted first-class presets through the shared map', () => {
     expect(normalizeVideoSettings({ preset: 'record-4k30' })).toEqual(videoPresets['record-4k30'])
     expect(normalizeVideoSettings({ preset: 'stream-safe-1080p30' })).toEqual(
       videoPresets['stream-safe-1080p30']
+    )
+    expect(normalizeVideoSettings({ preset: 'stream-youtube-4k30' })).toEqual(
+      videoPresets['stream-youtube-4k30']
     )
   })
 })
@@ -590,6 +599,70 @@ describe('videoProfileCompatibility', () => {
     })
 
     expect(result.blockingReason).toContain('4K livestreaming is not available')
+  })
+
+  it('allows YouTube-only 4K30 streaming with local 4K recording enabled', () => {
+    const config = captureConfigFixture()
+    config.recordEnabled = true
+    config.streamEnabled = true
+    config.video = videoPresets['record-4k30']
+    config.streaming = {
+      ...config.streaming,
+      enabled: true,
+      defaultOutputPreset: 'stream-youtube-4k30',
+      defaultBitrateKbps: 30000,
+      targets: config.streaming.targets.map((target) => ({
+        ...target,
+        enabled: target.platform === 'youtube'
+      }))
+    }
+
+    const result = videoProfileCompatibility(config)
+
+    expect(result.blockingReason).toBeNull()
+    expect(result.warning).toContain('normal latency')
+  })
+
+  it('blocks YouTube 4K30 streaming when Twitch is also enabled', () => {
+    const config = captureConfigFixture()
+    config.recordEnabled = true
+    config.streamEnabled = true
+    config.video = videoPresets['record-4k30']
+    config.streaming = {
+      ...config.streaming,
+      enabled: true,
+      defaultOutputPreset: 'stream-youtube-4k30',
+      defaultBitrateKbps: 30000,
+      targets: config.streaming.targets.map((target) => ({
+        ...target,
+        enabled: target.platform === 'youtube' || target.platform === 'twitch'
+      }))
+    }
+
+    expect(videoProfileCompatibility(config).blockingReason).toContain(
+      'exactly one enabled YouTube destination'
+    )
+  })
+
+  it('blocks YouTube 4K30 streaming without local 4K recording during acceptance', () => {
+    const config = captureConfigFixture()
+    config.recordEnabled = false
+    config.streamEnabled = true
+    config.video = videoPresets['stream-safe-1080p30']
+    config.streaming = {
+      ...config.streaming,
+      enabled: true,
+      defaultOutputPreset: 'stream-youtube-4k30',
+      defaultBitrateKbps: 30000,
+      targets: config.streaming.targets.map((target) => ({
+        ...target,
+        enabled: target.platform === 'youtube'
+      }))
+    }
+
+    expect(videoProfileCompatibility(config).blockingReason).toContain(
+      'requires local 4K recording'
+    )
   })
 
   it('blocks livestream bitrates above the platform-safe budget', () => {
