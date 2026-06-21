@@ -253,11 +253,22 @@ export interface VideoProfileCompatibility {
 }
 
 export function videoProfileCompatibility(
-  config: Pick<CaptureConfig, 'recordEnabled' | 'streamEnabled' | 'video'>
+  config: Pick<CaptureConfig, 'recordEnabled' | 'streamEnabled' | 'video'> & {
+    streaming?: StreamingSettings
+  }
 ): VideoProfileCompatibility {
-  const { recordEnabled, streamEnabled, video } = config
+  const { recordEnabled, streamEnabled, video, streaming } = config
+  const streamVideo = streamEnabled ? resolveStreamOutputVideo(video, streaming) : video
+  const splitStreamOutput = streamEnabled && Boolean(streaming?.enabled)
 
-  if (streamEnabled && (video.width > 1920 || video.height > 1080)) {
+  if (streamEnabled && is4kVideo(video) && !recordEnabled) {
+    return {
+      blockingReason: '4K profiles require local recording to be enabled.',
+      warning: null
+    }
+  }
+
+  if (streamEnabled && is4kVideo(video) && !splitStreamOutput) {
     return {
       blockingReason:
         '4K livestreaming is not available in v1. Disable livestreaming for 4K local recording or choose a stream-safe 1080p profile.',
@@ -265,7 +276,14 @@ export function videoProfileCompatibility(
     }
   }
 
-  if (streamEnabled && video.bitrateKbps > 6000) {
+  if (streamEnabled && (streamVideo.width > 1920 || streamVideo.height > 1080)) {
+    return {
+      blockingReason: 'Stream output must be 1080p or lower for the v1 platform-safe path.',
+      warning: null
+    }
+  }
+
+  if (streamEnabled && streamVideo.bitrateKbps > 6000) {
     return {
       blockingReason:
         'Livestream bitrate must be 6000 kbps or lower for the v1 platform-safe path.',
@@ -273,9 +291,10 @@ export function videoProfileCompatibility(
     }
   }
 
-  if (is4kVideo(video) && !recordEnabled) {
+  if (streamEnabled && is4kVideo(video) && streamVideo.fps > video.fps) {
     return {
-      blockingReason: '4K profiles require local recording to be enabled.',
+      blockingReason:
+        '4K local recording plus streaming requires a stream FPS no higher than the recording FPS for v1.',
       warning: null
     }
   }
@@ -295,7 +314,11 @@ export function videoProfileCompatibility(
     }
   }
 
-  if (streamEnabled && !video.preset.startsWith('stream-safe-') && video.preset !== 'custom') {
+  if (
+    streamEnabled &&
+    !streamVideo.preset.startsWith('stream-safe-') &&
+    streamVideo.preset !== 'custom'
+  ) {
     return {
       blockingReason: null,
       warning: 'Use a stream-safe 1080p profile for v1 livestream acceptance.'
@@ -303,6 +326,21 @@ export function videoProfileCompatibility(
   }
 
   return { blockingReason: null, warning: null }
+}
+
+function resolveStreamOutputVideo(
+  fallback: VideoSettings,
+  streaming: StreamingSettings | undefined
+): VideoSettings {
+  if (!streaming?.enabled) {
+    return fallback
+  }
+
+  const preset = videoPresets[streaming.defaultOutputPreset] ?? fallback
+  return {
+    ...preset,
+    bitrateKbps: streaming.defaultBitrateKbps
+  }
 }
 
 function is4kVideo(video: VideoSettings): boolean {

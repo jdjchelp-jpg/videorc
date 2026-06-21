@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { Scene } from './backend'
-import { defaultCaptureConfig, type CaptureConfig } from './capture'
+import { defaultCaptureConfig, videoPresets, type CaptureConfig } from './capture'
 import { buildStartSessionParams } from './session-params'
 
 const scene: Scene = {
@@ -132,5 +132,34 @@ describe('buildStartSessionParams', () => {
     expect(params.output.recordEnabled).toBe(false)
     expect(params.output.streamEnabled).toBe(true)
     expect(params.streaming).toBe(config.streaming)
+  })
+
+  it('passes 4K recording video and stream-safe output defaults for split output sessions', () => {
+    const config = captureConfig({
+      recordEnabled: true,
+      streamEnabled: true,
+      video: videoPresets['record-4k30'],
+      streaming: {
+        ...defaultCaptureConfig.streaming,
+        enabled: true,
+        defaultOutputPreset: 'stream-safe-1080p30',
+        defaultBitrateKbps: 6000,
+        enabledTargetIds: ['youtube']
+      }
+    })
+
+    const params = buildStartSessionParams({
+      captureConfig: config,
+      scene,
+      settings: {
+        outputDirectory: '',
+        ffmpegPath: ''
+      }
+    })
+
+    expect(params.output.video).toEqual(videoPresets['record-4k30'])
+    expect(params.streaming?.defaultOutputPreset).toBe('stream-safe-1080p30')
+    expect(params.streaming?.defaultBitrateKbps).toBe(6000)
+    expect(params.streaming?.enabledTargetIds).toEqual(['youtube'])
   })
 })

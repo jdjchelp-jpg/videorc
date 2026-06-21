@@ -547,7 +547,25 @@ describe('videoPresets', () => {
 })
 
 describe('videoProfileCompatibility', () => {
-  it('blocks 4K livestreaming in the v1 shared-output UI path', () => {
+  it('allows 4K local recording with a stream-safe split output profile', () => {
+    const config = captureConfigFixture()
+    config.recordEnabled = true
+    config.streamEnabled = true
+    config.video = videoPresets['record-4k30']
+    config.streaming = {
+      ...config.streaming,
+      enabled: true,
+      defaultOutputPreset: 'stream-safe-1080p30',
+      defaultBitrateKbps: 6000
+    }
+
+    expect(videoProfileCompatibility(config)).toEqual({
+      blockingReason: null,
+      warning: null
+    })
+  })
+
+  it('blocks 4K livestreaming in the v1 shared-output UI path without a split profile', () => {
     const result = videoProfileCompatibility({
       recordEnabled: true,
       streamEnabled: true,
@@ -565,6 +583,21 @@ describe('videoProfileCompatibility', () => {
     })
 
     expect(result.blockingReason).toContain('6000 kbps or lower')
+  })
+
+  it('blocks 4K record plus stream when the stream FPS is higher than the recording FPS', () => {
+    const config = captureConfigFixture()
+    config.recordEnabled = true
+    config.streamEnabled = true
+    config.video = videoPresets['record-4k30']
+    config.streaming = {
+      ...config.streaming,
+      enabled: true,
+      defaultOutputPreset: 'stream-safe-1080p60',
+      defaultBitrateKbps: 6000
+    }
+
+    expect(videoProfileCompatibility(config).blockingReason).toContain('stream FPS no higher')
   })
 
   it('allows stream-safe profiles and warns for experimental 4K60 recording', () => {
