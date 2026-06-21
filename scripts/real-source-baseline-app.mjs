@@ -30,6 +30,9 @@
 //   VIDEORC_BASELINE_STREAM=1                  enable record+stream (RTMP) for this session
 //   VIDEORC_BASELINE_STREAM_SERVER_URL         RTMP server URL (e.g. rtmp://127.0.0.1:19501/live)
 //   VIDEORC_BASELINE_STREAM_KEY                RTMP stream key (never printed; local sinks use a dummy key)
+//   VIDEORC_BASELINE_STREAMING_SETTINGS=1      send modern per-target streaming settings
+//   VIDEORC_BASELINE_STREAM_OUTPUT_PRESET      modern stream output preset (default stream-safe-1080p30)
+//   VIDEORC_BASELINE_STREAM_BITRATE_KBPS       modern stream bitrate (default 6000)
 //   VIDEORC_SMOKE_OUTPUT_DIR        where recordings + reports land
 //   VIDEORC_BASELINE_SCREEN_ID / _CAMERA_ID / _MIC_ID   force a specific device id
 //   VIDEORC_BASELINE_NO_SCREEN / _NO_CAMERA / _NO_MIC   omit that source
@@ -85,6 +88,9 @@ const config = {
   streamEnabled: process.env.VIDEORC_BASELINE_STREAM === '1',
   streamServerUrl: process.env.VIDEORC_BASELINE_STREAM_SERVER_URL ?? '',
   streamKey: process.env.VIDEORC_BASELINE_STREAM_KEY ?? '',
+  streamingSettingsEnabled: process.env.VIDEORC_BASELINE_STREAMING_SETTINGS === '1',
+  streamOutputPreset: process.env.VIDEORC_BASELINE_STREAM_OUTPUT_PRESET ?? 'stream-safe-1080p30',
+  streamBitrateKbps: Number(process.env.VIDEORC_BASELINE_STREAM_BITRATE_KBPS ?? 6000),
   fallbackLivePreview: process.env.VIDEORC_BASELINE_FALLBACK_LIVE_PREVIEW === '1',
   noPreviewSurface: process.env.VIDEORC_BASELINE_NO_PREVIEW_SURFACE === '1',
   screenMotionStimulus: process.env.VIDEORC_BASELINE_SCREEN_MOTION_STIMULUS === '1',
@@ -1785,6 +1791,9 @@ function realSourceGateRequest() {
     streamEnabled: config.streamEnabled,
     // Stream key is never written to evidence; mirror the backend's redaction shape.
     streamRedactedUrl: config.streamEnabled ? `${config.streamServerUrl.replace(/\/+$/, '')}/••••` : null,
+    streamingSettingsEnabled: config.streamingSettingsEnabled,
+    streamOutputPreset: config.streamingSettingsEnabled ? config.streamOutputPreset : null,
+    streamBitrateKbps: config.streamingSettingsEnabled ? config.streamBitrateKbps : null,
     requireMotion: config.requireMotion,
     screenMotionStimulus: config.screenMotionStimulus,
     avSyncStimulus: config.avSyncStimulus,
@@ -2478,11 +2487,41 @@ function sessionParams(sources) {
         ? { preset: 'custom', serverUrl: config.streamServerUrl, streamKey: config.streamKey }
         : { preset: 'custom', serverUrl: '', streamKey: '' },
     },
+    ...(config.streamEnabled && config.streamingSettingsEnabled
+      ? { streaming: streamingSettings() }
+      : {}),
     audio: {
       microphoneGainDb: 0,
       microphoneMuted: false,
       microphoneSyncOffsetMs: config.microphoneSyncOffsetMs,
     },
+  }
+}
+
+function streamingSettings() {
+  const timestamp = new Date().toISOString()
+  return {
+    enabled: true,
+    mode: 'single',
+    selectedTargetId: 'custom',
+    defaultOutputPreset: config.streamOutputPreset,
+    defaultBitrateKbps: config.streamBitrateKbps,
+    enabledTargetIds: ['custom'],
+    targets: [
+      {
+        id: 'custom',
+        platform: 'custom',
+        label: 'Local RTMP sink',
+        enabled: true,
+        serverUrl: config.streamServerUrl,
+        urlMode: 'server-and-key',
+        streamKey: config.streamKey,
+        streamKeyPresent: Boolean(config.streamKey),
+        authMode: 'manual-rtmp',
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      },
+    ],
   }
 }
 

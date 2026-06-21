@@ -20,6 +20,7 @@
 // pass VIDEORC_BASELINE_NO_CAMERA=1 when the dev app lacks camera permission.
 //
 //   node scripts/stream-av-sync-baseline.mjs [--gate] [--skip-record-only]
+//   node scripts/stream-av-sync-baseline.mjs --gate --skip-record-only --require-split-output-4k-record
 //
 // Env:
 //   VIDEORC_BASELINE_RECORDING_MS    per-session length (default 60000; >=600000 makes the drift gate binding)
@@ -38,6 +39,8 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { measureAvSync } from './lib/av-sync.mjs'
+import { probeMedia } from './lib/recording-analyzer.mjs'
+import { evaluateSplitOutput4kRecordEvidence } from './lib/split-output-4k-record-gate.mjs'
 import {
   DEFAULT_STREAM_AV_SYNC_GATES,
   evaluateStreamAvSync,
@@ -49,9 +52,11 @@ const argv = process.argv.slice(2).filter((arg) => arg !== '--')
 const config = {
   gate: argv.includes('--gate'),
   skipRecordOnly: argv.includes('--skip-record-only'),
+  requireSplitOutput4kRecord: argv.includes('--require-split-output-4k-record'),
   recordingMs: Number(process.env.VIDEORC_BASELINE_RECORDING_MS ?? 60000),
   streamPort: Number(process.env.VIDEORC_BASELINE_STREAM_PORT ?? 19501),
   ffmpegPath: process.env.VIDEORC_SMOKE_FFMPEG_PATH ?? 'ffmpeg',
+  ffprobePath: process.env.VIDEORC_SMOKE_FFPROBE_PATH ?? null,
   sinkConnectGraceMs: 1500,
   sinkDrainTimeoutMs: 30000,
   outputRoot: resolve(
@@ -123,6 +128,7 @@ async function main() {
   await runBaselineSession({
     outputDir: recordStreamDir,
     env: {
+      ...splitOutput4kRecordEnv(),
       VIDEORC_ENCODER_BRIDGE_VIDEO_OUTPUT: null, // backend default selector decides
       VIDEORC_BASELINE_STREAM: '1',
       VIDEORC_BASELINE_STREAM_SERVER_URL: serverUrl,
@@ -141,6 +147,7 @@ async function main() {
       `Received FLV: ${receivedFlv} (${(statSync(receivedFlv).size / (1024 * 1024)).toFixed(1)} MiB)`
     )
   }
+  const receivedFlvProbe = await probeOrNull(receivedFlv)
 
   // --- Measure all three outputs -------------------------------------------------
   console.log('\nMeasuring flash/click A/V offsets…')
@@ -168,6 +175,14 @@ async function main() {
     flvDrift,
     mkvDrift
   })
+  const splitOutput4kRecordVerdict = config.requireSplitOutput4kRecord
+    ? evaluateSplitOutput4kRecordEvidence({
+        manifest: recordStreamEvidence,
+        receivedStreamProbe: receivedFlvProbe,
+        streamAvSyncVerdict: verdict,
+      })
+    : null
+  const pass = verdict.pass && (splitOutput4kRecordVerdict?.pass ?? true)
 
   const evidencePath = join(config.outputRoot, 'stream-av-sync-evidence.json')
   writeFileSync(
@@ -208,6 +223,13 @@ async function main() {
           }
         },
         driftEvidence,
+        splitOutput4kRecord: splitOutput4kRecordVerdict
+          ? {
+              required: true,
+              verdict: splitOutput4kRecordVerdict,
+              receivedStreamProbe: receivedFlvProbe,
+            }
+          : { required: false },
         verdict
       },
       null,
@@ -223,9 +245,10 @@ async function main() {
     mkvDrift,
     driftEvidence,
     verdict,
+    splitOutput4kRecordVerdict,
     evidencePath
   })
-  return config.gate && !verdict.pass ? 1 : 0
+  return config.gate && !pass ? 1 : 0
 }
 
 // --- Session runner ---------------------------------------------------------------
@@ -256,6 +279,23 @@ function runBaselineSession({ outputDir, env }) {
       }
     })
   })
+}
+
+function splitOutput4kRecordEnv() {
+  if (!config.requireSplitOutput4kRecord) return {}
+  return {
+    VIDEORC_BASELINE_WIDTH: '3840',
+    VIDEORC_BASELINE_HEIGHT: '2160',
+    VIDEORC_BASELINE_FPS: '30',
+    VIDEORC_BASELINE_BITRATE_KBPS: '30000',
+    VIDEORC_BASELINE_STREAMING_SETTINGS: '1',
+    VIDEORC_BASELINE_STREAM_OUTPUT_PRESET: 'stream-safe-1080p30',
+    VIDEORC_BASELINE_STREAM_BITRATE_KBPS: '6000',
+    VIDEORC_BASELINE_LAYOUT_PRESET: process.env.VIDEORC_BASELINE_LAYOUT_PRESET ?? 'screen-only',
+    VIDEORC_BASELINE_NO_CAMERA: process.env.VIDEORC_BASELINE_NO_CAMERA ?? '1',
+    VIDEORC_BASELINE_NO_PREVIEW_SURFACE:
+      process.env.VIDEORC_BASELINE_NO_PREVIEW_SURFACE ?? '1',
+  }
 }
 
 function evidenceFromManifest(outputDir, label) {
@@ -374,6 +414,18 @@ async function measureOrNull(filePath, options) {
   }
 }
 
+async function probeOrNull(filePath) {
+  if (!filePath) return null
+  try {
+    return await probeMedia(filePath, {
+      ffprobePath: config.ffprobePath ?? resolveSiblingFfprobe(config.ffmpegPath),
+    })
+  } catch (error) {
+    console.error(`probeMedia failed for ${filePath}: ${error?.message ?? error}`)
+    return null
+  }
+}
+
 function summarize(measurement) {
   if (!measurement) return null
   const { pairs, ...rest } = measurement
@@ -388,6 +440,7 @@ function printSummary({
   mkvDrift,
   driftEvidence,
   verdict,
+  splitOutput4kRecordVerdict,
   evidencePath
 }) {
   console.log('\n=== Stream A/V sync summary ===')
@@ -400,11 +453,39 @@ function printSummary({
   for (const finding of verdict.hypotheses) console.log(`HYPOTHESIS: ${finding}`)
   for (const warning of verdict.warnings) console.log(`WARN: ${warning}`)
   for (const failure of verdict.failures) console.log(`FAIL: ${failure}`)
+  if (splitOutput4kRecordVerdict) {
+    console.log('\n=== Split-output 4K recording summary ===')
+    console.log(
+      `recording output       ${formatOutputProfile(splitOutput4kRecordVerdict.summary.recordingOutput)}`
+    )
+    console.log(
+      `stream output          ${formatOutputProfile(splitOutput4kRecordVerdict.summary.streamOutput)}`
+    )
+    console.log(
+      `RTMP-received stream   ${formatOutputProfile(splitOutput4kRecordVerdict.summary.receivedStream)}`
+    )
+    console.log(
+      `VT output encoders     ${splitOutput4kRecordVerdict.summary.activeVideoToolboxOutputEncoders ?? 'n/a'}`
+    )
+    console.log(
+      `separate encoders      ${formatBoolean(splitOutput4kRecordVerdict.summary.separateOutputEncodersActive)}`
+    )
+    console.log(
+      `media quality mode     ${splitOutput4kRecordVerdict.summary.mediaQualityMode ?? 'n/a'}`
+    )
+    for (const warning of splitOutput4kRecordVerdict.warnings) console.log(`WARN: ${warning}`)
+    for (const failure of splitOutput4kRecordVerdict.failures) console.log(`FAIL: ${failure}`)
+    console.log(
+      splitOutput4kRecordVerdict.pass
+        ? 'PASS — 4K local recording plus 1080p stream output proved.'
+        : 'FAIL — split-output 4K recording evidence outside the gate.'
+    )
+  }
   console.log(`Evidence: ${evidencePath}`)
   console.log(
-    verdict.pass
-      ? 'PASS — stream A/V sync inside the plan gate.'
-      : 'FAIL — stream A/V sync outside the plan gate.'
+    verdict.pass && (splitOutput4kRecordVerdict?.pass ?? true)
+      ? 'PASS — stream baseline inside the requested gate(s).'
+      : 'FAIL — stream baseline outside the requested gate(s).'
   )
 }
 
@@ -440,4 +521,23 @@ function printDrift(label, drift) {
 
 function sleep(ms) {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, ms))
+}
+
+function resolveSiblingFfprobe(ffmpegPath) {
+  if (typeof ffmpegPath !== 'string' || !ffmpegPath.endsWith('ffmpeg')) {
+    return 'ffprobe'
+  }
+  return `${ffmpegPath.slice(0, -'ffmpeg'.length)}ffprobe`
+}
+
+function formatOutputProfile(profile) {
+  if (!profile) return 'not reported'
+  const fps = profile.fps ?? profile.avgFps ?? profile.nominalFps ?? 'n/a'
+  const bitrate =
+    typeof profile.bitrateKbps === 'number' ? `, ${profile.bitrateKbps}kbps` : ''
+  return `${profile.width ?? 'n/a'}x${profile.height ?? 'n/a'} @ ${fps}fps${bitrate}`
+}
+
+function formatBoolean(value) {
+  return typeof value === 'boolean' ? (value ? 'yes' : 'no') : 'n/a'
 }
