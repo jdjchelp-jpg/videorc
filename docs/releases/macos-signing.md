@@ -94,6 +94,13 @@ gh secret set APPLE_APP_SPECIFIC_PASSWORD --repo TheOrcDev/videogre
 printf '%s' 'C2PA37RB58' | gh secret set APPLE_TEAM_ID --repo TheOrcDev/videogre --body-file -
 ```
 
+Confirm the remote repository has the required release secrets before spending
+an Actions run:
+
+```sh
+pnpm release:secrets:macos
+```
+
 Clean up local certificate artifacts immediately after the secrets are installed:
 
 ```sh

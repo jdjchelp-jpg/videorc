@@ -160,6 +160,25 @@ Required GitHub secrets:
 - `APPLE_APP_SPECIFIC_PASSWORD`: app-specific password for notarization
 - `APPLE_TEAM_ID`: Apple Developer Team ID
 
+Required private download storage secrets:
+
+- `VIDEORC_DOWNLOAD_S3_ACCESS_KEY_ID`
+- `VIDEORC_DOWNLOAD_S3_BUCKET`
+- `VIDEORC_DOWNLOAD_S3_REGION`
+- `VIDEORC_DOWNLOAD_S3_SECRET_ACCESS_KEY`
+
+Conditional private download storage secrets:
+
+- `VIDEORC_DOWNLOAD_S3_ENDPOINT_URL`: required for Cloudflare R2 or other custom S3-compatible endpoints
+- `VIDEORC_DOWNLOAD_S3_FORCE_PATH_STYLE`: usually true for path-style S3-compatible endpoints
+- `VIDEORC_DOWNLOAD_S3_SESSION_TOKEN`: required only for temporary credentials
+
+Check the remote repository without printing secret values:
+
+```sh
+pnpm release:secrets:macos
+```
+
 A distributable macOS build still needs:
 
 - Apple Developer account and Team ID
