@@ -19,6 +19,10 @@ const inputs = [
   {
     path: join(repoRoot, 'vendor', 'ffmpeg', 'current', 'bin', 'ffmpeg'),
     remedy: 'pnpm ffmpeg:build:macos'
+  },
+  {
+    path: join(repoRoot, 'vendor', 'ffmpeg', 'current', 'bin', 'ffprobe'),
+    remedy: 'FFMPEG_REBUILD=1 pnpm ffmpeg:build:macos'
   }
 ]
 

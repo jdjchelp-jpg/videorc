@@ -24,7 +24,7 @@ pnpm ffmpeg:build:macos
 pnpm package:preflight:macos
 ```
 
-The packaged Electron main process launches `videorc-backend` from `process.resourcesPath`, while development still runs the backend through Cargo. Packaged builds also bundle `native_preview_host_helper` at `Resources/native_preview_host_helper` so the production CAMetalLayer preview path can run without Cargo. Packaged builds prepend `Resources/ffmpeg/bin` to `PATH` and pass `VIDEORC_BUNDLED_FFMPEG_PATH` to the backend so the default FFmpeg path is the bundled executable. A custom FFmpeg path in Settings still overrides that default.
+The packaged Electron main process launches `videorc-backend` from `process.resourcesPath`, while development still runs the backend through Cargo. Packaged builds also bundle `native_preview_host_helper` at `Resources/native_preview_host_helper` so the production CAMetalLayer preview path can run without Cargo. Packaged builds prepend `Resources/ffmpeg/bin` to `PATH` and pass `VIDEORC_BUNDLED_FFMPEG_PATH` to the backend so the default FFmpeg path is the bundled executable. The same bundle includes sibling `ffprobe`, which the repair and recording analyzers derive from the bundled `ffmpeg` path. A custom FFmpeg path in Settings still overrides that default.
 
 Run the packaged-app recording smoke test after `pnpm package:desktop`:
 
@@ -104,6 +104,19 @@ After `pnpm dist:desktop:signed` produces release artifacts, validate the latest
 ```sh
 pnpm release:validate:macos
 ```
+
+`pnpm dist:desktop:signed` also writes beta download metadata next to the DMG:
+
+```sh
+pnpm release:manifest:macos
+```
+
+The manifest step writes `release.json` and `Videorc-*.dmg.sha256`, and refuses
+old product-name artifacts such as `Videogre-*.dmg`. Override
+`VIDEORC_RELEASE_ARTIFACT` to generate metadata for a copied candidate, or
+`VIDEORC_RELEASE_ID`, `VIDEORC_RELEASE_DISPLAY_VERSION`, and
+`VIDEORC_RELEASE_NOTES_URL` when cutting a later beta without changing the app
+bundle version.
 
 The validator runs `codesign --verify`, `codesign -dv`, Gatekeeper assessment via
 `spctl`, and `xcrun stapler validate`. It redacts repository and home-directory

@@ -18,7 +18,7 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
   exit 1
 fi
 
-if [[ -x "${CURRENT_DIR}/bin/ffmpeg" && "${FFMPEG_REBUILD:-0}" != "1" ]]; then
+if [[ -x "${CURRENT_DIR}/bin/ffmpeg" && -x "${CURRENT_DIR}/bin/ffprobe" && "${FFMPEG_REBUILD:-0}" != "1" ]]; then
   "${CURRENT_DIR}/bin/ffmpeg" -version | head -1
   echo "Using existing bundled FFmpeg at ${CURRENT_DIR}/bin/ffmpeg"
   exit 0
@@ -48,7 +48,6 @@ CONFIGURE_FLAGS=(
   "--disable-debug"
   "--disable-doc"
   "--disable-ffplay"
-  "--disable-ffprobe"
   "--disable-gpl"
   "--disable-nonfree"
   "--enable-avfoundation"
@@ -77,7 +76,7 @@ cp "${EXTRACTED_DIR}/COPYING.LGPLv3" "${INSTALL_DIR}/licenses/"
 cp "${EXTRACTED_DIR}/LICENSE.md" "${INSTALL_DIR}/licenses/"
 
 cat > "${INSTALL_DIR}/NOTICE.txt" <<NOTICE
-This product includes FFmpeg as a separate executable.
+This product includes FFmpeg and FFprobe as separate executables.
 
 FFmpeg is licensed under the GNU Lesser General Public License (LGPL) version 2.1 or later unless GPL components are enabled. This Videorc bundle is built without --enable-gpl and without --enable-nonfree.
 
