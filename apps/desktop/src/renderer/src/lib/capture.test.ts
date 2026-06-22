@@ -6,6 +6,7 @@ import {
   applyAudioSyncRecommendation,
   audioSyncCalibrationState,
   applyStoredManualStreamKeyResult,
+  capturePickerDevices,
   defaultCaptureConfig,
   formatMeasuredAudioLag,
   legacyStreamKeyMigrationCandidates,
@@ -121,7 +122,7 @@ describe('reconcileSourceSelection', () => {
     expect(sourceSelectionChangeMessages(remembered, next)).toEqual([])
   })
 
-  it('selects the avfoundation screen fallback when it is the only recording-capable capture source', () => {
+  it('does not select the avfoundation screen fallback while ScreenCaptureKit reports status rows', () => {
     const next = reconcileSourceSelection({}, [
       {
         id: 'screen:screencapturekit-timeout',
@@ -143,8 +144,8 @@ describe('reconcileSourceSelection', () => {
       }
     ])
 
-    expect(next.screenId).toBe('screen:avfoundation:7')
-    expect(next.screenName).toBe('Capture screen 1')
+    expect(next.screenId).toBeUndefined()
+    expect(next.screenName).toBeUndefined()
   })
 
   it('does not select permission placeholders as renderable capture sources', () => {
@@ -263,6 +264,49 @@ describe('ScreenCaptureKit capture device filtering', () => {
     expect(isSelectableCaptureDevice(nativeDisplay)).toBe(true)
     expect(isSelectableCaptureDevice(legacyDisplay)).toBe(true)
     expect(isSelectableCaptureDevice(blockedLegacyDisplay)).toBe(false)
+  })
+
+  it('hides legacy avfoundation screen rows when ScreenCaptureKit rows exist', () => {
+    const permissionDisplay: Device = {
+      id: 'screen:screencapturekit-permission',
+      name: 'Primary Display',
+      kind: 'screen',
+      status: 'permission-required'
+    }
+    const permissionWindow: Device = {
+      id: 'window:screencapturekit-permission',
+      name: 'Window Capture',
+      kind: 'window',
+      status: 'permission-required'
+    }
+    const legacyDisplay: Device = {
+      id: 'screen:avfoundation:7',
+      name: 'Capture screen 1',
+      kind: 'screen',
+      status: 'available'
+    }
+
+    expect(capturePickerDevices([permissionDisplay, permissionWindow, legacyDisplay])).toEqual([
+      permissionDisplay,
+      permissionWindow
+    ])
+  })
+
+  it('uses avfoundation screen rows only when ScreenCaptureKit does not report any capture rows', () => {
+    const legacyDisplay: Device = {
+      id: 'screen:avfoundation:7',
+      name: 'Capture screen 1',
+      kind: 'screen',
+      status: 'available'
+    }
+    const camera: Device = {
+      id: 'camera:avfoundation-native:abc',
+      name: 'FaceTime HD Camera',
+      kind: 'camera',
+      status: 'available'
+    }
+
+    expect(capturePickerDevices([camera, legacyDisplay])).toEqual([legacyDisplay])
   })
 })
 

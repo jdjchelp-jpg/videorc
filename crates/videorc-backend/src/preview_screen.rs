@@ -1393,7 +1393,7 @@ mod macos {
             ));
         }
 
-        let content = load_shareable_content()?;
+        let content = load_shareable_content(&config.source_kind)?;
         let selected = select_content(&content, &config)?;
         let capture_request = select_preview_screen_capture_request(
             &config.source_kind,
@@ -1555,10 +1555,17 @@ mod macos {
         }
     }
 
-    fn load_shareable_content() -> Result<Retained<SCShareableContent>, NativeScreenStartup> {
+    enum ShareableContentQuery {
+        FullOnScreenContent,
+        CurrentProcessContent,
+    }
+
+    fn load_shareable_content(
+        source_kind: &PreviewScreenSourceKind,
+    ) -> Result<Retained<SCShareableContent>, NativeScreenStartup> {
         let mut timed_out = false;
         for attempt in 1..=SCREEN_CAPTUREKIT_DISCOVERY_ATTEMPTS {
-            match load_shareable_content_once() {
+            match load_shareable_content_once(ShareableContentQuery::FullOnScreenContent) {
                 Ok(content) => return Ok(content),
                 Err(NativeScreenStartup::Failed(message))
                     if message == SCREEN_CAPTUREKIT_DISCOVERY_TIMEOUT_MESSAGE =>
@@ -1573,6 +1580,12 @@ mod macos {
         }
 
         if timed_out {
+            if matches!(source_kind, PreviewScreenSourceKind::Screen)
+                && let Ok(content) =
+                    load_shareable_content_once(ShareableContentQuery::CurrentProcessContent)
+            {
+                return Ok(content);
+            }
             return Err(NativeScreenStartup::Failed(format!(
                 "{SCREEN_CAPTUREKIT_DISCOVERY_TIMEOUT_MESSAGE} Retried {SCREEN_CAPTUREKIT_DISCOVERY_ATTEMPTS} times."
             )));
@@ -1583,7 +1596,9 @@ mod macos {
         ))
     }
 
-    fn load_shareable_content_once() -> Result<Retained<SCShareableContent>, NativeScreenStartup> {
+    fn load_shareable_content_once(
+        query: ShareableContentQuery,
+    ) -> Result<Retained<SCShareableContent>, NativeScreenStartup> {
         enum ShareableContentResult {
             Content(usize),
             Error(String),
@@ -1610,9 +1625,18 @@ mod macos {
         );
 
         unsafe {
-            SCShareableContent::getShareableContentExcludingDesktopWindows_onScreenWindowsOnly_completionHandler(
-                true, true, &handler,
-            );
+            match query {
+                ShareableContentQuery::FullOnScreenContent => {
+                    SCShareableContent::getShareableContentExcludingDesktopWindows_onScreenWindowsOnly_completionHandler(
+                        true, true, &handler,
+                    );
+                }
+                ShareableContentQuery::CurrentProcessContent => {
+                    SCShareableContent::getCurrentProcessShareableContentWithCompletionHandler(
+                        &handler,
+                    );
+                }
+            }
         }
 
         match rx.recv_timeout(SCREEN_CAPTUREKIT_DISCOVERY_TIMEOUT) {

@@ -2751,6 +2751,7 @@ async function refreshNativePreviewCompositorStatus(
 
   const deliveredAgeMs = nativePreviewCompositorStatusAgeMs(status)
   if (
+    !compositorFrameSceneRevisionMismatch(status) &&
     typeof deliveredAgeMs === 'number' &&
     deliveredAgeMs <= NATIVE_PREVIEW_STATUS_REUSE_MAX_AGE_MS
   ) {
@@ -3648,6 +3649,9 @@ function handleMainPumpCompositorStatus(status: CompositorStatus): void {
   // Same gate the renderer pump used: presents only while a surface session
   // is live (the preview window owns that lifecycle).
   if (!previewWindowIsOpenForSurface() || nativePreviewSurfaceStatus.state !== 'live') {
+    return
+  }
+  if (compositorFrameSceneRevisionMismatch(status)) {
     return
   }
   const params: PreviewSurfaceCompositorUpdateParams = nativePreviewSurfaceFramePollingSuppressed

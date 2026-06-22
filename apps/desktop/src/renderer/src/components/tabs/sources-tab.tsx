@@ -28,7 +28,7 @@ import {
   MICROPHONE_SYNC_OFFSET_MAX_MS,
   MICROPHONE_SYNC_OFFSET_MIN_MS,
   applyAudioSyncRecommendation,
-  isCapturePickerDevice,
+  capturePickerDevices,
   audioSyncCalibrationState,
   normalizeMicrophoneSyncOffsetMs,
   parseAudioSyncRecommendationJson,
@@ -128,7 +128,7 @@ export function SourcesTab(): ReactElement {
   const problemDeviceCount = deviceList.devices.filter(
     (device) => device.status !== 'available'
   ).length
-  const captureDevices = deviceList.devices.filter(isCapturePickerDevice)
+  const captureDevices = capturePickerDevices(deviceList.devices)
   const cameras = deviceList.devices.filter((device) => device.kind === 'camera')
   const microphones = deviceList.devices.filter((device) => device.kind === 'microphone')
   const hasCapturePermissionRequired = captureDevices.some(

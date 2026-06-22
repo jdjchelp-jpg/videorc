@@ -23,6 +23,8 @@ import {
   legacyStreamKeyMigrationCandidates,
   loadCaptureConfig,
   loadJson,
+  isNativeScreenSourceId,
+  isNativeWindowSourceId,
   patchPreparedStreamTarget,
   patchStreamTargetForEdit,
   persistableCaptureConfig,
@@ -597,6 +599,17 @@ function selectedPreviewScreenBlockedStatus(
     excludeCurrentProcessWindows: false,
     updatedAt: new Date().toISOString()
   } satisfies Omit<PreviewScreenStatus, 'state' | 'message'>
+
+  if (
+    (sourceKind === 'screen' && !isNativeScreenSourceId(sourceId)) ||
+    (sourceKind === 'window' && !isNativeWindowSourceId(sourceId))
+  ) {
+    return {
+      ...base,
+      state: 'source-missing',
+      message: 'Native preview requires a Display or app window source.'
+    }
+  }
 
   if (
     selectedDevice?.status === 'permission-required' ||
