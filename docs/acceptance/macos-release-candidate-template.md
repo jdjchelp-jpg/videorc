@@ -21,6 +21,7 @@ recordings, and generated media out of git.
 - `pnpm dist:desktop:signed`: PASS / FAIL / BLOCKED
 - `pnpm release:validate:macos`: PASS / FAIL / BLOCKED
 - `pnpm release:manifest:macos`: PASS / FAIL / BLOCKED
+- `pnpm release:upload:macos`: PASS / FAIL / BLOCKED
 - Artifact upload/download path:
 - Release metadata path:
 - SHA256 sidecar path:

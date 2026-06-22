@@ -118,6 +118,31 @@ old product-name artifacts such as `Videogre-*.dmg`. Override
 `VIDEORC_RELEASE_NOTES_URL` when cutting a later beta without changing the app
 bundle version.
 
+Publish the signed DMG, checksum sidecar, and `release.json` to private
+S3-compatible download storage after validation:
+
+```sh
+pnpm release:upload:macos
+```
+
+The upload step uses the same server-only S3-compatible credentials as Videorc
+Web by default:
+
+```sh
+VIDEORC_DOWNLOAD_S3_ACCESS_KEY_ID=...
+VIDEORC_DOWNLOAD_S3_BUCKET=...
+VIDEORC_DOWNLOAD_S3_ENDPOINT_URL=... # optional, required for R2
+VIDEORC_DOWNLOAD_S3_REGION=...
+VIDEORC_DOWNLOAD_S3_SECRET_ACCESS_KEY=...
+```
+
+It uploads to `releases/macos/<releaseId>/` unless
+`VIDEORC_RELEASE_UPLOAD_PREFIX` is set, and then verifies each object with a
+signed `HEAD` request. Use `VIDEORC_RELEASE_UPLOAD_S3_*` names to separate CI
+upload credentials from the web download signer, or
+`VIDEORC_RELEASE_UPLOAD_SKIP_VERIFY=1` only when the storage provider does not
+support `HEAD`.
+
 The validator runs `codesign --verify`, `codesign -dv`, Gatekeeper assessment via
 `spctl`, and `xcrun stapler validate`. It redacts repository and home-directory
 paths from command output. You can pass explicit artifact paths when validating a
@@ -158,6 +183,7 @@ On the build machine:
 pnpm smoke:local-gates
 pnpm dist:desktop:signed
 pnpm release:validate:macos
+pnpm release:upload:macos
 shasum -a 256 apps/desktop/release/*.dmg
 ```
 
@@ -207,15 +233,15 @@ first-class free product, while distribution and cloud-assisted workflows are
 premium capabilities. This repository enforces the capability boundary; pricing
 and purchase flows belong to the product/website layer.
 
-| Capability | Free/core | Premium |
-| --- | --- | --- |
-| Local recording | Included: local MKV/MP4 recording remains first-class. | Included. |
-| Native preview | Included: production preview uses the detached CAMetalLayer path when available. | Included. |
-| Source and layout controls | Included: source selection, camera placement, presets, and local layout controls. | Included. |
-| Local library | Included: session metadata, local files, remux, repair, and export helpers stay local. | Included. |
-| Local audio extraction | Included when no cloud upload is requested. | Included. |
-| Livestreaming destinations | Not included in free/core. | Included: manual RTMP, provider destinations, and multistreaming. |
-| Cloud AI workflow | Not included in free/core. | Included when the user grants cloud AI consent and required API credentials are present. |
+| Capability                 | Free/core                                                                              | Premium                                                                                  |
+| -------------------------- | -------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| Local recording            | Included: local MKV/MP4 recording remains first-class.                                 | Included.                                                                                |
+| Native preview             | Included: production preview uses the detached CAMetalLayer path when available.       | Included.                                                                                |
+| Source and layout controls | Included: source selection, camera placement, presets, and local layout controls.      | Included.                                                                                |
+| Local library              | Included: session metadata, local files, remux, repair, and export helpers stay local. | Included.                                                                                |
+| Local audio extraction     | Included when no cloud upload is requested.                                            | Included.                                                                                |
+| Livestreaming destinations | Not included in free/core.                                                             | Included: manual RTMP, provider destinations, and multistreaming.                        |
+| Cloud AI workflow          | Not included in free/core.                                                             | Included when the user grants cloud AI consent and required API credentials are present. |
 
 Developer and self-hosted validation can opt into premium-only code paths with
 an explicit environment override:

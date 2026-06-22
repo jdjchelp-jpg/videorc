@@ -107,3 +107,15 @@ jobs:
             apps/desktop/release/*.sha256
             apps/desktop/release/release.json
           if-no-files-found: error
+
+      - name: Upload beta artifacts to private download storage
+        run: pnpm release:upload:macos
+        env:
+          VIDEORC_DOWNLOAD_S3_ACCESS_KEY_ID: ${{ secrets.VIDEORC_DOWNLOAD_S3_ACCESS_KEY_ID }}
+          VIDEORC_DOWNLOAD_S3_BUCKET: ${{ secrets.VIDEORC_DOWNLOAD_S3_BUCKET }}
+          VIDEORC_DOWNLOAD_S3_ENDPOINT_URL: ${{ secrets.VIDEORC_DOWNLOAD_S3_ENDPOINT_URL }}
+          VIDEORC_DOWNLOAD_S3_FORCE_PATH_STYLE: ${{ secrets.VIDEORC_DOWNLOAD_S3_FORCE_PATH_STYLE }}
+          VIDEORC_DOWNLOAD_S3_REGION: ${{ secrets.VIDEORC_DOWNLOAD_S3_REGION }}
+          VIDEORC_DOWNLOAD_S3_SECRET_ACCESS_KEY: ${{ secrets.VIDEORC_DOWNLOAD_S3_SECRET_ACCESS_KEY }}
+          VIDEORC_DOWNLOAD_S3_SESSION_TOKEN: ${{ secrets.VIDEORC_DOWNLOAD_S3_SESSION_TOKEN }}
+          VIDEORC_RELEASE_UPLOAD_PREFIX: ${{ vars.VIDEORC_RELEASE_UPLOAD_PREFIX }}
