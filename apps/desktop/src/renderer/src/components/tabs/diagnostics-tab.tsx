@@ -482,7 +482,7 @@ export function DiagnosticsTab(): ReactElement {
               {recording.pipeline.stages.map((stage) => (
                 <div
                   key={stage.stage}
-                  className="flex items-center justify-between gap-3 rounded-lg bg-muted/40 px-3 py-2"
+                  className="flex items-center justify-between gap-3 rounded-row bg-muted/40 px-3 py-2"
                 >
                   <div className="min-w-0">
                     <div className="text-sm font-medium capitalize">
@@ -577,7 +577,7 @@ export function DiagnosticsTab(): ReactElement {
 
 function DiagnosticMetric({ label, value }: { label: string; value: string }): ReactElement {
   return (
-    <div className="rounded-lg border bg-muted/40 px-3 py-2">
+    <div className="rounded-row border bg-muted/40 px-3 py-2">
       <div className="text-xs text-muted-foreground">{label}</div>
       <div className="text-base font-semibold tabular-nums">{value}</div>
     </div>
@@ -590,7 +590,7 @@ function DiagnosticMetric({ label, value }: { label: string; value: string }): R
 function MetricGroup({ title, children }: { title: string; children: ReactNode }): ReactElement {
   return (
     <Collapsible>
-      <CollapsibleTrigger className="group flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
+      <CollapsibleTrigger className="group flex w-full items-center gap-2 rounded-row px-2 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
         <CaretDown className="size-3.5 shrink-0 transition-transform group-data-[state=open]:rotate-180" />
         <span>{title}</span>
       </CollapsibleTrigger>
@@ -611,7 +611,7 @@ function ActionableWarning({
   onOpenPermission: (pane: SystemPermissionPane) => Promise<void>
 }): ReactElement {
   return (
-    <div className="flex items-start justify-between gap-3 rounded-lg border bg-warning/10 px-3 py-2">
+    <div className="flex items-start justify-between gap-3 rounded-row border bg-warning/10 px-3 py-2">
       <div className="min-w-0">
         <div className="flex items-center gap-2">
           <Badge variant="warning">{event.code}</Badge>
@@ -682,7 +682,7 @@ function LogRow({
   sourceId?: string
 }): ReactElement {
   return (
-    <div className="rounded-lg bg-muted/40 px-3 py-2 text-xs">
+    <div className="rounded-row bg-muted/40 px-3 py-2 text-xs">
       <div className="mb-1 flex flex-wrap items-center gap-2">
         <Badge variant={levelBadgeVariant(level)}>{level}</Badge>
         <span className="font-medium">{code}</span>
