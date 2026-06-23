@@ -191,7 +191,10 @@ export function StudioTab(): ReactElement {
                 active && 'animate-pulse'
               )}
             />
-            <div className="flex min-w-0 flex-col">
+            {/* Live region: recording state is otherwise visual-only (the dot +
+                label). Announce idle→recording→streaming→stopped/failed so screen
+                readers know when capture actually starts and stops. */}
+            <div aria-atomic="true" aria-live="polite" className="flex min-w-0 flex-col">
               <span className="text-sm font-semibold capitalize">{recording.state}</span>
               <span className="truncate text-xs text-muted-foreground">
                 {recording.message ?? 'Idle'}
