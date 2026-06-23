@@ -670,7 +670,63 @@ fn should_keep_account_connected_after_validation_error(
     platform: StreamPlatform,
     error: &anyhow::Error,
 ) -> bool {
-    platform == StreamPlatform::Youtube && error.to_string().contains("quotaExceeded")
+    if platform != StreamPlatform::Youtube {
+        return false;
+    }
+
+    let message = error.to_string();
+    message.contains("quotaExceeded") || is_temporary_provider_validation_error(&message)
+}
+
+fn is_temporary_provider_validation_error(message: &str) -> bool {
+    let normalized = message.to_ascii_lowercase();
+    normalized.contains("could not fetch")
+        || normalized.contains("http 429")
+        || normalized.contains("http 500")
+        || normalized.contains("http 502")
+        || normalized.contains("http 503")
+        || normalized.contains("http 504")
+        || normalized.contains("ratelimitexceeded")
+        || normalized.contains("backenderror")
+        || normalized.contains("internalerror")
+        || normalized.contains("temporarily unavailable")
+}
+
+fn should_force_account_reconnect_after_token_error(error: &anyhow::Error) -> bool {
+    let message = error.to_string().to_ascii_lowercase();
+    message.contains("no oauth access token")
+        || message.contains("no oauth refresh token")
+        || message.contains("could not read oauth refresh token")
+        || message.contains("could not read access token")
+        || message.contains("refresh token is empty")
+        || message.contains("invalid_grant")
+        || message.contains("invalid grant")
+        || message.contains("expired or revoked")
+        || message.contains("invalid refresh token")
+        || message.contains("refresh token has been revoked")
+}
+
+fn platform_validation_after_token_error(
+    account: &mut streaming::PlatformAccount,
+    error: &anyhow::Error,
+) -> PlatformAccountValidation {
+    if should_force_account_reconnect_after_token_error(error) {
+        account.status = PlatformAccountStatus::NeedsReconnect;
+        return platform_validation(
+            account,
+            PlatformAccountValidationState::NeedsReconnect,
+            error.to_string(),
+        );
+    }
+
+    platform_validation(
+        account,
+        match account.status {
+            PlatformAccountStatus::NeedsReconnect => PlatformAccountValidationState::NeedsReconnect,
+            _ => PlatformAccountValidationState::Valid,
+        },
+        format!("Account token is stored, but provider refresh is temporarily blocked: {error}"),
+    )
 }
 
 async fn refresh_platform_access_token_after_auth_error(
@@ -733,13 +789,9 @@ async fn validate_platform_accounts(state: &AppState) -> Vec<PlatformAccountVali
         let mut fresh = match fresh_platform_access_token(state, &credential, &client).await {
             Ok(fresh) => fresh,
             Err(error) => {
-                account.status = PlatformAccountStatus::NeedsReconnect;
+                let validation = platform_validation_after_token_error(&mut account, &error);
                 changed |= upsert_validated_account(state, &credential, account.clone()).is_ok();
-                validations.push(platform_validation(
-                    &account,
-                    PlatformAccountValidationState::NeedsReconnect,
-                    error.to_string(),
-                ));
+                validations.push(validation);
                 continue;
             }
         };
@@ -2914,6 +2966,16 @@ mod tests {
     }
 
     #[test]
+    fn youtube_temporary_validation_errors_do_not_force_reconnect() {
+        let error =
+            anyhow::anyhow!("YouTube profile lookup failed with HTTP 503 Service Unavailable");
+        assert!(should_keep_account_connected_after_validation_error(
+            StreamPlatform::Youtube,
+            &error
+        ));
+    }
+
+    #[test]
     fn non_quota_youtube_validation_errors_still_force_reconnect() {
         let error = anyhow::anyhow!(
             "YouTube profile lookup failed with HTTP 403 Forbidden: insufficientPermissions"
@@ -2922,6 +2984,26 @@ mod tests {
             StreamPlatform::Youtube,
             &error
         ));
+    }
+
+    #[test]
+    fn invalid_grant_refresh_errors_still_force_reconnect() {
+        let error = anyhow::anyhow!(
+            "YouTube token refresh failed with HTTP 400 Bad Request: invalid_grant: Token has been expired or revoked."
+        );
+        assert!(should_force_account_reconnect_after_token_error(&error));
+    }
+
+    #[test]
+    fn temporary_refresh_errors_keep_connected_accounts_connected() {
+        let error = anyhow::anyhow!("Could not refresh YouTube OAuth token: operation timed out");
+        let mut account = platform_account_with_status(PlatformAccountStatus::Connected, None);
+
+        let validation = platform_validation_after_token_error(&mut account, &error);
+
+        assert_eq!(account.status, PlatformAccountStatus::Connected);
+        assert_eq!(validation.state, PlatformAccountValidationState::Valid);
+        assert!(validation.message.contains("temporarily blocked"));
     }
 
     #[tokio::test]

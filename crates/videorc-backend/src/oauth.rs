@@ -465,10 +465,18 @@ pub async fn refresh_provider_token(
         })?;
     if !response.status().is_success() {
         let status = response.status();
-        anyhow::bail!(
-            "{} token refresh failed with HTTP {status}",
-            stream_platform_label(platform)
-        );
+        let body = response.text().await.unwrap_or_default();
+        if let Some(detail) = oauth_token_error_detail(&body) {
+            anyhow::bail!(
+                "{} token refresh failed with HTTP {status}: {detail}",
+                stream_platform_label(platform)
+            );
+        } else {
+            anyhow::bail!(
+                "{} token refresh failed with HTTP {status}",
+                stream_platform_label(platform)
+            );
+        }
     }
     let token = response
         .json::<OAuthTokenResponse>()
@@ -575,6 +583,27 @@ fn provider_error_detail(body: &str) -> Option<String> {
         (Some(reason), Some(message)) => Some(format!("{reason}: {message}")),
         (Some(reason), None) => Some(reason.to_string()),
         (None, Some(message)) => Some(message.to_string()),
+        (None, None) => None,
+    }
+}
+
+fn oauth_token_error_detail(body: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(body).ok()?;
+    let error = value
+        .get("error")
+        .and_then(|error| error.as_str())
+        .map(str::trim)
+        .filter(|error| !error.is_empty());
+    let description = value
+        .get("error_description")
+        .and_then(|description| description.as_str())
+        .map(str::trim)
+        .filter(|description| !description.is_empty());
+
+    match (error, description) {
+        (Some(error), Some(description)) => Some(format!("{error}: {description}")),
+        (Some(error), None) => Some(error.to_string()),
+        (None, Some(description)) => Some(description.to_string()),
         (None, None) => None,
     }
 }
@@ -1344,6 +1373,21 @@ mod tests {
             Some(
                 "quotaExceeded: The request cannot be completed because you have exceeded your quota."
             )
+        );
+    }
+
+    #[test]
+    fn oauth_token_error_detail_preserves_google_refresh_rejection() {
+        let detail = oauth_token_error_detail(
+            r#"{
+              "error": "invalid_grant",
+              "error_description": "Token has been expired or revoked."
+            }"#,
+        );
+
+        assert_eq!(
+            detail.as_deref(),
+            Some("invalid_grant: Token has been expired or revoked.")
         );
     }
 
