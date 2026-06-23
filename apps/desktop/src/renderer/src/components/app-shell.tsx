@@ -34,6 +34,7 @@ export function AppShell(): ReactElement {
     wsStatus,
     recording,
     runtimeInfo,
+    entitlements,
     refreshBackend,
     previewWindow,
     togglePreviewWindow,
@@ -151,6 +152,7 @@ export function AppShell(): ReactElement {
         <Sidebar
           active={active}
           activeStudioPanel={isStudioPanel(active) ? active : null}
+          accountTier={entitlements?.tier ?? null}
           onSelect={setActive}
           onSelectStudioPanel={openStudioPanel}
           statusTone={statusTone}

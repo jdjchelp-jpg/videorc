@@ -2,7 +2,8 @@ import { ArrowsClockwise, MagnifyingGlass, type Icon } from '@phosphor-icons/rea
 import type { ReactElement } from 'react'
 
 import logoUrl from '@/assets/videorc-logo.png'
-import { StatusDot, type StatusDotTone } from '@/components/status-dot'
+import { AccountMenu } from '@/components/account-menu'
+import { type StatusDotTone } from '@/components/status-dot'
 import { ThemeToggle } from '@/components/theme-toggle'
 import { Button } from '@/components/ui/button'
 import { Kbd, KbdGroup } from '@/components/ui/kbd'
@@ -13,6 +14,8 @@ import {
   type StudioPanel,
   type WorkspaceTab
 } from '@/components/workspace-nav'
+import { SIGNED_OUT_ACCOUNT } from '@/lib/account'
+import type { EntitlementTier } from '@/lib/backend'
 import { cn } from '@/lib/utils'
 
 function NavRow({
@@ -64,6 +67,7 @@ function GroupLabel({ children }: { children: string }): ReactElement {
 export function Sidebar({
   active,
   activeStudioPanel,
+  accountTier,
   onSelect,
   onSelectStudioPanel,
   statusTone,
@@ -74,6 +78,7 @@ export function Sidebar({
 }: {
   active: WorkspaceTab
   activeStudioPanel: StudioPanel | null
+  accountTier: EntitlementTier | null
   onSelect: (tab: WorkspaceTab) => void
   onSelectStudioPanel: (panel: StudioPanel) => void
   statusTone: StatusDotTone
@@ -183,16 +188,17 @@ export function Sidebar({
       </nav>
 
       <div className="flex items-center justify-between gap-2 border-t px-3 py-2.5">
-        {/* The status dot deep-links to Health: the place that explains it. */}
-        <button
-          type="button"
-          aria-label="Open Health"
-          title="Open Health"
-          onClick={() => onSelect('diagnostics')}
-          className="rounded-md px-1 py-0.5 transition-colors hover:bg-sidebar-accent/60"
-        >
-          <StatusDot tone={statusTone} label={statusLabel} pulse={live} />
-        </button>
+        {/* Videorc product-account control. Backend status is secondary (a small
+            dot on the trigger + the Health row); Health stays reachable here. */}
+        <AccountMenu
+          account={SIGNED_OUT_ACCOUNT}
+          tier={accountTier}
+          statusTone={statusTone}
+          statusLabel={statusLabel}
+          live={live}
+          onOpenHealth={() => onSelect('diagnostics')}
+          onOpenSettings={() => onSelect('settings')}
+        />
         <div className="flex items-center gap-0.5">
           <Button
             aria-label="Refresh backend"
