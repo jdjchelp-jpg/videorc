@@ -17,7 +17,7 @@ export type UseVideorcAccount = {
 // The actions open the web account/login pages; sign out is a no-op until there
 // is a session to clear.
 export function useVideorcAccount(): UseVideorcAccount {
-  const { account: snapshot } = useStudio()
+  const { account: snapshot, signOutAccount } = useStudio()
   const account = useMemo(() => accountFromSnapshot(snapshot), [snapshot])
 
   return useMemo(
@@ -25,8 +25,8 @@ export function useVideorcAccount(): UseVideorcAccount {
       account,
       signIn: () => openVideorcWebLink(VIDEORC_WEB_LINKS.login),
       openAccount: () => openVideorcWebLink(VIDEORC_WEB_LINKS.account),
-      signOut: () => {}
+      signOut: () => void signOutAccount()
     }),
-    [account]
+    [account, signOutAccount]
   )
 }

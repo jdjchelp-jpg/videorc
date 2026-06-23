@@ -281,6 +281,7 @@ export type StudioContextValue = {
   health: BackendHealth | null
   entitlements: EntitlementsSnapshot | null
   account: VideorcAccountSnapshot | null
+  signOutAccount: () => Promise<void>
   deviceList: DeviceList
   recording: RecordingStatus
   logs: BackendLogEvent[]
@@ -3477,6 +3478,33 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     [client, reportError, wsStatus]
   )
 
+  const signOutAccount = useCallback(async () => {
+    if (!client || wsStatus !== 'connected') {
+      return
+    }
+    try {
+      setAccount(await client.request<VideorcAccountSnapshot>('account.sign_out'))
+    } catch (error) {
+      reportError(error)
+    }
+  }, [client, reportError, wsStatus])
+
+  const completeAccountSignIn = useCallback(
+    async (token: string) => {
+      if (!client || wsStatus !== 'connected') {
+        return
+      }
+      try {
+        setAccount(
+          await client.request<VideorcAccountSnapshot>('account.complete_sign_in', { token })
+        )
+      } catch (error) {
+        reportError(error)
+      }
+    },
+    [client, reportError, wsStatus]
+  )
+
   useEffect(() => {
     if (!window.videorc?.onOAuthCallbackUrl) {
       return
@@ -3496,6 +3524,15 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
         return
       }
 
+      // The product-account deep-link rides the same callback channel as OAuth.
+      if (parsed.hostname === 'account') {
+        const token = parsed.searchParams.get('token')?.trim()
+        if (token) {
+          void completeAccountSignIn(token)
+        }
+        return
+      }
+
       const state = parsed.searchParams.get('state')?.trim()
       if (!state) {
         toast.error('OAuth callback was missing state.')
@@ -3511,7 +3548,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
 
       void client.request('platformAccounts.oauth.complete', params).catch(reportError)
     })
-  }, [client, reportError, wsStatus])
+  }, [client, completeAccountSignIn, reportError, wsStatus])
 
   const patchStreamMetadataDraft = useCallback((patch: Partial<StreamMetadataDraft>) => {
     setStreamMetadataDraft((current) => (current ? { ...current, ...patch } : current))
@@ -4629,6 +4666,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       health,
       entitlements,
       account,
+      signOutAccount,
       deviceList: visibleDeviceList,
       recording,
       logs,
@@ -4772,6 +4810,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       health,
       entitlements,
       account,
+      signOutAccount,
       visibleDeviceList,
       recording,
       logs,

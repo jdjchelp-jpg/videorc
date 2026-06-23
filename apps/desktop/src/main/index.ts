@@ -3420,10 +3420,15 @@ function dispatchOAuthCallbackUrl(rawUrl: string): void {
     return
   }
 
+  // Both the platform OAuth callback (videorc://oauth/callback) and the product
+  // account callback (videorc://account/callback) ride this one channel; the
+  // renderer routes by hostname.
   if (
     parsed.protocol !== `${OAUTH_CALLBACK_PROTOCOL}:` ||
-    parsed.hostname !== 'oauth' ||
-    parsed.pathname !== '/callback'
+    !(
+      (parsed.hostname === 'oauth' || parsed.hostname === 'account') &&
+      parsed.pathname === '/callback'
+    )
   ) {
     return
   }
