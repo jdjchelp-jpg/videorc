@@ -38,6 +38,7 @@ import { type StudioPanel, type WorkspaceTab } from '@/components/workspace-nav'
 import { useStudio } from '@/hooks/use-studio'
 import type { GoLiveDestinationPreflight, StreamPlatform, StreamPrivacy } from '@/lib/backend'
 import { videoProfileCompatibility } from '@/lib/capture'
+import { goLiveEntitlementGate, type EntitlementUiGate } from '@/lib/entitlement-ui'
 import { entitlementDisabledReason } from '@/lib/entitlements'
 import { studioHealth } from '@/lib/studio-health'
 import { cn } from '@/lib/utils'
@@ -84,8 +85,15 @@ export function StudioTab(): ReactElement {
     streamEnabled: true
   })
   const liveStreamEntitlementReason = entitlementDisabledReason(entitlements, 'livestreaming')
+  const goLiveEntitlement = goLiveEntitlementGate({
+    entitlements,
+    streaming: captureConfig.streaming
+  })
+  const goLiveEntitlementBlocker = goLiveEntitlement.allowed ? null : goLiveEntitlement
   const liveStreamBlockedReason =
-    liveStreamEntitlementReason ?? liveStreamCompatibility.blockingReason
+    liveStreamEntitlementReason ??
+    goLiveEntitlementBlocker?.reason ??
+    liveStreamCompatibility.blockingReason
   const recordCompatibility = videoProfileCompatibility({
     ...captureConfig,
     recordEnabled: true,
@@ -169,6 +177,7 @@ export function StudioTab(): ReactElement {
       <div className="flex min-w-0 flex-1 flex-col gap-4">
         <GoLiveConfirmationDialog
           draft={streamMetadataDraft}
+          entitlementGate={goLiveEntitlement}
           open={goLiveConfirmationOpen}
           pending={goLiveConfirmationPending || startRequestPending}
           preflight={goLivePreflight}
@@ -353,6 +362,7 @@ function GoLiveConfirmationDialog({
   pending,
   partialSetup,
   preflight,
+  entitlementGate,
   draft,
   onPatchDraft,
   onCancel,
@@ -364,6 +374,7 @@ function GoLiveConfirmationDialog({
   pending: boolean
   partialSetup: ReturnType<typeof useStudio>['goLivePartialSetup']
   preflight: ReturnType<typeof useStudio>['goLivePreflight']
+  entitlementGate: EntitlementUiGate
   draft: ReturnType<typeof useStudio>['streamMetadataDraft']
   onPatchDraft: ReturnType<typeof useStudio>['patchStreamMetadataDraft']
   onCancel: () => void
@@ -371,11 +382,19 @@ function GoLiveConfirmationDialog({
   onContinuePartial: () => void
   onResolveBlocker: (targetId: string, resolution: 'disable' | 'manual-rtmp') => void
 }): ReactElement {
+  const entitlementBlocker = entitlementGate.allowed ? null : entitlementGate
+  const entitlementUpgradeUrl = entitlementBlocker?.upgradeUrl
   const errorCount = preflight?.issues.filter((issue) => issue.severity === 'error').length ?? 0
+  const entitlementIssueCount =
+    entitlementBlocker &&
+    !preflight?.issues.some((issue) => issue.message === entitlementBlocker.reason)
+      ? 1
+      : 0
+  const issueCount = errorCount + entitlementIssueCount
   // "Resolve before going live" means exactly that: error-severity issues keep
   // the confirm button locked until resolved (disable the destination, switch
   // it to Manual RTMP, or fix it in the Streaming tab).
-  const blocked = preflight ? !preflight.valid : false
+  const blocked = Boolean(entitlementBlocker) || (preflight ? !preflight.valid : false)
 
   return (
     <Dialog open={open} onOpenChange={(next) => !next && onCancel()}>
@@ -442,9 +461,9 @@ function GoLiveConfirmationDialog({
             <div className="flex flex-col gap-2">
               <div className="flex items-center justify-between gap-3">
                 <span className="text-sm font-medium">Destinations</span>
-                {errorCount ? (
+                {issueCount ? (
                   <Badge variant="destructive">
-                    {errorCount} issue{errorCount === 1 ? '' : 's'}
+                    {issueCount} issue{issueCount === 1 ? '' : 's'}
                   </Badge>
                 ) : (
                   <Badge variant="success">Ready</Badge>
@@ -467,6 +486,26 @@ function GoLiveConfirmationDialog({
                 )}
               </div>
             </div>
+
+            {entitlementBlocker ? (
+              <div className="flex flex-col gap-2 rounded-md border border-warning/35 bg-warning/10 p-3">
+                <div className="flex items-center gap-2 text-sm font-medium text-warning-foreground dark:text-warning">
+                  <WarningCircle className="size-4" weight="fill" />
+                  {entitlementUpgradeUrl ? 'Premium issue' : 'Streaming entitlement issue'}
+                </div>
+                <p className="text-sm text-muted-foreground">{entitlementBlocker.reason}</p>
+                {entitlementUpgradeUrl ? (
+                  <Button
+                    className="w-fit"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => openExternalUrl(entitlementUpgradeUrl)}
+                  >
+                    View Premium
+                  </Button>
+                ) : null}
+              </div>
+            ) : null}
 
             {preflight?.issues.length ? (
               <div className="flex flex-col gap-2 rounded-md border border-destructive/25 bg-destructive/5 p-3">
@@ -511,7 +550,7 @@ function GoLiveConfirmationDialog({
             Cancel
           </Button>
           {partialSetup ? (
-            <Button disabled={pending} onClick={onContinuePartial}>
+            <Button disabled={pending || Boolean(entitlementBlocker)} onClick={onContinuePartial}>
               <Broadcast data-icon="inline-start" weight="fill" />
               {pending ? 'Starting…' : 'Continue With Ready'}
             </Button>
@@ -525,6 +564,16 @@ function GoLiveConfirmationDialog({
       </DialogContent>
     </Dialog>
   )
+}
+
+function openExternalUrl(url: string): void {
+  const opener = window.videorc?.openOAuthUrl
+  if (opener) {
+    void opener(url)
+    return
+  }
+
+  window.open(url, '_blank', 'noopener,noreferrer')
 }
 
 function GoLiveDestinationRow({
@@ -608,7 +657,9 @@ function studioBlocker(studio: ReturnType<typeof useStudio>): {
   jumpLabel?: string
 } | null {
   const { wsStatus, outputEnabled, captureConfig, streamReady, health, entitlements } = studio
-  const livestreamingEntitlementReason = entitlementDisabledReason(entitlements, 'livestreaming')
+  const goLiveEntitlement = captureConfig.streamEnabled
+    ? goLiveEntitlementGate({ entitlements, streaming: captureConfig.streaming })
+    : { allowed: true as const }
 
   if (wsStatus !== 'connected') {
     return { title: 'Backend not connected' }
@@ -616,8 +667,12 @@ function studioBlocker(studio: ReturnType<typeof useStudio>): {
   if (!outputEnabled) {
     return { title: 'No output enabled', jumpTo: 'recording', jumpLabel: 'Open Recording' }
   }
-  if (captureConfig.streamEnabled && livestreamingEntitlementReason) {
-    return { title: 'Premium required', jumpTo: 'live', jumpLabel: 'Open Live' }
+  if (captureConfig.streamEnabled && !goLiveEntitlement.allowed) {
+    return {
+      title: goLiveEntitlement.upgradeUrl ? 'Premium required' : 'Streaming limit reached',
+      jumpTo: 'live',
+      jumpLabel: 'Open Live'
+    }
   }
   if (captureConfig.streamEnabled && !streamReady) {
     return { title: 'Stream target incomplete', jumpTo: 'live', jumpLabel: 'Open Live' }

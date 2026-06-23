@@ -126,6 +126,7 @@ import type {
   YouTubeStreamStatusResult
 } from '@/lib/backend'
 import { createEmptyLiveChatSnapshot } from '@/lib/backend'
+import { goLiveEntitlementGate } from '@/lib/entitlement-ui'
 import { entitlementDisabledReason } from '@/lib/entitlements'
 import {
   applyLiveChatMessage,
@@ -3250,6 +3251,9 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
   const streamReady =
     !captureConfig.streamEnabled || areEnabledStreamTargetsStartReady(captureConfig.streaming)
   const livestreamingEntitlementReason = entitlementDisabledReason(entitlements, 'livestreaming')
+  const goLiveEntitlement = captureConfig.streamEnabled
+    ? goLiveEntitlementGate({ entitlements, streaming: captureConfig.streaming })
+    : { allowed: true as const }
   const cloudAiEntitlementReason = entitlementDisabledReason(entitlements, 'cloud-ai')
   const isSessionActive =
     isActiveRecordingState(recording.state) || startRequestPending || stopRequestPending
@@ -3593,6 +3597,9 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     }
     if (captureConfig.streamEnabled && livestreamingEntitlementReason) {
       return livestreamingEntitlementReason
+    }
+    if (captureConfig.streamEnabled && !goLiveEntitlement.allowed) {
+      return goLiveEntitlement.reason
     }
     if (captureConfig.streamEnabled && !streamReady) {
       return captureConfig.streaming.targets.some((target) => target.enabled)
