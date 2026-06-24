@@ -293,10 +293,10 @@ export function StudioTab(): ReactElement {
               each editing the same captureConfig and deep-linking to its page. */}
           <QuickSettings />
 
-          {/* Scenes (preset-backed). SD5 folds these three into one 3-col row. */}
-          <ScenesGallery />
-
-          <div className="grid gap-5 lg:grid-cols-2">
+          {/* Scenes · Audio mixer · Activity — the dashboard's bottom row.
+              Collapses to a single column below lg. */}
+          <div className="grid gap-5 lg:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)_minmax(0,1fr)]">
+            <ScenesGallery />
             <AudioMixer />
             <ActivityFeed />
           </div>

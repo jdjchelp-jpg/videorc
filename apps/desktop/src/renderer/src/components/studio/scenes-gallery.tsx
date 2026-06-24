@@ -1,7 +1,6 @@
 import { Check, Plus } from '@phosphor-icons/react'
 import type { ReactElement } from 'react'
 
-import { Gallery } from '@/components/page'
 import { PanelSection } from '@/components/panel-section'
 import { Button } from '@/components/ui/button'
 import { useWorkspaceNav } from '@/components/workspace-nav'
@@ -38,7 +37,7 @@ export function ScenesGallery(): ReactElement {
         </Button>
       }
     >
-      <Gallery>
+      <div className="grid gap-3 [grid-template-columns:repeat(auto-fill,minmax(104px,1fr))]">
         {SCENE_PRESETS.map((preset) => {
           const disabled =
             layoutSwitchPending !== null ||
@@ -77,7 +76,7 @@ export function ScenesGallery(): ReactElement {
           <span className="text-xs font-medium text-muted-foreground">Add scene</span>
           <span className="text-[11px] text-muted-foreground">Coming soon</span>
         </div>
-      </Gallery>
+      </div>
     </PanelSection>
   )
 }
