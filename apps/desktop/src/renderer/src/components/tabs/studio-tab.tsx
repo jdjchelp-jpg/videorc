@@ -18,7 +18,6 @@ import { PageHeader, PageStack } from '@/components/page'
 import { PanelSection } from '@/components/panel-section'
 import { PreviewStage } from '@/components/preview-stage'
 import { StatusBadge } from '@/components/status-badge'
-import { ActivityFeed } from '@/components/studio/activity-feed'
 import { AudioMixer } from '@/components/studio/audio-mixer'
 import { QuickSettings } from '@/components/studio/quick-settings'
 import { ScenesGallery } from '@/components/studio/scenes-gallery'
@@ -293,12 +292,11 @@ export function StudioTab(): ReactElement {
               each editing the same captureConfig and deep-linking to its page. */}
           <QuickSettings />
 
-          {/* Scenes · Audio mixer · Activity — the dashboard's bottom row.
-              Collapses to a single column below lg. */}
-          <div className="grid gap-5 lg:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)_minmax(0,1fr)]">
+          {/* Scenes + Audio mixer — the dashboard's bottom row. Collapses to a
+              single column below lg. */}
+          <div className="grid gap-5 lg:grid-cols-2">
             <ScenesGallery />
             <AudioMixer />
-            <ActivityFeed />
           </div>
         </PageStack>
       </div>
