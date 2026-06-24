@@ -2,7 +2,6 @@ import {
   ArrowSquareOut,
   Broadcast,
   CaretDown,
-  FolderOpen,
   GearSix,
   Record,
   StopCircle,
@@ -264,14 +263,6 @@ export function StudioTab(): ReactElement {
                   <span className="min-w-0">{previewHealth.detail}</span>
                 </div>
               ) : null}
-              <div className="flex items-center gap-2 rounded-row border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-                <FolderOpen className="size-4 shrink-0" weight="duotone" />
-                <span className="truncate">
-                  {recording.outputPath ??
-                    recording.streamUrl ??
-                    'Output appears after session start.'}
-                </span>
-              </div>
             </PanelSection>
 
             <SessionPanel
