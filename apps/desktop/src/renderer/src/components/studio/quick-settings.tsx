@@ -13,12 +13,17 @@ import type { ReactElement, ReactNode } from 'react'
 import { SourceSelect } from '@/components/source-select'
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { Select, SelectContent, SelectTrigger, SelectValue } from '@/components/ui/select'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue
+} from '@/components/ui/select'
 import { Separator } from '@/components/ui/separator'
-import { VideoPresetSelectItems } from '@/components/video-preset-select-items'
 import { useWorkspaceNav } from '@/components/workspace-nav'
 import { useStudio } from '@/hooks/use-studio'
-import type { LayoutPreset, VideoPreset } from '@/lib/backend'
+import type { LayoutPreset } from '@/lib/backend'
 import {
   buildCameraSources,
   buildCaptureSources,
@@ -37,6 +42,19 @@ const QUICK_PRESETS: { id: LayoutPreset; label: string }[] = [
 
 function presetLabel(preset: LayoutPreset): string {
   return QUICK_PRESETS.find((entry) => entry.id === preset)?.label ?? preset
+}
+
+// Resolution options mirroring the Output tab (recording-tab.tsx); picking one
+// patches width/height (the preset becomes Custom), exactly like that tab.
+const RESOLUTIONS = [
+  { label: '4K', detail: '3840 × 2160', width: 3840, height: 2160 },
+  { label: '2K', detail: '2560 × 1440', width: 2560, height: 1440 },
+  { label: '1080p', detail: '1920 × 1080', width: 1920, height: 1080 },
+  { label: '720p', detail: '1280 × 720', width: 1280, height: 720 }
+]
+
+function resolutionKey(width: number, height: number): string {
+  return `${width}x${height}`
 }
 
 const TRIGGER_CLASS =
@@ -59,9 +77,8 @@ export function QuickSettings(): ReactElement {
     selectedCamera,
     selectedMicrophone,
     applyCameraPreset,
-    applyVideoPreset,
+    patchVideo,
     layoutSwitchPending,
-    entitlements,
     isSessionActive
   } = useStudio()
   const { openStudioPanel } = useWorkspaceNav()
@@ -74,6 +91,10 @@ export function QuickSettings(): ReactElement {
   const hasScreen = Boolean(selectedCaptureId)
   const muted = captureConfig.audio.microphoneMuted
   const MuteIcon = muted ? SpeakerSlash : SpeakerHigh
+  const currentResolution = resolutionKey(captureConfig.video.width, captureConfig.video.height)
+  const knownResolution = RESOLUTIONS.some(
+    (resolution) => resolutionKey(resolution.width, resolution.height) === currentResolution
+  )
 
   const sourceSummary = [
     selectedCaptureDevice?.name ?? 'No screen',
@@ -203,18 +224,32 @@ export function QuickSettings(): ReactElement {
         </Popover>
       </QuickCard>
 
-      {/* OUTPUT — recording video preset, edited off-air. */}
+      {/* OUTPUT — recording resolution, mirroring the Output tab's options. */}
       <QuickCard icon={Record} label="Output">
         <Select
           disabled={isSessionActive}
-          value={captureConfig.video.preset}
-          onValueChange={(value) => applyVideoPreset(value as VideoPreset, { kind: 'recording' })}
+          value={knownResolution ? currentResolution : ''}
+          onValueChange={(value) => {
+            const match = RESOLUTIONS.find(
+              (resolution) => resolutionKey(resolution.width, resolution.height) === value
+            )
+            if (match) {
+              patchVideo({ width: match.width, height: match.height })
+            }
+          }}
         >
           <SelectTrigger className="w-full">
-            <SelectValue />
+            <SelectValue placeholder="Custom" />
           </SelectTrigger>
           <SelectContent>
-            <VideoPresetSelectItems entitlements={entitlements} kind="recording" />
+            {RESOLUTIONS.map((resolution) => (
+              <SelectItem
+                key={resolution.label}
+                value={resolutionKey(resolution.width, resolution.height)}
+              >
+                {resolution.label} · {resolution.detail}
+              </SelectItem>
+            ))}
           </SelectContent>
         </Select>
       </QuickCard>
