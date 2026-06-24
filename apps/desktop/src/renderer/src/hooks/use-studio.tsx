@@ -305,6 +305,10 @@ export type StudioContextValue = {
   liveChatSnapshot: LiveChatSnapshot
   /** Clear the local chat view (calls liveChat.clearLocal; not platform messages). */
   clearLiveChat: () => Promise<void>
+  /** Whether the detached Comments window is currently open. */
+  commentsWindowOpen: boolean
+  /** Open/close the detached Comments window (the rail "pop out", ⌘⇧J, palette). */
+  toggleCommentsWindow: () => void
   streamMetadataDraft: StreamMetadataDraft | null
   streamMetadataValidation: StreamMetadataValidation | null
   goLivePreflight: GoLivePreflight | null
@@ -806,6 +810,9 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       void window.videorc?.pushCommentsSnapshot?.(liveChatSnapshot)
     }
   }, [commentsWindowOpen, liveChatSnapshot])
+  const toggleCommentsWindow = useCallback(() => {
+    void window.videorc?.toggleCommentsWindow?.()
+  }, [])
   const [streamMetadataDraft, setStreamMetadataDraft] = useState<StreamMetadataDraft | null>(null)
   const [streamMetadataValidation, setStreamMetadataValidation] =
     useState<StreamMetadataValidation | null>(null)
@@ -4714,6 +4721,8 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       xNativeCapabilityLoading,
       liveChatSnapshot,
       clearLiveChat,
+      commentsWindowOpen,
+      toggleCommentsWindow,
       streamMetadataDraft,
       streamMetadataValidation,
       goLivePreflight,
@@ -4858,6 +4867,8 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       xNativeCapabilityLoading,
       liveChatSnapshot,
       clearLiveChat,
+      commentsWindowOpen,
+      toggleCommentsWindow,
       streamMetadataDraft,
       streamMetadataValidation,
       goLivePreflight,

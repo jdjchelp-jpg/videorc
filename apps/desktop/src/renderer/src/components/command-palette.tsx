@@ -1,4 +1,4 @@
-import { Desktop, Moon, Stop, Sun, VideoCamera } from '@phosphor-icons/react'
+import { ChatCircle, Desktop, Moon, Stop, Sun, VideoCamera } from '@phosphor-icons/react'
 import { useTheme } from 'next-themes'
 import type { ReactElement } from 'react'
 
@@ -31,7 +31,8 @@ export function CommandPalette({
   onOpenChange: (open: boolean) => void
 }): ReactElement {
   const { setActive, openStudioPanel } = useWorkspaceNav()
-  const { recording, startSession, stopSession } = useStudio()
+  const { recording, startSession, stopSession, commentsWindowOpen, toggleCommentsWindow } =
+    useStudio()
   const { setTheme } = useTheme()
 
   const run = (action: () => void): void => {
@@ -114,6 +115,16 @@ export function CommandPalette({
               Start session
             </CommandItem>
           )}
+          <CommandItem
+            value="Toggle comments window"
+            onSelect={() => run(() => toggleCommentsWindow())}
+          >
+            <ChatCircle className="size-4" />
+            {commentsWindowOpen ? 'Close comments window' : 'Open comments window'}
+            <CommandShortcut className="tracking-normal">
+              <Kbd>⌘⇧J</Kbd>
+            </CommandShortcut>
+          </CommandItem>
         </CommandGroup>
 
         <CommandSeparator />

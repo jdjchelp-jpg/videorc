@@ -99,6 +99,10 @@ export function AppShell(): ReactElement {
           void openNotesWindow()
         }
       }
+      if (event.key.toLowerCase() === 'j' && event.shiftKey && (event.metaKey || event.ctrlKey)) {
+        event.preventDefault()
+        void window.videorc?.toggleCommentsWindow?.()
+      }
     }
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)

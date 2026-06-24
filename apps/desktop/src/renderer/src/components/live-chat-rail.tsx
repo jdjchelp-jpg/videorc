@@ -1,4 +1,4 @@
-import { ChatCircle, X } from '@phosphor-icons/react'
+import { ArrowSquareOut, ChatCircle, X } from '@phosphor-icons/react'
 import type { ReactElement } from 'react'
 
 import { LiveChatPanel } from '@/components/live-chat-panel'
@@ -8,21 +8,38 @@ import type { LiveChatSnapshot } from '../../../shared/backend'
 
 // The live-only chat rail (ux-ia plan, slice 6): chat exists ONLY while a
 // streaming session runs — off-air the Studio has no chat surface at all.
+// When the detached Comments window is open the feed lives there (one live
+// feed at a time, mirroring how the preview detaches); the rail shows a
+// bring-back placeholder.
 export function LiveChatRail({
   snapshot,
   onClearLocal,
-  onClose
+  onClose,
+  windowOpen,
+  onPopOut
 }: {
   snapshot: LiveChatSnapshot
   onClearLocal: () => void
   onClose: () => void
+  windowOpen: boolean
+  onPopOut: () => void
 }): ReactElement {
   return (
-    <aside className="flex w-80 shrink-0 flex-col gap-3 rounded-2xl border bg-muted/20 p-4">
+    <aside className="flex w-80 shrink-0 flex-col gap-3 rounded-panel border bg-muted/20 p-4">
       <div className="flex items-center gap-2">
         <ChatCircle className="size-4 shrink-0 text-muted-foreground" weight="duotone" />
         <span className="flex-1 text-sm font-medium">Live chat</span>
         <Kbd>⌘J</Kbd>
+        <Button
+          aria-label={windowOpen ? 'Bring comments back into the app' : 'Open comments in a window'}
+          aria-keyshortcuts="Meta+Shift+J"
+          className="size-7"
+          size="icon"
+          variant="ghost"
+          onClick={onPopOut}
+        >
+          <ArrowSquareOut className="size-4" />
+        </Button>
         <Button
           aria-label="Close live chat"
           className="size-7"
@@ -33,7 +50,17 @@ export function LiveChatRail({
           <X className="size-4" />
         </Button>
       </div>
-      <LiveChatPanel snapshot={snapshot} onClearLocal={onClearLocal} />
+      {windowOpen ? (
+        <div className="flex flex-1 flex-col items-center justify-center gap-2 rounded-row border border-dashed bg-muted/20 px-4 py-8 text-center">
+          <ArrowSquareOut className="size-5 text-muted-foreground" weight="duotone" />
+          <p className="text-sm text-muted-foreground">Comments are open in a separate window.</p>
+          <Button size="sm" variant="outline" onClick={onPopOut}>
+            Bring back into the app
+          </Button>
+        </div>
+      ) : (
+        <LiveChatPanel snapshot={snapshot} onClearLocal={onClearLocal} />
+      )}
     </aside>
   )
 }

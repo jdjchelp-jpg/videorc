@@ -104,7 +104,7 @@ export function StudioTab(): ReactElement {
   }, [streamingActive, chatProvidersAttached])
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key.toLowerCase() === 'j' && (event.metaKey || event.ctrlKey)) {
+      if (event.key.toLowerCase() === 'j' && !event.shiftKey && (event.metaKey || event.ctrlKey)) {
         event.preventDefault()
         if (streamingActive) {
           setChatRailOpen((value) => !value)
@@ -255,8 +255,10 @@ export function StudioTab(): ReactElement {
       {chatRailOpen && streamingActive ? (
         <LiveChatRail
           snapshot={studio.liveChatSnapshot}
+          windowOpen={studio.commentsWindowOpen}
           onClearLocal={studio.clearLiveChat}
           onClose={() => setChatRailOpen(false)}
+          onPopOut={studio.toggleCommentsWindow}
         />
       ) : null}
     </div>
