@@ -109,6 +109,7 @@ const api: VideorcApi = {
   openSystemPermissions: (pane) => ipcRenderer.invoke('system:open-permissions', pane),
   revealPermissionTarget: () => ipcRenderer.invoke('system:reveal-permission-target'),
   revealPath: (path) => ipcRenderer.invoke('system:reveal-path', path),
+  pickFile: () => ipcRenderer.invoke('system:pick-file'),
   onOAuthCallbackUrl: (callback) => {
     const listener = (_event: Electron.IpcRendererEvent, callbackUrl: string): void => {
       callback(callbackUrl)

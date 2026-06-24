@@ -5459,6 +5459,24 @@ async function pickScreenImage(): Promise<string | null> {
   return result.filePaths[0] ?? null
 }
 
+// Generic native open-file dialog returning the chosen path (e.g. "Locate
+// FFmpeg…" in Settings). No filters — the FFmpeg binary has no extension.
+async function pickFilePath(): Promise<string | null> {
+  const options: Electron.OpenDialogOptions = {
+    title: 'Locate FFmpeg',
+    properties: ['openFile']
+  }
+  const result = mainWindow
+    ? await dialog.showOpenDialog(mainWindow, options)
+    : await dialog.showOpenDialog(options)
+
+  if (result.canceled) {
+    return null
+  }
+
+  return result.filePaths[0] ?? null
+}
+
 async function importBackgroundImage(): Promise<BackgroundImportResult | null> {
   const options: Electron.OpenDialogOptions = {
     title: 'Import background image',
@@ -5572,6 +5590,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('system:reveal-permission-target', () => revealPermissionTarget())
   ipcMain.handle('system:reveal-path', (_event, targetPath: string) => revealPath(targetPath))
   ipcMain.handle('screens:pick-image', () => pickScreenImage())
+  ipcMain.handle('system:pick-file', () => pickFilePath())
   ipcMain.handle('backgrounds:import-image', () => importBackgroundImage())
   ipcMain.handle('backgrounds:bundled-assets', () => bundledBackgroundAssets())
   ipcMain.handle('oauth:open-url', (_event, authUrl: string) => openOAuthUrl(authUrl))

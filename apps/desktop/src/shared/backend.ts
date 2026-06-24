@@ -1836,6 +1836,8 @@ export interface VideorcApi {
   getBackendLogs: () => Promise<BackendLogEvent[]>
   getRuntimeInfo: () => Promise<RuntimeInfo>
   pickScreenImage: () => Promise<string | null>
+  /** Pick any file via a native open dialog; returns its path or null. */
+  pickFile: () => Promise<string | null>
   // Picks a PNG/JPG/WebP and copies it into app-support storage, returning the
   // managed asset (Assets Tab plan, slice A4).
   importBackgroundImage: () => Promise<BackgroundImportResult | null>
