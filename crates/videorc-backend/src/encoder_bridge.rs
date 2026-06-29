@@ -811,7 +811,7 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
     }
     let mut last_fed_sequence: Option<u64> = None;
     let mut first_frame_wait_sequence =
-        latest_compositor_frame(frame_store.as_ref()).map(|frame| frame.sequence);
+        initial_bridge_wait_sequence(video_output, frame_store.as_ref());
     let mut consecutive_repeated_frames = 0_u64;
 
     while !stop.load(Ordering::Relaxed) {
@@ -861,7 +861,7 @@ fn write_synthetic_recording_frames(params: SyntheticRecordingWriterParams) {
             ),
             EncoderBridgeVideoOutput::VideoToolboxH264AnnexB
             | EncoderBridgeVideoOutput::VideoToolboxH264MpegTs => {
-                next_fresh_compositor_frame(frame_store.as_ref(), previous_sequence, &stop)
+                next_compositor_frame(frame_store.as_ref(), previous_sequence, wait_budget)
             }
         };
         compositor_wait_times_ms.push(compositor_wait_started_at.elapsed().as_secs_f64() * 1000.0);
@@ -1810,6 +1810,16 @@ fn latest_compositor_frame(
     })
 }
 
+fn initial_bridge_wait_sequence(
+    video_output: EncoderBridgeVideoOutput,
+    frame_store: Option<&CompositorFrameStore>,
+) -> Option<u64> {
+    if video_output.uses_video_toolbox() {
+        return None;
+    }
+    latest_compositor_frame(frame_store).map(|frame| frame.sequence)
+}
+
 fn copy_next_compositor_frame(
     frame_store: Option<&CompositorFrameStore>,
     bytes: &mut [u8],
@@ -1835,7 +1845,6 @@ fn copy_next_compositor_frame(
     }
 }
 
-#[cfg(test)]
 fn next_compositor_frame(
     frame_store: Option<&CompositorFrameStore>,
     previous_sequence: Option<u64>,
@@ -1858,29 +1867,6 @@ fn next_compositor_frame(
         let remaining = wait_budget.saturating_sub(started_at.elapsed());
         thread::sleep(remaining.min(Duration::from_millis(2)));
     }
-}
-
-fn next_fresh_compositor_frame(
-    frame_store: Option<&CompositorFrameStore>,
-    previous_sequence: Option<u64>,
-    stop: &AtomicBool,
-) -> Option<FedCompositorFrame> {
-    if previous_sequence.is_none() {
-        return latest_compositor_frame(frame_store);
-    }
-    frame_store?;
-
-    while !stop.load(Ordering::Relaxed) {
-        let frame = latest_compositor_frame(frame_store);
-        if frame
-            .as_ref()
-            .is_some_and(|frame| Some(frame.sequence) != previous_sequence)
-        {
-            return frame;
-        }
-        thread::sleep(Duration::from_millis(2));
-    }
-    None
 }
 
 fn open_recording_fifo_writer(path: &Path, stop: &AtomicBool) -> io::Result<File> {
@@ -2484,7 +2470,7 @@ mod tests {
     }
 
     #[test]
-    fn videotoolbox_bridge_waits_for_fresh_compositor_sequence() {
+    fn videotoolbox_bridge_waits_bounded_for_fresh_compositor_sequence() {
         let width = 8;
         let height = 8;
         let frame_store = Arc::new(std::sync::Mutex::new(crate::frame_store::FrameStore::new(
@@ -2511,13 +2497,71 @@ mod tests {
                 );
             })
         };
-        let stop = AtomicBool::new(false);
-
-        let fed = next_fresh_compositor_frame(Some(&frame_store), Some(21), &stop)
+        let fed = next_compositor_frame(Some(&frame_store), Some(21), Duration::from_millis(50))
             .expect("fresh compositor frame");
         publisher.join().expect("publisher");
 
         assert_eq!(fed.sequence, 22);
+    }
+
+    #[test]
+    fn videotoolbox_bridge_reuses_latest_compositor_sequence_after_wait_budget() {
+        let width = 8;
+        let height = 8;
+        let frame_store = Arc::new(std::sync::Mutex::new(crate::frame_store::FrameStore::new(
+            2,
+        )));
+        publish_test_compositor_frame(
+            &frame_store,
+            21,
+            width,
+            height,
+            &vec![5; raw_yuv420p_len(width, height).unwrap()],
+        );
+
+        let fed = next_compositor_frame(Some(&frame_store), Some(21), Duration::from_millis(1))
+            .expect("latest compositor frame");
+
+        assert_eq!(fed.sequence, 21);
+        assert_eq!(
+            classify_bridge_frame(Some(21), Some(fed.sequence)),
+            BridgeFrameSource::Repeated
+        );
+    }
+
+    #[test]
+    fn encoded_bridge_consumes_startup_validated_frame_without_waiting() {
+        let width = 8;
+        let height = 8;
+        let frame_store = Arc::new(std::sync::Mutex::new(crate::frame_store::FrameStore::new(
+            2,
+        )));
+        publish_test_compositor_frame(
+            &frame_store,
+            31,
+            width,
+            height,
+            &vec![7; raw_yuv420p_len(width, height).unwrap()],
+        );
+
+        assert_eq!(
+            initial_bridge_wait_sequence(EncoderBridgeVideoOutput::RawYuv420p, Some(&frame_store)),
+            Some(31)
+        );
+        assert_eq!(
+            initial_bridge_wait_sequence(
+                EncoderBridgeVideoOutput::VideoToolboxH264MpegTs,
+                Some(&frame_store)
+            ),
+            None
+        );
+        assert_eq!(
+            initial_bridge_wait_sequence(
+                EncoderBridgeVideoOutput::VideoToolboxH264AnnexB,
+                Some(&frame_store)
+            ),
+            None
+        );
     }
 
     #[cfg(target_os = "macos")]

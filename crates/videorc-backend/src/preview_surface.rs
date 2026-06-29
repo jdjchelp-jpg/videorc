@@ -1,8 +1,5 @@
-use chrono::Utc;
-use uuid::Uuid;
-
 use crate::compositor::{
-    CompositorStartParams, start_synthetic_compositor, stop_compositor,
+    CompositorStartParams, start_synthetic_compositor, stop_compositor_if_run_id,
     update_compositor_surface_size,
 };
 use crate::diagnostics::{apply_preview_surface_resize, apply_runtime_diagnostics_snapshot};
@@ -16,6 +13,7 @@ use crate::protocol::{
     PreviewTransport,
 };
 use crate::state::AppState;
+use chrono::Utc;
 
 pub type PreviewSurfaceSlot = std::sync::Arc<tokio::sync::Mutex<PreviewSurfaceRuntime>>;
 
@@ -42,16 +40,20 @@ pub async fn create_preview_surface(
 ) -> PreviewSurfaceStatus {
     stop_current_surface(&state).await;
 
-    let run_id = Uuid::new_v4().to_string();
+    let capture_active = capture_owns_compositor(&state);
     let bounds = params.bounds;
     let source = params.source;
     let target_fps = params.target_fps.clamp(30, 120);
     let now = Utc::now().to_rfc3339();
-    let message = match &source {
-        PreviewSurfaceSource::Camera => "Electron proof camera preview surface running.",
-        PreviewSurfaceSource::Screen => "Electron proof screen preview surface running.",
-        PreviewSurfaceSource::Window => "Electron proof window preview surface running.",
-        PreviewSurfaceSource::Synthetic => "Synthetic Electron proof preview surface running.",
+    let message = if capture_active {
+        "Native preview surface attached while recording; compositor ownership stays with the recording."
+    } else {
+        match &source {
+            PreviewSurfaceSource::Camera => "Electron proof camera preview surface running.",
+            PreviewSurfaceSource::Screen => "Electron proof screen preview surface running.",
+            PreviewSurfaceSource::Window => "Electron proof window preview surface running.",
+            PreviewSurfaceSource::Synthetic => "Synthetic Electron proof preview surface running.",
+        }
     };
     let mut status = PreviewSurfaceStatus {
         state: PreviewSurfaceState::Live,
@@ -90,20 +92,22 @@ pub async fn create_preview_surface(
         );
         status.pending_host_command_count = pending_host_command_count(&slot);
         slot.status = status.clone();
-        slot.run_id = Some(run_id);
     }
 
-    start_synthetic_compositor(
-        state.clone(),
-        CompositorStartParams {
-            target_fps,
-            width: status.width,
-            height: status.height,
-            publish_yuv_frames: true,
-            stream_output: None,
-        },
-    )
-    .await;
+    if !capture_active {
+        let compositor_status = start_synthetic_compositor(
+            state.clone(),
+            CompositorStartParams {
+                target_fps,
+                width: status.width,
+                height: status.height,
+                publish_yuv_frames: true,
+                stream_output: None,
+            },
+        )
+        .await;
+        state.preview_surface.lock().await.run_id = compositor_status.run_id;
+    }
     state.emit_event("preview.surface.status", status.clone());
     status
 }
@@ -138,7 +142,9 @@ pub async fn update_preview_surface_bounds(
     };
 
     register_preview_surface_resize(state).await;
-    update_compositor_surface_size(state, status.width, status.height).await;
+    if !capture_owns_compositor(state) && preview_surface_owns_current_compositor(state).await {
+        update_compositor_surface_size(state, status.width, status.height).await;
+    }
     state.emit_event("preview.surface.status", status.clone());
     status
 }
@@ -334,16 +340,32 @@ pub async fn register_preview_surface_resize(state: &AppState) {
 }
 
 async fn stop_current_surface(state: &AppState) {
-    stop_compositor(state).await;
-    {
+    let owned_compositor_run_id = {
         let mut slot = state.preview_surface.lock().await;
         let had_surface = slot.run_id.is_some() || slot.status.state == PreviewSurfaceState::Live;
         let host_update = slot.native_host.destroy();
         if had_surface && let Some(command) = host_update.command {
             slot.pending_native_host_commands.push(command);
         }
-        slot.run_id = None;
+        slot.run_id.take()
+    };
+    if let Some(run_id) = owned_compositor_run_id {
+        stop_compositor_if_run_id(state, &run_id).await;
     }
+}
+
+fn capture_owns_compositor(state: &AppState) -> bool {
+    let snapshot = state.ffmpeg_work.snapshot();
+    snapshot.capture_active || snapshot.capture_waiting > 0
+}
+
+async fn preview_surface_owns_current_compositor(state: &AppState) -> bool {
+    let surface_run_id = state.preview_surface.lock().await.run_id.clone();
+    let Some(surface_run_id) = surface_run_id else {
+        return false;
+    };
+    let compositor_run_id = crate::compositor::compositor_status(state).await.run_id;
+    compositor_run_id.as_deref() == Some(surface_run_id.as_str())
 }
 
 fn apply_native_host_update(
@@ -455,8 +477,9 @@ fn unavailable_status(message: Option<String>) -> PreviewSurfaceStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compositor::{compositor_status, stop_compositor};
     use crate::native_preview_host::{NativePreviewHostActivation, NativePreviewHostCommandKind};
-    use crate::protocol::PreviewSurfaceBounds;
+    use crate::protocol::{CompositorState, PreviewSurfaceBounds};
     use crate::storage::Database;
     use tokio::sync::broadcast;
 
@@ -558,6 +581,125 @@ mod tests {
             Some(NativePreviewHostCommandKind::UpdateBounds)
         );
         assert_eq!(drawable_size, Some((1280.0, 720.0)));
+    }
+
+    #[tokio::test]
+    async fn destroy_surface_does_not_stop_newer_recording_compositor() {
+        let state = test_state();
+        create_preview_surface(
+            state.clone(),
+            PreviewSurfaceCreateParams {
+                bounds: bounds(960.0, 540.0),
+                target_fps: 60,
+                source: PreviewSurfaceSource::Synthetic,
+            },
+        )
+        .await;
+
+        let recording_status = start_synthetic_compositor(
+            state.clone(),
+            CompositorStartParams {
+                target_fps: 30,
+                width: 640,
+                height: 360,
+                publish_yuv_frames: true,
+                stream_output: None,
+            },
+        )
+        .await;
+
+        destroy_preview_surface(&state).await;
+        let status = compositor_status(&state).await;
+        stop_compositor(&state).await;
+
+        assert_eq!(status.state, CompositorState::Live);
+        assert_eq!(status.run_id, recording_status.run_id);
+        assert_eq!(status.width, 640);
+        assert_eq!(status.height, 360);
+    }
+
+    #[tokio::test]
+    async fn update_bounds_does_not_resize_newer_recording_compositor() {
+        let state = test_state();
+        create_preview_surface(
+            state.clone(),
+            PreviewSurfaceCreateParams {
+                bounds: bounds(960.0, 540.0),
+                target_fps: 60,
+                source: PreviewSurfaceSource::Synthetic,
+            },
+        )
+        .await;
+
+        let recording_status = start_synthetic_compositor(
+            state.clone(),
+            CompositorStartParams {
+                target_fps: 30,
+                width: 640,
+                height: 360,
+                publish_yuv_frames: true,
+                stream_output: None,
+            },
+        )
+        .await;
+
+        update_preview_surface_bounds(
+            &state,
+            PreviewSurfaceBoundsParams {
+                bounds: bounds(1280.0, 720.0),
+            },
+        )
+        .await;
+        let status = compositor_status(&state).await;
+        stop_compositor(&state).await;
+
+        assert_eq!(status.run_id, recording_status.run_id);
+        assert_eq!(status.width, 640);
+        assert_eq!(status.height, 360);
+    }
+
+    #[tokio::test]
+    async fn preview_surface_does_not_take_compositor_during_capture_startup() {
+        let state = test_state();
+        let _capture = state.ffmpeg_work.begin_capture_when_available().await;
+        let recording_status = start_synthetic_compositor(
+            state.clone(),
+            CompositorStartParams {
+                target_fps: 30,
+                width: 640,
+                height: 360,
+                publish_yuv_frames: true,
+                stream_output: None,
+            },
+        )
+        .await;
+
+        create_preview_surface(
+            state.clone(),
+            PreviewSurfaceCreateParams {
+                bounds: bounds(960.0, 540.0),
+                target_fps: 60,
+                source: PreviewSurfaceSource::Synthetic,
+            },
+        )
+        .await;
+        update_preview_surface_bounds(
+            &state,
+            PreviewSurfaceBoundsParams {
+                bounds: bounds(1280.0, 720.0),
+            },
+        )
+        .await;
+
+        let status = compositor_status(&state).await;
+        let preview_run_id = state.preview_surface.lock().await.run_id.clone();
+        stop_compositor(&state).await;
+
+        assert_eq!(status.state, CompositorState::Live);
+        assert_eq!(status.run_id, recording_status.run_id);
+        assert_eq!(status.width, 640);
+        assert_eq!(status.height, 360);
+        assert_eq!(preview_run_id, None);
     }
 
     #[tokio::test]

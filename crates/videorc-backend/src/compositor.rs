@@ -676,6 +676,7 @@ pub async fn update_compositor_surface_size(
     status
 }
 
+#[cfg(test)]
 pub async fn stop_compositor(state: &AppState) -> CompositorStatus {
     stop_current_compositor(state).await;
     let status = stopped_status(Some("Compositor stopped.".to_string()));
@@ -687,6 +688,31 @@ pub async fn stop_compositor(state: &AppState) -> CompositorStatus {
     }
     state.emit_event("compositor.status", status.clone());
     status
+}
+
+pub async fn stop_compositor_if_run_id(state: &AppState, run_id: &str) -> Option<CompositorStatus> {
+    let (previous_task, status) = {
+        let mut compositor = state.compositor.lock().await;
+        if compositor.run_id.as_deref() != Some(run_id) {
+            return None;
+        }
+        if let Some(stop_tx) = compositor.stop_tx.take() {
+            let _ = stop_tx.send(true);
+        }
+        compositor.run_id = None;
+        let previous_task = compositor.render_task.take();
+        compositor.latest_frame_evidence = None;
+        compositor.stream_frame_store = None;
+        let status = stopped_status(Some("Compositor stopped.".to_string()));
+        compositor.status = status.clone();
+        (previous_task, status)
+    };
+
+    if let Some(task) = previous_task {
+        task.abort();
+    }
+    state.emit_event("compositor.status", status.clone());
+    Some(status)
 }
 
 fn spawn_compositor_render_loop(
