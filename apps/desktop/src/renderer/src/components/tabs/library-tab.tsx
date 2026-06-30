@@ -4,6 +4,7 @@ import {
   CircleNotch,
   DotsThree,
   FileVideo,
+  FolderOpen,
   Sparkle,
   WarningCircle,
   Wrench
@@ -54,7 +55,7 @@ export function LibraryTab({
         </Empty>
       ) : (
         <ScrollArea className="h-[calc(100vh-12rem)] pr-3">
-          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+          <div className="grid gap-3 [grid-template-columns:repeat(auto-fill,minmax(min(100%,280px),1fr))]">
             {sessions.map((session) => (
               <SessionRow
                 key={session.id}
@@ -77,51 +78,38 @@ function SessionRow({
   onOpenInAi: () => void
 }): ReactElement {
   const filePath = session.mp4Path ?? session.outputPath ?? null
+  const format = session.mp4Path
+    ? 'MP4'
+    : session.container
+      ? session.container.toUpperCase()
+      : null
 
   return (
     <div className="flex flex-col gap-2 rounded-row border border-border p-3">
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex min-w-0 flex-col">
-          <span className="truncate text-sm font-semibold">{session.title}</span>
-          <span className="text-xs text-muted-foreground">
-            {dayLabel(session.startedAt)} · {session.mode} · {session.status}
-          </span>
-        </div>
-        <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
-          {session.healthEvents.length ? (
-            <Badge variant="outline">{session.healthEvents.length} health</Badge>
-          ) : null}
-          {session.finalDiagnostics?.recordingAtRisk ? (
-            <Badge variant="destructive">At risk</Badge>
-          ) : null}
-          {session.aiArtifacts.length ? (
-            <Badge variant="secondary">{session.aiArtifacts.length} AI</Badge>
-          ) : null}
-          {session.container ? (
-            <Badge variant="outline">{session.container.toUpperCase()}</Badge>
-          ) : null}
-          {typeof session.durationMs === 'number' ? (
-            <Badge variant="secondary">{durationMsLabel(session.durationMs)}</Badge>
-          ) : null}
-          {session.mp4Path ? <Badge variant="success">MP4</Badge> : null}
-        </div>
+      {session.title ? (
+        <span className="truncate text-sm font-semibold">{session.title}</span>
+      ) : null}
+      {/* Date / mode / status on one clamped line at full card width — it no
+          longer shares a row with the badges, so it can't be crushed into a
+          token-per-line wrap the way it was in the old justify-between layout. */}
+      <span className="truncate text-xs text-muted-foreground">
+        {dayLabel(session.startedAt)} · {session.mode} · {session.status}
+      </span>
+      <div className="flex flex-wrap items-center gap-1.5">
+        {format ? <Badge variant={session.mp4Path ? 'success' : 'outline'}>{format}</Badge> : null}
+        {typeof session.durationMs === 'number' ? (
+          <Badge variant="secondary">{durationMsLabel(session.durationMs)}</Badge>
+        ) : null}
+        {session.aiArtifacts.length ? (
+          <Badge variant="secondary">{session.aiArtifacts.length} AI</Badge>
+        ) : null}
       </div>
-      <p className="truncate rounded-row bg-muted/40 px-2.5 py-1.5 text-xs text-muted-foreground">
+      <p
+        className="truncate rounded-row bg-muted/40 px-2.5 py-1.5 font-mono text-xs text-muted-foreground"
+        title={session.mp4Path ?? session.outputPath ?? undefined}
+      >
         {session.mp4Path ?? session.outputPath ?? session.streamPreset ?? 'No local file'}
       </p>
-      {session.finalDiagnostics?.recordingRiskReasons.length ? (
-        <Alert variant="destructive">
-          <WarningCircle />
-          <AlertTitle>Recording diagnostics</AlertTitle>
-          <AlertDescription>
-            <ul className="list-disc pl-4">
-              {session.finalDiagnostics.recordingRiskReasons.map((reason) => (
-                <li key={reason}>{reason}</li>
-              ))}
-            </ul>
-          </AlertDescription>
-        </Alert>
-      ) : null}
       {filePath ? (
         <SessionActions filePath={filePath} session={session} onOpenInAi={onOpenInAi} />
       ) : (
@@ -227,12 +215,25 @@ function SessionActions({
     }
   }
 
+  const revealFile = (): void => {
+    const reveal = window.videorc?.revealPath
+    if (!reveal) {
+      toast.error('Reveal is not available on this platform.')
+      return
+    }
+    void reveal(filePath)
+  }
+
   return (
     <div className="flex flex-col gap-2">
       <div className="flex flex-wrap items-center gap-2">
         <Button size="sm" variant="secondary" onClick={onOpenInAi}>
           <Sparkle data-icon="inline-start" weight="fill" />
           Open in AI
+        </Button>
+        <Button size="sm" variant="outline" onClick={revealFile}>
+          <FolderOpen data-icon="inline-start" />
+          Reveal
         </Button>
         <div className="ml-auto flex items-center gap-2">
           {captureProtected ? <Badge variant="outline">Deferred while recording</Badge> : null}
