@@ -250,6 +250,15 @@ const remoteDebugPortOverride = process.env.VIDEORC_REMOTE_DEBUG_PORT?.trim()
 if (remoteDebugPortOverride) {
   app.commandLine.appendSwitch('remote-debugging-port', remoteDebugPortOverride)
 }
+// Keep the detached preview window live while it sits behind the main window.
+// A scene change is made in the main window, so the preview is occluded at that
+// moment — and macOS/Chromium stops compositing a fully-occluded window, which
+// froze the preview until it was clicked to the front. These switches keep
+// occluded/background windows rendering so the preview updates in place. The
+// per-window backgroundThrottling:false flags only cover timers/visibility; the
+// occlusion-driven compositor suspension needs these process-level switches.
+app.commandLine.appendSwitch('disable-backgrounding-occluded-windows')
+app.commandLine.appendSwitch('disable-renderer-backgrounding')
 const smokeCommandServerEnabled =
   process.env.VIDEORC_SMOKE_PREVIEW_MOTION === '1' ||
   process.env.VIDEORC_SMOKE_COMMAND_SERVER === '1'
