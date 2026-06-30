@@ -55,7 +55,7 @@ export function LibraryTab({
         </Empty>
       ) : (
         <ScrollArea className="h-[calc(100vh-12rem)] pr-3">
-          <div className="grid gap-3 [grid-template-columns:repeat(auto-fill,minmax(min(100%,280px),1fr))]">
+          <div className="grid grid-cols-1 gap-3 lg:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
             {sessions.map((session) => (
               <SessionRow
                 key={session.id}
@@ -85,7 +85,7 @@ function SessionRow({
       : null
 
   return (
-    <div className="flex flex-col gap-2 rounded-row border border-border p-3">
+    <div className="flex min-w-0 flex-col gap-2 rounded-row border border-border p-3">
       {session.title ? (
         <span className="truncate text-sm font-semibold">{session.title}</span>
       ) : null}
