@@ -23,10 +23,16 @@ export function FooterActionBar({
   return (
     <div
       data-slot="footer-action-bar"
-      className={cn('flex h-11 shrink-0 items-center gap-2 border-t border-border px-3', className)}
+      className={cn(
+        // min-h (not fixed h) + flex-wrap so the actions reflow onto a second
+        // row when the window is too narrow to hold them, instead of overflowing
+        // off the right edge out of sight.
+        'flex min-h-11 shrink-0 flex-wrap items-center gap-x-2 gap-y-1 border-t border-border px-3 py-1.5',
+        className
+      )}
     >
       <div className="flex items-center gap-2 text-[13px] text-subtle">{leading}</div>
-      <div className="ml-auto flex items-center gap-1.5">{children}</div>
+      <div className="ml-auto flex flex-wrap items-center gap-1.5">{children}</div>
     </div>
   )
 }
