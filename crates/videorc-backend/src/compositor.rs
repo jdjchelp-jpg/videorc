@@ -5786,6 +5786,70 @@ mod tests {
     }
 
     #[test]
+    fn background_stage_margin_follows_visibility() {
+        let background = |visibility: f64| EffectiveSceneBackground {
+            asset_id: "asset".to_string(),
+            managed_asset_path: "/tmp/bg.webp".to_string(),
+            fit: BackgroundFit::Fill,
+            scale: 100.0,
+            offset_x: 0.0,
+            offset_y: 0.0,
+            blur_px: 0.0,
+            dim_percent: 0.0,
+            saturation_percent: 100.0,
+            vignette_percent: 0.0,
+            visibility_percent: visibility,
+        };
+
+        assert_close(background_stage_margin(None), 0.0);
+        assert_close(background_stage_margin(Some(&background(0.0))), 0.0);
+        // Default visibility 20 = the classic 0.10 margin (80% stage).
+        assert_close(background_stage_margin(Some(&background(20.0))), 0.10);
+        assert_close(background_stage_margin(Some(&background(40.0))), 0.20);
+        // Out-of-range values clamp instead of collapsing the stage.
+        assert_close(background_stage_margin(Some(&background(100.0))), 0.20);
+        assert_close(background_stage_margin(Some(&background(-10.0))), 0.0);
+    }
+
+    #[test]
+    fn zero_visibility_keeps_sources_full_canvas_even_with_background() {
+        let full_frame = scene_source_render_transform(
+            &SceneTransform {
+                x: 0.0,
+                y: 0.0,
+                width: 1.0,
+                height: 1.0,
+                crop_left: 0.0,
+                crop_top: 0.0,
+                crop_right: 0.0,
+                crop_bottom: 0.0,
+            },
+            &SceneSourceKind::Screen,
+            0.0,
+        );
+        assert_close(full_frame.x, 0.0);
+        assert_close(full_frame.width, 1.0);
+
+        // Higher visibility shrinks the stage proportionally (40 => 60% stage).
+        let small_stage = scene_source_render_transform(
+            &SceneTransform {
+                x: 0.0,
+                y: 0.0,
+                width: 1.0,
+                height: 1.0,
+                crop_left: 0.0,
+                crop_top: 0.0,
+                crop_right: 0.0,
+                crop_bottom: 0.0,
+            },
+            &SceneSourceKind::Screen,
+            0.20,
+        );
+        assert_close(small_stage.x, 0.20);
+        assert_close(small_stage.width, 0.60);
+    }
+
+    #[test]
     fn active_background_insets_screen_like_sources_to_eighty_percent_stage() {
         let full_frame = scene_source_render_transform(
             &SceneTransform {

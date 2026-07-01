@@ -2472,6 +2472,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn effective_scene_background_visibility_defaults_when_absent() {
+        // Scenes persisted before the visibility slider existed carry no
+        // visibilityPercent; they must keep the classic 80%-stage look.
+        let json = r#"{"assetId":"a","managedAssetPath":"/tmp/x.webp","fit":"fill","scale":100.0,"offsetX":0.0,"offsetY":0.0,"blurPx":0.0,"dimPercent":0.0,"saturationPercent":100.0,"vignettePercent":0.0}"#;
+        let background: EffectiveSceneBackground = serde_json::from_str(json).unwrap();
+        assert!(
+            (background.visibility_percent - DEFAULT_BACKGROUND_VISIBILITY_PERCENT).abs() < 1e-9
+        );
+    }
+
+    #[test]
     fn scene_round_trips_background_and_omits_it_when_absent() {
         // No background: the field is omitted on the wire and a legacy scene
         // (saved before this field existed) still deserializes.
@@ -2501,7 +2512,7 @@ mod tests {
                 dim_percent: 20.0,
                 saturation_percent: 110.0,
                 vignette_percent: 30.0,
-            visibility_percent: 20.0,
+                visibility_percent: 20.0,
             }),
             ..plain
         };
@@ -2553,7 +2564,7 @@ mod tests {
                 dim_percent: 0.0,
                 saturation_percent: 100.0,
                 vignette_percent: 0.0,
-            visibility_percent: 20.0,
+                visibility_percent: 20.0,
             }),
             protected_overlay_window_ids: Vec::new(),
         };

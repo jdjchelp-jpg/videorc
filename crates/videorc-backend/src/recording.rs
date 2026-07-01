@@ -29,9 +29,9 @@ use crate::capture_input::{
 };
 use crate::compositor::{
     CompositorAuxiliaryOutput, CompositorStartParams, CompositorStartupBarrierParams,
-    CompositorStartupBarrierResult, CompositorStartupSourceRequirements,
-    background_stage_margin, compositor_frame_store, compositor_stream_frame_store,
-    start_synthetic_compositor, update_compositor_scene, wait_for_compositor_startup_frames,
+    CompositorStartupBarrierResult, CompositorStartupSourceRequirements, background_stage_margin,
+    compositor_frame_store, compositor_stream_frame_store, start_synthetic_compositor,
+    update_compositor_scene, wait_for_compositor_startup_frames,
 };
 use crate::devices::{
     find_avfoundation_camera_index, find_avfoundation_screen_index,
@@ -8759,6 +8759,65 @@ mod tests {
         assert!(filter.contains("overlay=x=0:y=0"));
         assert!(filter.contains("scale=20:20"));
         assert!(filter.contains("overlay=x=75:y=70"));
+    }
+
+    #[test]
+    fn background_visibility_scales_the_recording_stage() {
+        let mut params = base_params(true, false);
+        params.output.video.width = 100;
+        params.output.video.height = 100;
+        let base_scene = scene_with_sources(vec![scene_source(
+            "screen",
+            SceneSourceKind::Screen,
+            scene_transform(0.0, 0.0, 1.0, 1.0),
+            true,
+        )]);
+        let background = |visibility: f64| EffectiveSceneBackground {
+            asset_id: "builtin-bg-01".to_string(),
+            managed_asset_path: "/Users/me/Application Support/Videorc/code-demo.webp".to_string(),
+            fit: BackgroundFit::Fill,
+            scale: 100.0,
+            offset_x: 0.0,
+            offset_y: 0.0,
+            blur_px: 0.0,
+            dim_percent: 0.0,
+            saturation_percent: 100.0,
+            vignette_percent: 0.0,
+            visibility_percent: visibility,
+        };
+        let filter_at = |visibility: f64| {
+            let mut scene = base_scene.clone();
+            scene.background = Some(background(visibility));
+            let mut params = params.clone();
+            params.scene = Some(scene);
+            recording_video_filter(
+                &CaptureInputs {
+                    video: VideoInput::MacScreen { index: 3 },
+                    camera_index: None,
+                    microphone: None,
+                },
+                &InputLayout {
+                    video_input_index: 0,
+                    camera_input_index: None,
+                    screen_overlay_input_index: None,
+                    audio_inputs: Vec::new(),
+                },
+                &params,
+                false,
+            )
+        };
+
+        // Visibility 0: the background still renders, but the recording fills
+        // the full canvas over it.
+        let invisible = filter_at(0.0);
+        assert!(invisible.contains("movie=filename="));
+        assert!(invisible.contains("scale=100:100:force_original_aspect_ratio=decrease"));
+        assert!(invisible.contains("overlay=x=0:y=0"));
+
+        // Visibility 40: a 60% stage inset by 20% per side.
+        let prominent = filter_at(40.0);
+        assert!(prominent.contains("scale=60:60:force_original_aspect_ratio=decrease"));
+        assert!(prominent.contains("overlay=x=20:y=20"));
     }
 
     #[test]
