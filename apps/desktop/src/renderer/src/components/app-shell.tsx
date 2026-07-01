@@ -26,7 +26,9 @@ import {
   type StudioPanel,
   type WorkspaceTab
 } from '@/components/workspace-nav'
+import { WhatsNewDialog } from '@/components/whats-new-dialog'
 import { useStudio } from '@/hooks/use-studio'
+import { useWhatsNew } from '@/hooks/use-whats-new'
 import { ONBOARDING_VERSION, STORAGE_KEYS } from '@/lib/capture'
 
 export function AppShell(): ReactElement {
@@ -48,6 +50,7 @@ export function AppShell(): ReactElement {
   const [onboardingOpen, setOnboardingOpen] = useState(
     () => localStorage.getItem(STORAGE_KEYS.onboarding) !== ONBOARDING_VERSION
   )
+  const whatsNew = useWhatsNew(runtimeInfo?.version)
 
   // Studio control pages are ordinary tabs grouped under "Studio" in the sidebar.
   const openStudioPanel = useCallback((panel: StudioPanel) => {
@@ -193,7 +196,12 @@ export function AppShell(): ReactElement {
                 />
               ) : null}
               {active === 'diagnostics' ? <DiagnosticsTab /> : null}
-              {active === 'settings' ? <SettingsTab onResetOnboarding={resetOnboarding} /> : null}
+              {active === 'settings' ? (
+                <SettingsTab
+                  onResetOnboarding={resetOnboarding}
+                  onShowWhatsNew={whatsNew.showLatest}
+                />
+              ) : null}
             </div>
           </div>
           {/* Global footer action bar: the shell's real shortcuts, always
@@ -241,6 +249,13 @@ export function AppShell(): ReactElement {
 
         <CommandPalette open={commandOpen} onOpenChange={setCommandOpen} />
         <OnboardingDialog open={onboardingOpen} onComplete={completeOnboarding} />
+        {/* Post-update highlights; suppressed behind onboarding on first run
+            (first run initializes the last-seen version silently). */}
+        <WhatsNewDialog
+          entry={whatsNew.entry}
+          open={whatsNew.open && !onboardingOpen}
+          onClose={whatsNew.dismiss}
+        />
       </div>
     </WorkspaceNavContext.Provider>
   )

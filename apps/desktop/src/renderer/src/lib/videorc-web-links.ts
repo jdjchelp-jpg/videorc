@@ -23,8 +23,16 @@ export const VIDEORC_WEB_LINKS = {
   // the app through the videorc:// deep-link (Desktop Auth Token Bridge plan).
   desktopAuthorize: `${VIDEORC_WEB_ORIGIN}/desktop/authorize`,
   premium: `${VIDEORC_WEB_ORIGIN}/premium`,
-  billing: `${VIDEORC_WEB_ORIGIN}/account/billing`
+  billing: `${VIDEORC_WEB_ORIGIN}/account/billing`,
+  // Published changelog (compiled from videogre changelog/ on each release):
+  // JSON for the in-app What's New, pages for humans.
+  changelogApi: `${VIDEORC_WEB_ORIGIN}/api/changelog`,
+  changelog: `${VIDEORC_WEB_ORIGIN}/changelog`
 } as const
+
+export function releaseNotesUrl(version: string): string {
+  return `${VIDEORC_WEB_ORIGIN}/releases/${version}`
+}
 
 export type VideorcWebLink = keyof typeof VIDEORC_WEB_LINKS
 

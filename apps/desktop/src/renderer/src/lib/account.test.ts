@@ -103,7 +103,9 @@ describe('videorc web links', () => {
       login: 'https://videorc-web.vercel.app/login',
       desktopAuthorize: 'https://videorc-web.vercel.app/desktop/authorize',
       premium: 'https://videorc-web.vercel.app/premium',
-      billing: 'https://videorc-web.vercel.app/account/billing'
+      billing: 'https://videorc-web.vercel.app/account/billing',
+      changelogApi: 'https://videorc-web.vercel.app/api/changelog',
+      changelog: 'https://videorc-web.vercel.app/changelog'
     })
   })
 

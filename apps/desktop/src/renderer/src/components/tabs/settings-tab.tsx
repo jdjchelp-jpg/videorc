@@ -41,9 +41,11 @@ import { VIDEORC_PREMIUM_URL } from '@/lib/premium-upgrade'
 import { isUpdateInstallable } from '@/lib/update-ui'
 
 export function SettingsTab({
-  onResetOnboarding
+  onResetOnboarding,
+  onShowWhatsNew
 }: {
   onResetOnboarding: () => void
+  onShowWhatsNew: () => void
 }): ReactElement {
   const {
     settings,
@@ -274,12 +276,12 @@ export function SettingsTab({
         </div>
       </PanelSection>
 
-      <AboutAndUpdates />
+      <AboutAndUpdates onShowWhatsNew={onShowWhatsNew} />
     </ConfigGrid>
   )
 }
 
-function AboutAndUpdates(): ReactElement {
+function AboutAndUpdates({ onShowWhatsNew }: { onShowWhatsNew: () => void }): ReactElement {
   const { runtimeInfo, recording } = useStudio()
   const { status, check, install } = useUpdater()
   const captureActive = isActiveRecordingState(recording.state)
@@ -302,6 +304,12 @@ function AboutAndUpdates(): ReactElement {
           onCheck={check}
           onInstall={install}
         />
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-sm text-muted-foreground">Release notes</span>
+          <Button size="sm" variant="outline" onClick={onShowWhatsNew}>
+            What&apos;s new
+          </Button>
+        </div>
       </div>
     </PanelSection>
   )
