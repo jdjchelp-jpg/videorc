@@ -1,6 +1,7 @@
 const PREVIEW_SURFACE_ERROR_PATTERNS = [
   "Error occurred in handler for 'preview-surface:",
-  'Native preview compositor present failed:'
+  'Native preview compositor present failed:',
+  'Native preview falling back to image polling:'
 ]
 
 export function createPreviewSurfaceOutputGuard() {

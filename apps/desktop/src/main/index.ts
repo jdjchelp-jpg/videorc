@@ -2591,6 +2591,12 @@ async function createNativePreviewSurface(
   } else if (!placement.visible) {
     nativePreviewSurfaceWindow.hide()
   }
+  const preserveNativeSurface =
+    nativePreviewSurfaceStatusIsRealSurface(nativePreviewSurfaceStatus) &&
+    nativeSurfaceOwnsPlacement()
+  const fallbackMessage = nativePreviewSurfaceScene
+    ? 'Electron proof scene preview surface.'
+    : 'Synthetic Electron proof preview surface.'
   nativePreviewSurfaceStatus = {
     state: 'live',
     source: nativePreviewSurfaceScene?.sources.some(
@@ -2600,8 +2606,10 @@ async function createNativePreviewSurface(
       : nativePreviewSurfaceScene?.sources.some((source) => source.kind === 'camera')
         ? 'camera'
         : 'synthetic',
-    transport: 'electron-proof-surface',
-    backing: 'electron-browser-window',
+    transport: preserveNativeSurface
+      ? nativePreviewSurfaceStatus.transport
+      : 'electron-proof-surface',
+    backing: preserveNativeSurface ? nativePreviewSurfaceStatus.backing : 'electron-browser-window',
     targetFps: 60,
     width: rect.width,
     height: rect.height,
@@ -2622,14 +2630,20 @@ async function createNativePreviewSurface(
     bounds,
     startedAt: nativePreviewSurfaceStatus.startedAt ?? new Date().toISOString(),
     updatedAt: new Date().toISOString(),
-    message: nativePreviewSurfaceScene
-      ? 'Electron proof scene preview surface.'
-      : 'Synthetic Electron proof preview surface.'
+    message: preserveNativeSurface ? nativePreviewSurfaceStatus.message : fallbackMessage
   }
-  previewSupervisor.surfaceFallback(
-    generation,
-    nativePreviewSurfaceStatus.message ?? 'Electron proof preview surface.'
-  )
+  if (preserveNativeSurface) {
+    previewSupervisor.surfaceLive({
+      generation,
+      transport: nativePreviewSurfaceStatus.transport,
+      backing: nativePreviewSurfaceStatus.backing
+    })
+  } else {
+    previewSupervisor.surfaceFallback(
+      generation,
+      nativePreviewSurfaceStatus.message ?? 'Electron proof preview surface.'
+    )
+  }
   return nativePreviewSurfaceStatus
 }
 
@@ -2665,12 +2679,17 @@ async function updateNativePreviewSurfaceBounds(
   } else if (!placement.visible) {
     nativePreviewSurfaceWindow.hide()
   }
+  const preserveNativeSurface =
+    nativePreviewSurfaceStatusIsRealSurface(nativePreviewSurfaceStatus) &&
+    nativeSurfaceOwnsPlacement()
   nativePreviewSurfaceStatus = {
     ...nativePreviewSurfaceStatus,
     state: 'live',
     source: nativePreviewSurfaceStatus.source,
-    transport: 'electron-proof-surface',
-    backing: 'electron-browser-window',
+    transport: preserveNativeSurface
+      ? nativePreviewSurfaceStatus.transport
+      : 'electron-proof-surface',
+    backing: preserveNativeSurface ? nativePreviewSurfaceStatus.backing : 'electron-browser-window',
     width: rect.width,
     height: rect.height,
     droppedFrames: nativePreviewSurfaceStatus.droppedFrames ?? 0,
@@ -3076,6 +3095,20 @@ function compositorFrameSceneRevisionMismatch(
   )
 }
 
+function compositorStatusHasRenderedFrameRevision(
+  status: PreviewSurfaceCompositorUpdateParams
+): boolean {
+  return (
+    typeof status.frameSceneRevision === 'number' && Number.isSafeInteger(status.frameSceneRevision)
+  )
+}
+
+function compositorStatusIsSmokeSceneExercise(
+  status: PreviewSurfaceCompositorUpdateParams
+): boolean {
+  return status.message === 'Smoke compositor scene update.'
+}
+
 function recordNativePreviewMainSceneMismatch(
   status: PreviewSurfaceCompositorUpdateParams
 ): PreviewSurfaceStatus {
@@ -3135,14 +3168,30 @@ async function tryPresentNativePreviewRealSurfaceCompositor(
     const hasMetalTarget =
       typeof status.metalTargetIosurfaceId === 'number' && status.metalTargetIosurfaceId > 0
     const sceneRevisionMismatch = compositorFrameSceneRevisionMismatch(status)
+    if (sceneRevisionMismatch) {
+      recordNativePreviewMainSceneMismatch(status)
+      return {
+        kind: 'skipped',
+        logKey: 'no-handoff:scene-revision'
+      }
+    }
+    if (
+      !hasMetalTarget &&
+      !sceneRevisionMismatch &&
+      (!compositorStatusHasRenderedFrameRevision(status) ||
+        compositorStatusIsSmokeSceneExercise(status))
+    ) {
+      return {
+        kind: 'skipped',
+        logKey: 'no-handoff:not-rendered'
+      }
+    }
     return {
       kind: 'skipped',
-      reason: sceneRevisionMismatch
-        ? `Native preview falling back to image polling: the compositor Metal IOSurface was rendered from scene revision ${status.frameSceneRevision}, but the active scene is ${status.sceneRevision}.`
-        : hasMetalTarget
-          ? `Native preview falling back to image polling: the compositor's Metal IOSurface target is older than the ${DEFAULT_NATIVE_PREVIEW_MAX_HANDOFF_AGE_MS}ms handoff budget (compose is too slow to stay live).`
-          : `Native preview falling back to image polling: the compositor status carries no Metal IOSurface target (metalTargetIosurfaceId=${status.metalTargetIosurfaceId ?? 'absent'}), so there is nothing to present natively for this scene.`,
-      logKey: `no-handoff:${sceneRevisionMismatch ? 'scene-revision' : hasMetalTarget ? 'stale' : 'absent'}`
+      reason: hasMetalTarget
+        ? `Native preview falling back to image polling: the compositor's Metal IOSurface target is older than the ${DEFAULT_NATIVE_PREVIEW_MAX_HANDOFF_AGE_MS}ms handoff budget (compose is too slow to stay live).`
+        : `Native preview falling back to image polling: the compositor status carries no Metal IOSurface target (metalTargetIosurfaceId=${status.metalTargetIosurfaceId ?? 'absent'}), so there is nothing to present natively for this scene.`,
+      logKey: `no-handoff:${hasMetalTarget ? 'stale' : 'absent'}`
     }
   }
   if (nativePreviewSurfaceStatus.state !== 'live') {
