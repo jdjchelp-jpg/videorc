@@ -84,6 +84,10 @@ never publishes. The changelog JSON feeds videorc-web `/changelog` and the
 desktop "What's new"; `VIDEORC_RELEASE_SKIP_CHANGELOG=1` is the loud emergency
 escape.
 
+Newsletter: `pnpm changelog:email <releaseId>` renders the entry to
+email-ready HTML + plaintext under `dist/changelog/email/` (sending is manual —
+no ESP is wired yet).
+
 ## Verify (always follow the redirect to R2)
 
 ```sh
