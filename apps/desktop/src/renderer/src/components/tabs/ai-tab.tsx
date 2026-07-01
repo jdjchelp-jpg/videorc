@@ -31,7 +31,12 @@ import {
 import { Switch } from '@/components/ui/switch'
 import { useStudio } from '@/hooks/use-studio'
 import { cloudAiReadiness } from '@/lib/ai-readiness'
-import type { SessionSummary } from '@/lib/backend'
+import {
+  activeAiWorkflowStatus,
+  aiRunButtonLabel,
+  latestAiProblemArtifact
+} from '@/lib/ai-workflow-status'
+import type { AiArtifact, SessionSummary } from '@/lib/backend'
 import {
   artifactChapters,
   artifactField,
@@ -218,35 +223,57 @@ export function AiTab({
     const canRunAi = Boolean(
       session.status === 'completed' && (session.mp4Path || session.outputPath)
     )
-    const canExportPublishPack = session.aiArtifacts.some(
+    const hasReviewableArtifacts = session.aiArtifacts.some(
       (artifact) => artifact.status === 'ready' && artifact.kind !== 'audio-extract'
     )
+    const hasFailedArtifacts = session.aiArtifacts.some((artifact) => artifact.status === 'failed')
+    const canExportPublishPack = hasReviewableArtifacts
     const aiRunning = aiRunningSessionId === session.id
     const exportRunning = exportRunningSessionId === session.id
     const cloudAiBlocked = aiConsent && !cloudAi.ready
+    const runningStatus = aiRunning ? activeAiWorkflowStatus(session) : null
+    const runLabel = aiRunButtonLabel({
+      aiRunning,
+      cloudReady: cloudAi.ready,
+      consent: aiConsent,
+      hasFailedArtifacts,
+      hasReviewableArtifacts
+    })
 
     return (
-      <div className="flex flex-wrap gap-2">
-        <Button
-          disabled={!canRunAi || aiRunning || cloudAiBlocked}
-          title={cloudAiBlocked ? cloudAi.description : undefined}
-          onClick={() => runAiWorkflow(session.id)}
-        >
-          <Lightning data-icon="inline-start" weight="fill" />
-          {aiRunning
-            ? 'Running…'
-            : aiConsent && cloudAi.ready
-              ? 'Run AI workflow'
-              : 'Extract local audio'}
-        </Button>
-        <Button
-          disabled={!canExportPublishPack || exportRunning}
-          variant="outline"
-          onClick={() => exportPublishPack(session.id)}
-        >
-          <DownloadSimple data-icon="inline-start" />
-          {exportRunning ? 'Exporting…' : 'Export pack'}
-        </Button>
+      <div className="flex flex-col gap-2">
+        <div className="flex flex-wrap gap-2">
+          <Button
+            disabled={!canRunAi || aiRunning || cloudAiBlocked}
+            title={cloudAiBlocked ? cloudAi.description : undefined}
+            onClick={() => runAiWorkflow(session.id)}
+          >
+            <Lightning data-icon="inline-start" weight="fill" />
+            {runLabel}
+          </Button>
+          <Button
+            disabled={!canExportPublishPack || exportRunning}
+            variant="outline"
+            onClick={() => exportPublishPack(session.id)}
+          >
+            <DownloadSimple data-icon="inline-start" />
+            {exportRunning ? 'Exporting…' : 'Export pack'}
+          </Button>
+        </div>
+        {runningStatus ? (
+          <Alert
+            className="py-2"
+            variant={runningStatus.tone === 'warning' ? 'warning' : 'default'}
+          >
+            {runningStatus.tone === 'warning' ? (
+              <Warning weight="fill" />
+            ) : (
+              <Lightning weight="fill" />
+            )}
+            <AlertTitle>{runningStatus.title}</AlertTitle>
+            <AlertDescription>{runningStatus.description}</AlertDescription>
+          </Alert>
+        ) : null}
       </div>
     )
   }
@@ -280,6 +307,7 @@ function ArtifactView({ session }: { session: SessionSummary }): ReactElement {
   const healthItems = artifactObjects(healthAssistant, 'explanations')
   const title = titleDescription ? artifactField(titleDescription, 'title') : ''
   const description = titleDescription ? artifactField(titleDescription, 'description') : ''
+  const problemArtifact = latestAiProblemArtifact(session)
 
   if (!session.aiArtifacts.length) {
     return (
@@ -295,6 +323,7 @@ function ArtifactView({ session }: { session: SessionSummary }): ReactElement {
   return (
     <ScrollArea className="h-[calc(100vh-15rem)] pr-3">
       <div className="flex flex-col gap-2">
+        {problemArtifact ? <ArtifactProblem artifact={problemArtifact} /> : null}
         {title || description ? (
           <ArtifactSection defaultOpen title="Title & description">
             {title ? <p className="font-medium">{title}</p> : null}
@@ -400,6 +429,25 @@ function ArtifactView({ session }: { session: SessionSummary }): ReactElement {
         ) : null}
       </div>
     </ScrollArea>
+  )
+}
+
+function ArtifactProblem({ artifact }: { artifact: AiArtifact }): ReactElement {
+  const message =
+    artifactField(artifact, 'message') ||
+    artifactField(artifact, 'error') ||
+    (artifact.status === 'pending-consent'
+      ? 'Cloud AI upload is waiting for explicit consent. Enable consent and retry the workflow when ready.'
+      : 'AI workflow failed before this artifact was ready. Check cloud AI readiness and retry the workflow.')
+  const title =
+    artifact.status === 'pending-consent' ? 'Cloud AI waiting for consent' : 'AI artifact failed'
+
+  return (
+    <Alert variant="warning">
+      <Warning weight="fill" />
+      <AlertTitle>{title}</AlertTitle>
+      <AlertDescription>{message}</AlertDescription>
+    </Alert>
   )
 }
 
