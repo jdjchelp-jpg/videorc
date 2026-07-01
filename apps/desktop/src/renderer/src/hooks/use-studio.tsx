@@ -3291,6 +3291,20 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     })
   }, [nativePreviewSurfaceEnabled, syncNativePreviewSurfaceScene])
 
+  // First-frame healing ladder: main asks for a scene re-commit when the
+  // compositor holds a stale/foreign scene (backend-owned revisions displace it).
+  useEffect(() => {
+    if (!nativePreviewSurfaceEnabled) {
+      return
+    }
+    const unsubscribe = window.videorc?.onPreviewSceneResyncRequest?.(() => {
+      void syncNativePreviewSurfaceScene().catch((error: unknown) => {
+        console.error('Native preview scene resync failed:', error)
+      })
+    })
+    return () => unsubscribe?.()
+  }, [nativePreviewSurfaceEnabled, syncNativePreviewSurfaceScene])
+
   const registerPreviewSurfaceResize = useCallback(() => {
     if (!client || wsStatus !== 'connected') {
       return

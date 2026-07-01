@@ -47,6 +47,12 @@ import {
 import { createMediaPermissionGrantWatcher } from './system-permission-watch'
 import { PreviewSupervisorModel } from './preview-supervisor'
 import { backendIsolationEnv } from './backend-isolation'
+import {
+  assessFirstFrame,
+  emptyFirstFrameLedger,
+  type FirstFrameLedger,
+  type FirstFrameSnapshot
+} from './native-preview-first-frame'
 import { initAutoUpdater, registerUpdaterIpc } from './updater'
 import {
   DEFAULT_NATIVE_PREVIEW_MAX_HANDOFF_AGE_MS,
@@ -294,6 +300,196 @@ function nativeSurfaceOwnsPlacement(): boolean {
 
 function clearNativePreviewNativePlacementAuthority(): void {
   nativePreviewNativePresentConfirmedAtMs = 0
+}
+
+// --- First-frame contract watchdog (native-preview-first-frame.ts, plan P2) ---
+// From preview-window open, the app owes a native frame of the committed scene
+// within budget — or a self-heal, or a declared fallback with the blocked link.
+// The watchdog fetches compositor status itself (pump-independent, so it also
+// heals a dead pump), assesses the chain each tick, runs the healing ladder,
+// and keeps the preview window's waiting hint truthful.
+const FIRST_FRAME_TICK_MS = 750
+const PREVIEW_WAIT_DETAIL_DEFAULT =
+  'The native surface appears here as soon as the compositor presents.'
+let firstFrameWatchdogTimer: NodeJS.Timeout | null = null
+let firstFrameWatchdogStartedAtMs = 0
+let firstFrameLedger: FirstFrameLedger = emptyFirstFrameLedger()
+let firstFrameLastFramesRendered: number | null = null
+let firstFrameLastHint: string | null = null
+let firstFrameTickInFlight = false
+
+function startFirstFrameWatchdog(): void {
+  stopFirstFrameWatchdog()
+  firstFrameWatchdogStartedAtMs = Date.now()
+  firstFrameLedger = emptyFirstFrameLedger()
+  firstFrameLastFramesRendered = null
+  firstFrameLastHint = null
+  setFirstFrameStatus('pending', 'Preview surface is starting.')
+  firstFrameWatchdogTimer = setInterval(() => {
+    void runFirstFrameWatchdogTick()
+  }, FIRST_FRAME_TICK_MS)
+}
+
+function stopFirstFrameWatchdog(): void {
+  if (firstFrameWatchdogTimer) {
+    clearInterval(firstFrameWatchdogTimer)
+    firstFrameWatchdogTimer = null
+  }
+  firstFrameTickInFlight = false
+}
+
+function setFirstFrameStatus(
+  contract: 'pending' | 'healing' | 'met' | 'fallback',
+  reason?: string
+): void {
+  nativePreviewSurfaceStatus = {
+    ...nativePreviewSurfaceStatus,
+    firstFrameContract: contract,
+    ...(reason ? { firstFrameReason: reason } : {})
+  }
+}
+
+function updatePreviewWindowWaitDetail(text: string | null): void {
+  const detail = text ?? PREVIEW_WAIT_DETAIL_DEFAULT
+  if (detail === firstFrameLastHint) {
+    return
+  }
+  firstFrameLastHint = detail
+  const window = previewWindow
+  if (!window || window.isDestroyed() || window.webContents.isDestroyed()) {
+    return
+  }
+  void window.webContents
+    .executeJavaScript(
+      `(() => { const el = document.getElementById('videorc-wait-detail'); if (el) { el.textContent = ${JSON.stringify(detail)} } })()`
+    )
+    .catch(() => {
+      // The hint is best-effort; presentation health is tracked in the status.
+    })
+}
+
+async function fetchFirstFrameCompositorStatus(): Promise<CompositorStatus | null> {
+  if (!backendConnection) {
+    return null
+  }
+  const params = new URLSearchParams({ token: backendConnection.token })
+  try {
+    return await requestBackendJson<CompositorStatus>(
+      `http://${backendConnection.host}:${backendConnection.port}/compositor/status?${params.toString()}`
+    )
+  } catch {
+    return null
+  }
+}
+
+async function runFirstFrameWatchdogTick(): Promise<void> {
+  if (firstFrameTickInFlight) {
+    return
+  }
+  firstFrameTickInFlight = true
+  try {
+    const window = previewWindow
+    if (!window || window.isDestroyed()) {
+      stopFirstFrameWatchdog()
+      return
+    }
+
+    const compositor = await fetchFirstFrameCompositorStatus()
+    const framesRendered = compositor?.framesRendered ?? null
+    const framesAdvancing =
+      framesRendered != null &&
+      firstFrameLastFramesRendered != null &&
+      framesRendered > firstFrameLastFramesRendered
+    if (framesRendered != null) {
+      firstFrameLastFramesRendered = framesRendered
+    }
+
+    const snapshot: FirstFrameSnapshot = {
+      elapsedMs: Date.now() - firstFrameWatchdogStartedAtMs,
+      surfaceLive: nativePreviewSurfaceStatus.state === 'live',
+      nativePresenting: nativePreviewSurfaceStatusIsRealSurface(nativePreviewSurfaceStatus),
+      framesAdvancing,
+      rendererSceneRevision: nativePreviewSurfaceScene?.revision ?? null,
+      compositorSceneRevision: compositor?.sceneRevision ?? null,
+      compositorFrameSceneRevision: compositor?.frameSceneRevision ?? null,
+      metalTargetPresent: Boolean(compositor?.metalTargetIosurfaceId)
+    }
+
+    const { assessment, ledger } = assessFirstFrame(snapshot, firstFrameLedger)
+    firstFrameLedger = ledger
+
+    switch (assessment.kind) {
+      case 'met':
+        setFirstFrameStatus('met')
+        updatePreviewWindowWaitDetail(null)
+        stopFirstFrameWatchdog()
+        return
+      case 'pending':
+        setFirstFrameStatus('pending', assessment.reason)
+        updatePreviewWindowWaitDetail(assessment.reason)
+        return
+      case 'heal':
+        setFirstFrameStatus('healing', assessment.reason)
+        updatePreviewWindowWaitDetail(assessment.reason)
+        logBackend(
+          'info',
+          `[first-frame] healing: ${assessment.action} — ${assessment.reason}`
+        )
+        runFirstFrameHealingAction(assessment.action, compositor)
+        return
+      case 'fallback':
+        setFirstFrameStatus('fallback', assessment.reason)
+        updatePreviewWindowWaitDetail(`Preview could not start natively: ${assessment.reason}`)
+        logBackend('warn', `[first-frame] contract failed: ${assessment.reason}`)
+        stopFirstFrameWatchdog()
+        return
+    }
+  } finally {
+    firstFrameTickInFlight = false
+  }
+}
+
+function runFirstFrameHealingAction(
+  action: 'present-kick' | 'resync-scene' | 'reset-native-path',
+  compositor: CompositorStatus | null
+): void {
+  switch (action) {
+    case 'present-kick': {
+      // Push the freshest compositor status through the normal present path —
+      // heals a stalled pump or a stale reused status.
+      void (async () => {
+        const status = compositor ?? (await fetchFirstFrameCompositorStatus())
+        if (status) {
+          await updateNativePreviewSurfaceCompositor({ ...status })
+        }
+      })().catch((error) => {
+        logBackend('warn', `[first-frame] present-kick failed: ${errorMessage(error)}`)
+      })
+      return
+    }
+    case 'resync-scene': {
+      // Ask the renderer to re-commit its scene through the backend-owned
+      // allocator; a committed revision displaces a stale/foreign compositor
+      // scene (2026-07-01 incident class).
+      const window = mainWindow
+      if (window && !window.webContents.isDestroyed()) {
+        window.webContents.send('preview-surface:resync-scene')
+      }
+      return
+    }
+    case 'reset-native-path': {
+      // Give the native presenter a clean slate: allow immediate helper driver
+      // re-resolution, forget invalid activations, drop the proof placement
+      // latch, and force host reconcile so create/update commands re-run.
+      nativePreviewHelperDriverRetryAtMs = 0
+      nativePreviewRealSurfaceInvalidActivationCount = 0
+      clearNativePreviewNativePlacementAuthority()
+      void reconcileNativePreviewSurfaceForPreviewWindow({ force: true }).catch((error) => {
+        logBackend('warn', `[first-frame] native path reset failed: ${errorMessage(error)}`)
+      })
+      return
+    }
+  }
 }
 let nativePreviewLastRealSurfaceFallbackLogKey: string | undefined
 let nativePreviewRealSurfaceInvalidActivationCount = 0
@@ -1437,7 +1633,7 @@ const PREVIEW_WINDOW_HTML = `<!doctype html><html><head><meta charset="utf-8"><s
   .hint .title { color: #f4f4f5; font-size: 13px; }
 </style></head><body>
   <div class="hint"><div class="title">Waiting for preview</div>
-  <div>The native surface appears here as soon as the compositor presents.</div></div>
+  <div id="videorc-wait-detail">The native surface appears here as soon as the compositor presents.</div></div>
   <div class="drag-bar"><span class="label">Videorc Preview</span><span class="grip"></span></div>
 </body></html>`
 
@@ -1521,6 +1717,7 @@ async function openPreviewWindow(): Promise<PreviewWindowState> {
   })
   window.on('closed', () => {
     if (previewWindow === window) {
+      stopFirstFrameWatchdog()
       previewWindow = null
       previewWindowClosing = false
       previewSupervisor.finishClose(previewWindowSurfaceGeneration())
@@ -1550,6 +1747,8 @@ async function openPreviewWindow(): Promise<PreviewWindowState> {
   void setNativePreviewSurfaceFramePollingSuppressed(false)
   pushPreviewWindowPlacement()
   emitPreviewWindowState()
+  // The first-frame contract clock starts the moment the window is up.
+  startFirstFrameWatchdog()
   return previewWindowState()
 }
 

@@ -166,6 +166,11 @@ const api: VideorcApi = {
       callback(status)
     ipcRenderer.on('app:update-status', listener)
     return () => ipcRenderer.removeListener('app:update-status', listener)
+  },
+  onPreviewSceneResyncRequest: (callback) => {
+    const listener = (): void => callback()
+    ipcRenderer.on('preview-surface:resync-scene', listener)
+    return () => ipcRenderer.removeListener('preview-surface:resync-scene', listener)
   }
 }
 

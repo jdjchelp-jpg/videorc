@@ -1131,6 +1131,12 @@ export interface PreviewSurfaceStatus {
   startedAt?: string
   updatedAt: string
   message?: string
+  // First-frame contract (native-preview-first-frame.ts): from preview open the
+  // app either presents a native frame of the committed scene within budget,
+  // self-heals, or declares fallback with the blocked link — never an
+  // unexplained indefinite wait.
+  firstFrameContract?: 'pending' | 'healing' | 'met' | 'fallback'
+  firstFrameReason?: string
 }
 
 export interface PreviewSurfacePresentParams {
@@ -2128,6 +2134,10 @@ export interface VideorcApi {
   installUpdate: () => Promise<void>
   getUpdateStatus: () => Promise<UpdateStatus>
   onUpdateStatus: (callback: (status: UpdateStatus) => void) => () => void
+  // First-frame healing ladder (main → renderer): re-commit the current scene
+  // through the backend-owned allocator to displace a stale/foreign compositor
+  // scene (see native-preview-first-frame.ts).
+  onPreviewSceneResyncRequest: (callback: () => void) => () => void
 }
 
 // --- Recording repair (lag cleanup & repair plan) ---
