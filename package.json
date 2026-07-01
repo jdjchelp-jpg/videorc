@@ -71,6 +71,7 @@
     "smoke:sources": "node scripts/smoke-source-reconciliation.mjs",
     "smoke:start-labels": "node scripts/smoke-start-labels.mjs",
     "smoke:layout-source-loop": "node scripts/smoke-layout-source-loop-app.mjs",
+    "smoke:preview-scene-commit": "node scripts/smoke-preview-scene-commit-app.mjs",
     "smoke:preview-motion": "node scripts/smoke-preview-motion-app.mjs",
     "probe:preview-window": "node scripts/preview-window-probe.mjs",
     "probe:comments-window": "node scripts/comments-window-probe.mjs",

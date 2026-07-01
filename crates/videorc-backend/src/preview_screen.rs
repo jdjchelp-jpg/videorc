@@ -626,7 +626,41 @@ pub async fn stop_preview_screen(state: &AppState) -> PreviewScreenStatus {
 }
 
 pub async fn preview_screen_status(state: &AppState) -> PreviewScreenStatus {
-    state.preview_screen.lock().await.status.clone()
+    let (shared, target_fps) = {
+        let slot = state.preview_screen.lock().await;
+        let Some(active) = slot.active.as_ref() else {
+            return slot.status.clone();
+        };
+        (Arc::clone(&active.shared), slot.status.target_fps)
+    };
+
+    let snapshot = screen_shared_snapshot(&shared);
+    let status = {
+        let mut slot = state.preview_screen.lock().await;
+        if slot
+            .active
+            .as_ref()
+            .is_some_and(|active| Arc::ptr_eq(&active.shared, &shared))
+        {
+            apply_screen_snapshot_to_status(&mut slot.status, &snapshot, target_fps);
+        }
+        slot.status.clone()
+    };
+
+    {
+        let camera_frame_store_stats =
+            crate::preview_camera::preview_camera_frame_store_stats(state).await;
+        let mut diagnostics = state.diagnostics.lock().await;
+        let stats = apply_preview_screen_source_stats(diagnostics.clone(), &status);
+        let stats = apply_preview_screen_capture_timing_stats(stats, snapshot.capture_timings);
+        *diagnostics = apply_preview_source_frame_store_stats(
+            stats,
+            camera_frame_store_stats,
+            snapshot.frame_store_stats,
+        );
+    }
+
+    status
 }
 
 pub async fn preview_screen_frame_store_stats(state: &AppState) -> FrameStoreStats {
@@ -1009,6 +1043,50 @@ async fn reuse_current_screen_source(
     Some(status)
 }
 
+fn screen_shared_snapshot(shared: &Arc<StdMutex<PreviewScreenShared>>) -> ScreenSharedSnapshot {
+    let guard = shared
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    ScreenSharedSnapshot {
+        frames_captured: guard.frames_captured,
+        dropped_frames: guard.dropped_frames,
+        source_fps: guard.source_fps,
+        latest_frame: guard.frame_store.latest(),
+        frame_store_stats: guard.frame_store.stats(),
+        last_error: guard.last_error.clone(),
+        capture_timings: guard.capture_timings.snapshot(),
+    }
+}
+
+fn apply_screen_snapshot_to_status(
+    status: &mut PreviewScreenStatus,
+    snapshot: &ScreenSharedSnapshot,
+    target_fps: u32,
+) {
+    status.frames_captured = snapshot.frames_captured;
+    status.dropped_frames = snapshot.dropped_frames;
+    status.source_fps = snapshot.source_fps.or(Some(f64::from(target_fps)));
+    if let Some(frame) = snapshot.latest_frame.as_ref() {
+        status.state = PreviewScreenState::Live;
+        status.width = Some(frame.width);
+        status.height = Some(frame.height);
+        status.actual_width = Some(frame.width);
+        status.actual_height = Some(frame.height);
+        status.iosurface_available =
+            Some(frame.source_iosurface.is_some() || frame.source_pixel_buffer.is_some());
+        status.sequence = Some(frame.sequence);
+        status.frame_age_ms = Some(frame.captured_at.elapsed().as_millis() as u64);
+        match frame.pixel_format {
+            PreviewScreenPixelFormat::Bgra8 => {}
+        }
+    }
+    if let Some(error) = snapshot.last_error.as_ref() {
+        status.state = PreviewScreenState::Failed;
+        status.message = Some(error.clone());
+    }
+    status.updated_at = Utc::now().to_rfc3339();
+}
+
 async fn poll_screen_metrics(
     state: AppState,
     run_id: String,
@@ -1020,49 +1098,14 @@ async fn poll_screen_metrics(
 
     loop {
         ticker.tick().await;
-        let snapshot = {
-            let guard = shared
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            ScreenSharedSnapshot {
-                frames_captured: guard.frames_captured,
-                dropped_frames: guard.dropped_frames,
-                source_fps: guard.source_fps,
-                latest_frame: guard.frame_store.latest(),
-                frame_store_stats: guard.frame_store.stats(),
-                last_error: guard.last_error.clone(),
-                capture_timings: guard.capture_timings.snapshot(),
-            }
-        };
+        let snapshot = screen_shared_snapshot(&shared);
 
         let status = {
             let mut slot = state.preview_screen.lock().await;
             if slot.run_id.as_deref() != Some(run_id.as_str()) {
                 break;
             }
-            slot.status.frames_captured = snapshot.frames_captured;
-            slot.status.dropped_frames = snapshot.dropped_frames;
-            slot.status.source_fps = snapshot.source_fps.or(Some(f64::from(target_fps)));
-            if let Some(frame) = snapshot.latest_frame {
-                slot.status.state = PreviewScreenState::Live;
-                slot.status.width = Some(frame.width);
-                slot.status.height = Some(frame.height);
-                slot.status.actual_width = Some(frame.width);
-                slot.status.actual_height = Some(frame.height);
-                slot.status.iosurface_available =
-                    Some(frame.source_iosurface.is_some() || frame.source_pixel_buffer.is_some());
-                slot.status.sequence = Some(frame.sequence);
-                let _frame_bytes = frame.bytes.len();
-                slot.status.frame_age_ms = Some(frame.captured_at.elapsed().as_millis() as u64);
-                match frame.pixel_format {
-                    PreviewScreenPixelFormat::Bgra8 => {}
-                }
-            }
-            if let Some(error) = snapshot.last_error {
-                slot.status.state = PreviewScreenState::Failed;
-                slot.status.message = Some(error);
-            }
-            slot.status.updated_at = Utc::now().to_rfc3339();
+            apply_screen_snapshot_to_status(&mut slot.status, &snapshot, target_fps);
             slot.status.clone()
         };
         {

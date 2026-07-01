@@ -634,7 +634,6 @@ fn default_side_by_side_camera_side() -> SideBySideCameraSide {
 
 /// The canonical default layout (screen + camera, medium bottom-right camera). Used
 /// as a starting point for the active scene model and tests.
-#[cfg(test)]
 pub(crate) fn default_layout_settings() -> LayoutSettings {
     LayoutSettings {
         layout_preset: default_layout_preset(),
@@ -1669,6 +1668,19 @@ pub struct CompositorStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metal_target_height: Option<u32>,
     pub updated_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SceneCommitStatus {
+    pub applied: bool,
+    /// "idle" (no active recording/stream), "hot", or "warm".
+    pub mode: String,
+    pub scene_revision: u64,
+    pub scene: Scene,
+    pub compositor_status: CompositorStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
 }

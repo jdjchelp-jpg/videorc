@@ -34,10 +34,11 @@ use crate::preview_camera::{
 };
 use crate::preview_screen::{PreviewScreenFrameInfo, preview_screen_latest_frame_info};
 use crate::preview_screen::{preview_screen_status, start_preview_screen};
+use crate::protocol::default_layout_settings;
 use crate::protocol::{
     CompositorSceneUpdateParams, LayoutPreset, PreviewCameraStartParams, PreviewCameraState,
     PreviewCameraStatus, PreviewScreenStartParams, PreviewScreenState, PreviewScreenStatus, Scene,
-    SceneConfigParams, SceneSourceKind, SourceSelection,
+    SceneCommitStatus, SceneConfigParams, SceneSourceKind, SourceSelection,
 };
 use crate::scene::scene_from_capture_config;
 use crate::screen_capture::{parse_screencapturekit_display_id, parse_screencapturekit_window_id};
@@ -318,11 +319,11 @@ async fn apply_scene_live(
     let session_active = state.recording.lock().await.is_some();
 
     if !session_active {
-        let revision = commit_live_scene(state, &scene, &params).await;
+        let status = commit_scene_with_layout(state, &scene, params.layout.clone(), None).await;
         return Ok(LiveLayoutApplyStatus {
             applied: true,
             mode: "idle".to_string(),
-            scene_revision: revision,
+            scene_revision: status.scene_revision,
             scene,
             message: None,
         });
@@ -336,11 +337,11 @@ async fn apply_scene_live(
     let live = source_liveness(state, target_liveness).await;
     match plan_live_swap(mutation_kind, needs, live) {
         ApplyMode::Hot => {
-            let revision = commit_live_scene(state, &scene, &params).await;
+            let status = commit_scene_with_layout(state, &scene, params.layout.clone(), None).await;
             Ok(LiveLayoutApplyStatus {
                 applied: true,
                 mode: "hot".to_string(),
-                scene_revision: revision,
+                scene_revision: status.scene_revision,
                 scene,
                 message: None,
             })
@@ -351,7 +352,6 @@ async fn apply_scene_live(
             wait_for_sources_ready(state, needs, target_liveness, action_label).await?;
             // Swap-on-ready: the old layout rendered until this exact commit; the new
             // sources are already delivering fresh frames, so the swap is seamless.
-            let revision = commit_live_scene(state, &scene, &params).await;
             let message = if missing.is_empty() {
                 format!("Applied live {action_label}.")
             } else {
@@ -360,10 +360,17 @@ async fn apply_scene_live(
                     missing.join(" + ")
                 )
             };
+            let status = commit_scene_with_layout(
+                state,
+                &scene,
+                params.layout.clone(),
+                Some(message.clone()),
+            )
+            .await;
             Ok(LiveLayoutApplyStatus {
                 applied: true,
                 mode: "warm".to_string(),
-                scene_revision: revision,
+                scene_revision: status.scene_revision,
                 scene,
                 message: Some(message),
             })
@@ -459,12 +466,31 @@ async fn wait_for_sources_ready(
     }
 }
 
-async fn commit_live_scene(state: &AppState, scene: &Scene, params: &SceneConfigParams) -> u64 {
+pub async fn commit_scene_with_current_layout(
+    state: &AppState,
+    scene: &Scene,
+) -> SceneCommitStatus {
+    let layout = {
+        let compositor = state.compositor.lock().await;
+        compositor
+            .status
+            .scene_layout
+            .clone()
+            .unwrap_or_else(default_layout_settings)
+    };
+    commit_scene_with_layout(state, scene, layout, None).await
+}
+
+pub async fn commit_scene_with_layout(
+    state: &AppState,
+    scene: &Scene,
+    layout: crate::protocol::LayoutSettings,
+    message: Option<String>,
+) -> SceneCommitStatus {
     {
         let mut guard = state.scene.lock().await;
         *guard = scene.clone();
     }
-    state.emit_event("scene.changed", scene);
 
     let (current_revision, active_screen) = {
         let compositor = state.compositor.lock().await;
@@ -472,17 +498,30 @@ async fn commit_live_scene(state: &AppState, scene: &Scene, params: &SceneConfig
     };
     let now_millis = u64::try_from(Utc::now().timestamp_millis()).unwrap_or(0);
     let revision = next_scene_revision(current_revision, now_millis);
-    update_compositor_scene(
+    let compositor_status = update_compositor_scene(
         state,
         CompositorSceneUpdateParams {
             revision,
             scene: Some(scene.clone()),
-            layout: params.layout.clone(),
+            layout,
             active_screen,
         },
     )
     .await;
-    revision
+    state.emit_event("scene.changed", scene);
+    let mode = if state.recording.lock().await.is_some() {
+        "hot"
+    } else {
+        "idle"
+    };
+    SceneCommitStatus {
+        applied: true,
+        mode: mode.to_string(),
+        scene_revision: revision,
+        scene: scene.clone(),
+        compositor_status,
+        message,
+    }
 }
 
 #[cfg(test)]
@@ -652,6 +691,21 @@ mod tests {
         // And when the compositor is behind wallclock, jump to wallclock.
         assert_eq!(next_scene_revision(Some(5), 1_000), 1_000);
         assert_eq!(next_scene_revision(None, 1_000), 1_000);
+    }
+
+    #[test]
+    fn renderer_local_revisions_are_below_backend_assigned_commits() {
+        let current_compositor_revision = 1_781_038_338_044_u64;
+        let renderer_local_revision = 7;
+
+        assert!(
+            renderer_local_revision < current_compositor_revision,
+            "this is the stale renderer-counter shape this module must defeat"
+        );
+        assert_eq!(
+            next_scene_revision(Some(current_compositor_revision), renderer_local_revision),
+            current_compositor_revision + 1
+        );
     }
 
     #[test]

@@ -67,7 +67,6 @@ import type {
   BackendConnection,
   BackendHealth,
   BackendLogEvent,
-  CompositorSceneUpdateParams,
   CompositorStatus,
   DiagnosticStats,
   Device,
@@ -106,6 +105,7 @@ import type {
   RuntimeInfo,
   RtmpPreset,
   Scene,
+  SceneCommitStatus,
   SessionLogEntry,
   SessionSummary,
   SourceSelection,
@@ -909,7 +909,11 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
   const syncFramePollingSuppressionRef = useRef<(() => void) | null>(null)
   const nativePreviewCameraKeyRef = useRef<string | null>(null)
   const nativePreviewScreenKeyRef = useRef<string | null>(null)
-  const nativePreviewSurfaceSceneRevisionRef = useRef(0)
+  const nativePreviewCommittedSceneRef = useRef<{
+    sceneId: string
+    sceneRevision: number
+    compositorStatus: CompositorStatus
+  } | null>(null)
   const nativePreviewSurfaceBoundsPendingRef = useRef<PreviewSurfaceBounds | null>(null)
   const nativePreviewSurfaceBoundsPendingGenerationRef = useRef<number | undefined>(undefined)
   const nativePreviewSurfaceBoundsSyncInFlightRef = useRef(false)
@@ -1462,6 +1466,18 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
         : (nextScene.sources.at(-1)?.id ?? null)
     )
   }, [])
+
+  const applyCommittedScene = useCallback(
+    (status: SceneCommitStatus) => {
+      nativePreviewCommittedSceneRef.current = {
+        sceneId: status.scene.id,
+        sceneRevision: status.sceneRevision,
+        compositorStatus: status.compositorStatus
+      }
+      applyScene(status.scene)
+    },
+    [applyScene]
+  )
 
   const refreshSessions = useCallback(async (activeClient: BackendClient | null) => {
     if (!activeClient) {
@@ -2047,6 +2063,15 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
         applyPreviewScreenStatus(nextPreviewScreen)
         const nextScene = await nextClient.request<Scene>('scene.get')
         if (nextScene.sources.length) {
+          const nextCompositorStatus =
+            await nextClient.request<CompositorStatus>('compositor.status')
+          if (typeof nextCompositorStatus.sceneRevision === 'number') {
+            nativePreviewCommittedSceneRef.current = {
+              sceneId: nextScene.id,
+              sceneRevision: nextCompositorStatus.sceneRevision,
+              compositorStatus: nextCompositorStatus
+            }
+          }
           applyScene(nextScene)
         }
         await refreshScreensForClient(nextClient)
@@ -2124,10 +2149,13 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
         return
       }
 
-      const nextScene = await client.request<Scene>('scene.load_from_capture_config', config)
-      applyScene(nextScene)
+      const status = await client.request<SceneCommitStatus>(
+        'scene.load_from_capture_config',
+        config
+      )
+      applyCommittedScene(status)
     },
-    [applyScene, client, wsStatus]
+    [applyCommittedScene, client, wsStatus]
   )
 
   const reloadSceneFromCaptureConfig = useCallback(async () => {
@@ -2263,16 +2291,18 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       }
 
       try {
-        const nextScene = await client.request<Scene>('scene.source.transform.reset', { sourceId })
-        applyScene(nextScene)
-        if (nextScene.sources.find((source) => source.id === sourceId)?.kind === 'camera') {
+        const status = await client.request<SceneCommitStatus>('scene.source.transform.reset', {
+          sourceId
+        })
+        applyCommittedScene(status)
+        if (status.scene.sources.find((source) => source.id === sourceId)?.kind === 'camera') {
           patchLayout({ cameraTransformMode: 'preset', cameraTransform: null })
         }
       } catch (error) {
         reportError(error)
       }
     },
-    [applyScene, client, patchLayout, reportError, selectedSceneSourceId]
+    [applyCommittedScene, client, patchLayout, reportError, selectedSceneSourceId]
   )
 
   const nudgeSceneSource = useCallback(
@@ -2282,21 +2312,21 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       }
 
       try {
-        const nextScene = await client.request<Scene>('scene.source.nudge', {
+        const status = await client.request<SceneCommitStatus>('scene.source.nudge', {
           sourceId,
           directionX,
           directionY,
           large
         })
-        applyScene(nextScene)
-        if (nextScene.sources.find((source) => source.id === sourceId)?.kind === 'camera') {
-          syncCameraTransformToLayout(nextScene)
+        applyCommittedScene(status)
+        if (status.scene.sources.find((source) => source.id === sourceId)?.kind === 'camera') {
+          syncCameraTransformToLayout(status.scene)
         }
       } catch (error) {
         reportError(error)
       }
     },
-    [applyScene, client, reportError, syncCameraTransformToLayout]
+    [applyCommittedScene, client, reportError, syncCameraTransformToLayout]
   )
 
   const setSceneSourceVisible = useCallback(
@@ -2306,16 +2336,16 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       }
 
       try {
-        const nextScene = await client.request<Scene>('scene.source.visibility.update', {
+        const status = await client.request<SceneCommitStatus>('scene.source.visibility.update', {
           sourceId,
           visible
         })
-        applyScene(nextScene)
+        applyCommittedScene(status)
       } catch (error) {
         reportError(error)
       }
     },
-    [applyScene, client, reportError]
+    [applyCommittedScene, client, reportError]
   )
 
   const moveSceneSource = useCallback(
@@ -2338,13 +2368,15 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       sourceIds.splice(nextIndex, 0, moved)
 
       try {
-        const nextScene = await client.request<Scene>('scene.sources.reorder', { sourceIds })
-        applyScene(nextScene)
+        const status = await client.request<SceneCommitStatus>('scene.sources.reorder', {
+          sourceIds
+        })
+        applyCommittedScene(status)
       } catch (error) {
         reportError(error)
       }
     },
-    [applyScene, client, reportError, scene]
+    [applyCommittedScene, client, reportError, scene]
   )
 
   const commitCameraTransform = useCallback(
@@ -2354,17 +2386,17 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       }
 
       try {
-        const nextScene = await client.request<Scene>('scene.source.transform.update', {
+        const status = await client.request<SceneCommitStatus>('scene.source.transform.update', {
           sourceId,
           transform: { x, y }
         })
-        applyScene(nextScene)
-        syncCameraTransformToLayout(nextScene)
+        applyCommittedScene(status)
+        syncCameraTransformToLayout(status.scene)
       } catch (error) {
         reportError(error)
       }
     },
-    [applyScene, client, reportError, syncCameraTransformToLayout]
+    [applyCommittedScene, client, reportError, syncCameraTransformToLayout]
   )
 
   const [layoutSwitchPending, setLayoutSwitchPending] = useState<LayoutPreset | null>(null)
@@ -3163,7 +3195,12 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
   }, [captureConfig.video.width, captureConfig.video.height])
 
   const syncNativePreviewSurfaceScene = useCallback(async () => {
-    if (!nativePreviewSurfaceEnabled || !window.videorc?.updateNativePreviewSurfaceScene) {
+    if (
+      !nativePreviewSurfaceEnabled ||
+      !window.videorc?.updateNativePreviewSurfaceScene ||
+      !client ||
+      wsStatus !== 'connected'
+    ) {
       return
     }
 
@@ -3177,8 +3214,17 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     // (rather than only via the debounced auto-preview effect) closes that race.
     await Promise.all([ensureNativePreviewCamera(), ensureNativePreviewScreen()])
 
-    const revision = nativePreviewSurfaceSceneRevisionRef.current + 1
-    nativePreviewSurfaceSceneRevisionRef.current = revision
+    const committed = nativePreviewCommittedSceneRef.current
+    const committedStatus =
+      committed && sceneWithBackground && committed.sceneId === sceneWithBackground.id
+        ? committed.compositorStatus
+        : null
+    const compositorStatus =
+      committedStatus ?? (await client.request<CompositorStatus>('compositor.status'))
+    const revision = compositorStatus.sceneRevision
+    if (typeof revision !== 'number') {
+      return
+    }
     const params: PreviewSurfaceSceneUpdateParams = {
       revision,
       scene: sceneWithBackground,
@@ -3187,9 +3233,6 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     }
 
     const previewSceneStatus = await window.videorc.updateNativePreviewSurfaceScene(params)
-    if (revision !== nativePreviewSurfaceSceneRevisionRef.current) {
-      return
-    }
     applyPreviewSurfaceStatus({
       ...previewSceneStatus,
       framesRendered: Math.max(
@@ -3198,34 +3241,24 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       )
     })
 
-    if (client && wsStatus === 'connected') {
-      const compositorParams: CompositorSceneUpdateParams = params
-      const compositorStatus = await client.request<CompositorStatus>(
-        'compositor.scene.update',
-        compositorParams
-      )
-      const renderedStatus = await waitForRenderedCompositorSceneRevision(
-        client,
-        revision,
-        compositorStatus
-      )
-      if (revision !== nativePreviewSurfaceSceneRevisionRef.current) {
-        return
-      }
-      if (!compositorStatusHasRenderedSceneRevision(renderedStatus, revision)) {
-        return
-      }
-      if (window.videorc.updateNativePreviewSurfaceCompositor) {
-        const status = await window.videorc.updateNativePreviewSurfaceCompositor(renderedStatus)
-        applyPreviewSurfaceStatus({
-          ...status,
-          framesRendered: Math.max(
-            status.framesRendered,
-            previewSurfaceStatusRef.current.framesRendered
-          )
-        })
-        return
-      }
+    const renderedStatus = await waitForRenderedCompositorSceneRevision(
+      client,
+      revision,
+      compositorStatus
+    )
+    if (!compositorStatusHasRenderedSceneRevision(renderedStatus, revision)) {
+      return
+    }
+    if (window.videorc.updateNativePreviewSurfaceCompositor) {
+      const status = await window.videorc.updateNativePreviewSurfaceCompositor(renderedStatus)
+      applyPreviewSurfaceStatus({
+        ...status,
+        framesRendered: Math.max(
+          status.framesRendered,
+          previewSurfaceStatusRef.current.framesRendered
+        )
+      })
+      return
     }
   }, [
     activeScreen,

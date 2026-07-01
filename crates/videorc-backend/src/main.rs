@@ -1885,13 +1885,11 @@ async fn handle_text_message(state: &AppState, text: &str) -> ServerResponse {
         "scene.load_from_capture_config" => {
             match serde_json::from_value::<protocol::SceneConfigParams>(command.params) {
                 Ok(params) => {
-                    let scene = scene_from_capture_config(params);
-                    {
-                        let mut guard = state.scene.lock().await;
-                        *guard = scene.clone();
-                    }
-                    state.emit_event("scene.changed", &scene);
-                    ServerResponse::ok(command.id, scene)
+                    let scene = scene_from_capture_config(params.clone());
+                    let status =
+                        live_layout::commit_scene_with_layout(state, &scene, params.layout, None)
+                            .await;
+                    ServerResponse::ok(command.id, status)
                 }
                 Err(error) => {
                     ServerResponse::error(command.id, "invalid-params", error.to_string())
@@ -1937,8 +1935,9 @@ async fn handle_text_message(state: &AppState, text: &str) -> ServerResponse {
                     };
                     match result {
                         Ok(scene) => {
-                            state.emit_event("scene.changed", &scene);
-                            ServerResponse::ok(command.id, scene)
+                            let status =
+                                live_layout::commit_scene_with_current_layout(state, &scene).await;
+                            ServerResponse::ok(command.id, status)
                         }
                         Err(error) => {
                             ServerResponse::error(command.id, "scene-update-failed", error)
@@ -1959,8 +1958,9 @@ async fn handle_text_message(state: &AppState, text: &str) -> ServerResponse {
                     };
                     match result {
                         Ok(scene) => {
-                            state.emit_event("scene.changed", &scene);
-                            ServerResponse::ok(command.id, scene)
+                            let status =
+                                live_layout::commit_scene_with_current_layout(state, &scene).await;
+                            ServerResponse::ok(command.id, status)
                         }
                         Err(error) => {
                             ServerResponse::error(command.id, "scene-reset-failed", error)
@@ -1981,8 +1981,9 @@ async fn handle_text_message(state: &AppState, text: &str) -> ServerResponse {
                     };
                     match result {
                         Ok(scene) => {
-                            state.emit_event("scene.changed", &scene);
-                            ServerResponse::ok(command.id, scene)
+                            let status =
+                                live_layout::commit_scene_with_current_layout(state, &scene).await;
+                            ServerResponse::ok(command.id, status)
                         }
                         Err(error) => {
                             ServerResponse::error(command.id, "scene-visibility-failed", error)
@@ -2009,8 +2010,9 @@ async fn handle_text_message(state: &AppState, text: &str) -> ServerResponse {
                     };
                     match result {
                         Ok(scene) => {
-                            state.emit_event("scene.changed", &scene);
-                            ServerResponse::ok(command.id, scene)
+                            let status =
+                                live_layout::commit_scene_with_current_layout(state, &scene).await;
+                            ServerResponse::ok(command.id, status)
                         }
                         Err(error) => {
                             ServerResponse::error(command.id, "scene-nudge-failed", error)
@@ -2031,8 +2033,9 @@ async fn handle_text_message(state: &AppState, text: &str) -> ServerResponse {
                     };
                     match result {
                         Ok(scene) => {
-                            state.emit_event("scene.changed", &scene);
-                            ServerResponse::ok(command.id, scene)
+                            let status =
+                                live_layout::commit_scene_with_current_layout(state, &scene).await;
+                            ServerResponse::ok(command.id, status)
                         }
                         Err(error) => {
                             ServerResponse::error(command.id, "scene-reorder-failed", error)

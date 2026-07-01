@@ -256,6 +256,18 @@ export interface LiveLayoutApplyStatus {
   message?: string
 }
 
+// Response of preview-visible scene mutation commands. The backend is the
+// authority for committed scene revisions; the renderer may update UI optimistically
+// but preview/compositor/native-surface sync must use this revision/status.
+export interface SceneCommitStatus {
+  applied: boolean
+  mode: 'idle' | 'hot' | 'warm'
+  sceneRevision: number
+  scene: Scene
+  compositorStatus: CompositorStatus
+  message?: string
+}
+
 // The resolved background a scene renders: asset defaults merged with the scene's
 // per-field overrides, plus the managed file the compositor reads (Assets Tab
 // plan, slice A5). The renderer computes this; A6 renders it. Absent = no digital

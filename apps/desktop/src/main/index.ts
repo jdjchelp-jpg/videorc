@@ -5050,7 +5050,7 @@ function smokeRendererScript(command: string, params: Record<string, unknown>): 
       };
 
       if (${JSON.stringify(command)} === 'open-layout-tab') {
-        return openTab('layout', '[data-videorc-preview-card]');
+        return openTab('layout', '[data-videorc-layout-preset]');
       }
 
       if (${JSON.stringify(command)} === 'open-tab') {
