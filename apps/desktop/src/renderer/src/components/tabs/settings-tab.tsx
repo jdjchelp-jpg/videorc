@@ -1,6 +1,7 @@
 import {
   ArrowClockwise,
   Broadcast,
+  Keyboard,
   Eye,
   FolderPlus,
   Bug,
@@ -22,6 +23,7 @@ import { useEffect, useState, type ReactElement } from 'react'
 
 import { NavigableRow } from '@/components/navigable-row'
 import { StatusBadge } from '@/components/status-badge'
+import { Kbd, KbdGroup } from '@/components/ui/kbd'
 import { ConfigGrid } from '@/components/page'
 import { PanelSection } from '@/components/panel-section'
 import { Button } from '@/components/ui/button'
@@ -35,6 +37,7 @@ import { useUpdater } from '@/hooks/use-updater'
 import type { DirectoryFacts, UpdateStatus } from '@/lib/backend'
 import { isActiveRecordingState } from '@/lib/format'
 import { recordingQuality, streamingSummary } from '@/lib/studio-session-view'
+import { shortcutsByGroup } from '@/lib/shortcuts'
 import { systemAccessRows } from '@/lib/system-access'
 import { isUpdateInstallable } from '@/lib/update-ui'
 
@@ -331,6 +334,33 @@ export function SettingsTab({
             <ToggleGroupItem value="system">System</ToggleGroupItem>
           </ToggleGroup>
         </Field>
+      </PanelSection>
+
+      <PanelSection
+        description="Every keyboard shortcut in Videorc."
+        icon={Keyboard}
+        title="Shortcuts"
+      >
+        <div className="flex flex-col gap-3">
+          {[...shortcutsByGroup().entries()].map(([group, entries]) => (
+            <div key={group} className="flex flex-col gap-1">
+              <span className="text-[12.5px] leading-none font-medium text-subtle">{group}</span>
+              {entries.map((entry) => (
+                <div
+                  key={entry.id}
+                  className="flex items-center gap-3 rounded-row px-2.5 py-1.5 text-sm"
+                >
+                  <span className="flex-1 truncate text-muted-foreground">{entry.label}</span>
+                  <KbdGroup>
+                    {entry.keys.map((key, index) => (
+                      <Kbd key={`${entry.id}-${index}`}>{key}</Kbd>
+                    ))}
+                  </KbdGroup>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
       </PanelSection>
 
       <PanelSection
