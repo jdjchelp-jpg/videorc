@@ -421,6 +421,9 @@ pub struct CaptionChunkResponse {
     #[serde(default)]
     pub latency_ms: Option<u64>,
     pub model: String,
+    /// Word timing within this chunk (empty on older web deploys).
+    #[serde(default)]
+    pub segments: Vec<crate::captions::CaptionSegment>,
 }
 
 #[derive(Debug, Clone)]
