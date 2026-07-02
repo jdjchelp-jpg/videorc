@@ -1700,6 +1700,30 @@ async fn handle_text_message(state: &AppState, text: &str) -> ServerResponse {
         "captions.status.get" => {
             ServerResponse::ok(command.id, captions::captions_status(state).await)
         }
+        "captions.overlay.set" => {
+            let png_base64 = command
+                .params
+                .get("pngBase64")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default();
+            let position = command
+                .params
+                .get("position")
+                .and_then(|value| {
+                    serde_json::from_value::<captions::CaptionOverlayPosition>(value.clone()).ok()
+                })
+                .unwrap_or(captions::CaptionOverlayPosition::Bottom);
+            match captions::install_caption_overlay(&state.caption_overlay, png_base64, position) {
+                Ok(info) => ServerResponse::ok(command.id, info),
+                Err(error) => {
+                    ServerResponse::error(command.id, "captions-overlay-invalid", error.to_string())
+                }
+            }
+        }
+        "captions.overlay.clear" => ServerResponse::ok(
+            command.id,
+            captions::clear_caption_overlay(&state.caption_overlay),
+        ),
         "ai.capabilities.get" => match get_ai_capabilities().await {
             Ok(capabilities) => ServerResponse::ok(command.id, capabilities),
             Err(error) => {

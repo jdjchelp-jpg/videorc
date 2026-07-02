@@ -108,6 +108,113 @@ pub fn encode_wav_16k_mono(samples: &[i16]) -> Vec<u8> {
 }
 
 // ---------------------------------------------------------------------------
+// Burn-in overlay: a pre-rendered caption bar (RGBA) the compositor composites
+// into the STREAM leg. Session-transient — set/cleared by the renderer as
+// captions flow; never persisted, never part of scene config. Fail-safe per
+// the background rule: bad image data is rejected and the previous overlay
+// (if any) stays; a session is never touched by overlay errors.
+// ---------------------------------------------------------------------------
+
+/// Max decoded dimensions / encoded bytes for one caption bar. A 4K-width
+/// two-line bar is ~3840×400; these caps leave headroom without letting the
+/// RPC become an arbitrary-image firehose.
+const OVERLAY_MAX_WIDTH: u32 = 4096;
+const OVERLAY_MAX_HEIGHT: u32 = 2048;
+const OVERLAY_MAX_ENCODED_BYTES: usize = 4 * 1024 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CaptionOverlayPosition {
+    Top,
+    Bottom,
+}
+
+#[derive(Clone)]
+pub struct CaptionOverlay {
+    pub rgba: Arc<Vec<u8>>,
+    pub width: u32,
+    pub height: u32,
+    pub position: CaptionOverlayPosition,
+    pub revision: u64,
+}
+
+pub type CaptionOverlaySlot = Arc<std::sync::Mutex<Option<CaptionOverlay>>>;
+
+pub fn new_caption_overlay_slot() -> CaptionOverlaySlot {
+    Arc::new(std::sync::Mutex::new(None))
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptionOverlayInfo {
+    pub active: bool,
+    pub width: u32,
+    pub height: u32,
+    pub revision: u64,
+}
+
+/// Decode + validate a caption bar and install it in the overlay slot.
+/// Rejects oversized or undecodable payloads without touching the current
+/// overlay. Pure with respect to the slot — unit-tested directly.
+pub fn install_caption_overlay(
+    slot: &CaptionOverlaySlot,
+    png_base64: &str,
+    position: CaptionOverlayPosition,
+) -> Result<CaptionOverlayInfo> {
+    use base64::Engine as _;
+
+    let encoded_len = png_base64.len();
+    if encoded_len == 0 || encoded_len > (OVERLAY_MAX_ENCODED_BYTES / 3) * 4 + 4 {
+        bail!("Caption overlay payload is empty or too large.");
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(png_base64.trim())
+        .map_err(|_| anyhow::anyhow!("Caption overlay payload is not valid base64."))?;
+    if bytes.len() > OVERLAY_MAX_ENCODED_BYTES {
+        bail!("Caption overlay image is too large.");
+    }
+    let image = image::load_from_memory(&bytes)
+        .map_err(|_| anyhow::anyhow!("Caption overlay image could not be decoded."))?
+        .into_rgba8();
+    let (width, height) = image.dimensions();
+    if width == 0 || height == 0 || width > OVERLAY_MAX_WIDTH || height > OVERLAY_MAX_HEIGHT {
+        bail!("Caption overlay dimensions are out of range ({width}x{height}).");
+    }
+
+    let mut guard = slot.lock().expect("caption overlay lock");
+    let revision = guard.as_ref().map_or(1, |overlay| overlay.revision + 1);
+    *guard = Some(CaptionOverlay {
+        rgba: Arc::new(image.into_raw()),
+        width,
+        height,
+        position,
+        revision,
+    });
+    Ok(CaptionOverlayInfo {
+        active: true,
+        width,
+        height,
+        revision,
+    })
+}
+
+pub fn clear_caption_overlay(slot: &CaptionOverlaySlot) -> CaptionOverlayInfo {
+    let mut guard = slot.lock().expect("caption overlay lock");
+    let revision = guard.as_ref().map_or(0, |overlay| overlay.revision);
+    *guard = None;
+    CaptionOverlayInfo {
+        active: false,
+        width: 0,
+        height: 0,
+        revision,
+    }
+}
+
+pub fn current_caption_overlay(slot: &CaptionOverlaySlot) -> Option<CaptionOverlay> {
+    slot.lock().expect("caption overlay lock").clone()
+}
+
+// ---------------------------------------------------------------------------
 // Session state machine.
 // ---------------------------------------------------------------------------
 
@@ -399,6 +506,72 @@ mod tests {
         assert_eq!(u16::from_le_bytes([wav[34], wav[35]]), 16); // bits/sample
         assert_eq!(u32::from_le_bytes([wav[40], wav[41], wav[42], wav[43]]), 6); // data bytes
         assert_eq!(wav.len(), 44 + 6);
+    }
+
+    fn encode_test_png(width: u32, height: u32) -> String {
+        use base64::Engine as _;
+        let mut png = Vec::new();
+        let image = image::RgbaImage::from_pixel(width, height, image::Rgba([255, 0, 0, 128]));
+        image::DynamicImage::ImageRgba8(image)
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .expect("test png encodes");
+        base64::engine::general_purpose::STANDARD.encode(png)
+    }
+
+    #[test]
+    fn overlay_installs_decodes_and_revs() {
+        let slot = new_caption_overlay_slot();
+        let info = install_caption_overlay(&slot, &encode_test_png(4, 2), CaptionOverlayPosition::Bottom)
+            .expect("valid overlay installs");
+        assert!(info.active);
+        assert_eq!((info.width, info.height), (4, 2));
+        assert_eq!(info.revision, 1);
+
+        let overlay = current_caption_overlay(&slot).expect("overlay present");
+        assert_eq!(overlay.rgba.len(), 4 * 2 * 4);
+        assert_eq!(overlay.position, CaptionOverlayPosition::Bottom);
+
+        let second =
+            install_caption_overlay(&slot, &encode_test_png(6, 2), CaptionOverlayPosition::Top)
+                .expect("replacement installs");
+        assert_eq!(second.revision, 2);
+    }
+
+    #[test]
+    fn overlay_rejects_garbage_and_keeps_previous() {
+        let slot = new_caption_overlay_slot();
+        install_caption_overlay(&slot, &encode_test_png(4, 2), CaptionOverlayPosition::Bottom)
+            .expect("valid overlay installs");
+
+        assert!(install_caption_overlay(&slot, "not base64!!!", CaptionOverlayPosition::Bottom).is_err());
+        assert!(install_caption_overlay(&slot, "", CaptionOverlayPosition::Bottom).is_err());
+        {
+            use base64::Engine as _;
+            let not_an_image = base64::engine::general_purpose::STANDARD.encode(b"plain bytes");
+            assert!(
+                install_caption_overlay(&slot, &not_an_image, CaptionOverlayPosition::Bottom)
+                    .is_err()
+            );
+        }
+
+        let survivor = current_caption_overlay(&slot).expect("previous overlay kept");
+        assert_eq!((survivor.width, survivor.height), (4, 2));
+        assert_eq!(survivor.revision, 1);
+    }
+
+    #[test]
+    fn overlay_rejects_out_of_range_dimensions_and_clears() {
+        let slot = new_caption_overlay_slot();
+        assert!(
+            install_caption_overlay(&slot, &encode_test_png(4200, 2), CaptionOverlayPosition::Top)
+                .is_err()
+        );
+
+        install_caption_overlay(&slot, &encode_test_png(4, 2), CaptionOverlayPosition::Bottom)
+            .expect("valid overlay installs");
+        let cleared = clear_caption_overlay(&slot);
+        assert!(!cleared.active);
+        assert!(current_caption_overlay(&slot).is_none());
     }
 
     #[test]

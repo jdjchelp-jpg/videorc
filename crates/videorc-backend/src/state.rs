@@ -71,6 +71,9 @@ pub struct AppState {
     /// None falls back to the dev env mock; persistent token storage replaces it.
     pub account_session: Arc<tokio::sync::Mutex<Option<VideorcAccountSnapshot>>>,
     pub captions: crate::captions::CaptionsSlot,
+    /// Burn-in caption bar for the stream leg (std mutex: read from the
+    /// synchronous compositor render thread).
+    pub caption_overlay: crate::captions::CaptionOverlaySlot,
 }
 
 impl AppState {
@@ -106,6 +109,7 @@ impl AppState {
                 crate::account::restore_persisted_account(),
             )),
             captions: crate::captions::new_captions_slot(),
+            caption_overlay: crate::captions::new_caption_overlay_slot(),
         }
     }
 
