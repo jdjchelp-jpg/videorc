@@ -315,6 +315,54 @@ impl VideorcApiClient {
             .context("Could not read the Videorc AI audio job response.")
     }
 
+    /// Transcribe one live-caption chunk (16kHz mono WAV, ~3s). Errors are
+    /// split into terminal (premium required, quota exhausted, signed out,
+    /// captions disabled — stop the session) and transient (retry/skip).
+    pub async fn transcribe_caption_chunk(
+        &self,
+        bearer_token: &str,
+        session_client_id: &str,
+        wav: Vec<u8>,
+        language: Option<&str>,
+    ) -> std::result::Result<CaptionChunkResponse, CaptionChunkFailure> {
+        let file_part = multipart::Part::bytes(wav)
+            .file_name("videorc-caption-chunk.wav")
+            .mime_str("audio/wav")
+            .map_err(|error| CaptionChunkFailure::Transient {
+                message: format!("Could not build the caption upload: {error}"),
+            })?;
+        let mut form = multipart::Form::new()
+            .text("sessionClientId", session_client_id.to_string())
+            .part("audio", file_part);
+        if let Some(language) = language {
+            form = form.text("language", language.to_string());
+        }
+
+        let response = self
+            .http
+            .post(self.endpoint("/api/ai/captions/chunks"))
+            .bearer_auth(bearer_token)
+            .multipart(form)
+            .send()
+            .await
+            .map_err(|error| CaptionChunkFailure::Transient {
+                message: format!("Could not reach the caption service: {error}"),
+            })?;
+
+        let status = response.status();
+        if status.is_success() {
+            return response.json().await.map_err(|error| {
+                CaptionChunkFailure::Transient {
+                    message: format!("Could not read the caption response: {error}"),
+                }
+            });
+        }
+
+        let (code, message) = read_error_code_and_message(response).await;
+        let failure = classify_caption_failure(status.as_u16(), code, message);
+        Err(failure)
+    }
+
     pub async fn request_ai_object_upload(
         &self,
         bearer_token: &str,
@@ -360,6 +408,74 @@ impl VideorcApiClient {
         self.post_bearer_json("/api/ai/jobs", bearer_token, body)
             .await
     }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptionChunkResponse {
+    pub text: String,
+    pub chunk_seconds: u64,
+    pub remaining_seconds: u64,
+    pub monthly_seconds_limit: u64,
+    #[serde(default)]
+    pub latency_ms: Option<u64>,
+    pub model: String,
+}
+
+#[derive(Debug, Clone)]
+pub enum CaptionChunkFailure {
+    /// Stop the caption session and surface the reason (premium required,
+    /// quota exhausted, signed out, captions disabled).
+    Terminal { code: String, message: String },
+    /// Skip this chunk; the session keeps going (network blip, 5xx).
+    Transient { message: String },
+}
+
+fn classify_caption_failure(status: u16, code: String, message: String) -> CaptionChunkFailure {
+    let terminal = matches!(
+        code.as_str(),
+        "cloud-ai-premium-required"
+            | "captions-monthly-quota-exhausted"
+            | "ai-user-disabled"
+            | "ai-disabled"
+            | "unauthorized"
+    ) || status == 401
+        || status == 403
+        || status == 429;
+    if terminal {
+        CaptionChunkFailure::Terminal { code, message }
+    } else {
+        CaptionChunkFailure::Transient {
+            message: format!("caption chunk failed ({status}): {message}"),
+        }
+    }
+}
+
+async fn read_error_code_and_message(response: reqwest::Response) -> (String, String) {
+    #[derive(Deserialize)]
+    struct ErrorEnvelope {
+        error: Option<ErrorBody>,
+    }
+
+    #[derive(Deserialize)]
+    struct ErrorBody {
+        code: Option<String>,
+        message: Option<String>,
+    }
+
+    let parsed = match response.text().await {
+        Ok(text) => serde_json::from_str::<ErrorEnvelope>(&text).ok(),
+        Err(_) => None,
+    };
+    let body = parsed.and_then(|envelope| envelope.error);
+    (
+        body.as_ref()
+            .and_then(|error| error.code.clone())
+            .unwrap_or_else(|| "unknown".to_string()),
+        body.and_then(|error| error.message)
+            .filter(|message| !message.trim().is_empty())
+            .unwrap_or_else(|| "request failed".to_string()),
+    )
 }
 
 async fn read_safe_error_message(response: reqwest::Response) -> String {

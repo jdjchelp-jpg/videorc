@@ -481,6 +481,10 @@ pub fn attach_fifo_writer(
         while !writer_stop.load(Ordering::Relaxed) {
             match receiver.recv_timeout(Duration::from_millis(50)) {
                 Ok(frame) => {
+                    // Live captions listen on the same mic frames; the offer is
+                    // a relaxed-atomic no-op unless a caption session is active
+                    // and never blocks this writer.
+                    crate::captions::offer_caption_frame(&frame);
                     if let Err(error) = write_frame_f32le(&mut file, &frame) {
                         writer_stats
                             .fifo_write_errors

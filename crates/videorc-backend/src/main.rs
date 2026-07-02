@@ -3,6 +3,7 @@ mod ai;
 mod audio;
 mod camera_capture;
 mod capture_input;
+mod captions;
 mod color;
 mod compositor;
 mod compositor_synthetic;
@@ -1681,6 +1682,22 @@ async fn handle_text_message(state: &AppState, text: &str) -> ServerResponse {
             ServerResponse::ok(command.id, resolved)
         }
         "entitlements.get" => ServerResponse::ok(command.id, entitlements::current_entitlements()),
+        "captions.start" => {
+            let language = command
+                .params
+                .get("language")
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+                .filter(|value| !value.trim().is_empty());
+            match captions::start_captions(state, language).await {
+                Ok(status) => ServerResponse::ok(command.id, status),
+                Err(error) => {
+                    ServerResponse::error(command.id, "captions-start-failed", error.to_string())
+                }
+            }
+        }
+        "captions.stop" => ServerResponse::ok(command.id, captions::stop_captions(state).await),
+        "captions.status.get" => ServerResponse::ok(command.id, captions::captions_status(state).await),
         "ai.capabilities.get" => match get_ai_capabilities().await {
             Ok(capabilities) => ServerResponse::ok(command.id, capabilities),
             Err(error) => {
@@ -2138,6 +2155,21 @@ async fn handle_text_message(state: &AppState, text: &str) -> ServerResponse {
                 ServerResponse::error(command.id, "sessions-list-failed", error.to_string())
             }
         },
+        "sessions.comments.list" => {
+            match serde_json::from_value::<protocol::SessionCommentsListParams>(command.params) {
+                Ok(params) => match state.database.list_live_chat_messages(&params.session_id) {
+                    Ok(messages) => ServerResponse::ok(command.id, messages),
+                    Err(error) => ServerResponse::error(
+                        command.id,
+                        "session-comments-list-failed",
+                        error.to_string(),
+                    ),
+                },
+                Err(error) => {
+                    ServerResponse::error(command.id, "invalid-params", error.to_string())
+                }
+            }
+        }
         "platformAccounts.list" => match state.database.list_platform_accounts() {
             Ok(accounts) => ServerResponse::ok(command.id, accounts),
             Err(error) => ServerResponse::error(

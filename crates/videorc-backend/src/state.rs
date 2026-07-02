@@ -70,6 +70,7 @@ pub struct AppState {
     /// In-memory product-account session override (deep-link sign-in / Sign out).
     /// None falls back to the dev env mock; persistent token storage replaces it.
     pub account_session: Arc<tokio::sync::Mutex<Option<VideorcAccountSnapshot>>>,
+    pub captions: crate::captions::CaptionsSlot,
 }
 
 impl AppState {
@@ -104,6 +105,7 @@ impl AppState {
             account_session: Arc::new(tokio::sync::Mutex::new(
                 crate::account::restore_persisted_account(),
             )),
+            captions: crate::captions::new_captions_slot(),
         }
     }
 
