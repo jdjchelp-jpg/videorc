@@ -14,9 +14,9 @@ const measure: TextMeasurer = (text, fontPx) => text.length * fontPx * 0.55
 describe('captionBarMetrics', () => {
   it('scales the font with output width and the size knob, with a floor', () => {
     const m1080 = captionBarMetrics(1920, 'm')
-    expect(m1080.fontPx).toBe(51)
-    expect(captionBarMetrics(1920, 'l').fontPx).toBe(63)
-    expect(captionBarMetrics(1920, 's').fontPx).toBe(40)
+    expect(m1080.fontPx).toBe(48)
+    expect(captionBarMetrics(1920, 'l').fontPx).toBe(60)
+    expect(captionBarMetrics(1920, 's').fontPx).toBe(38)
     // Tiny canvases never go below the readable floor.
     expect(captionBarMetrics(320, 's').fontPx).toBe(24)
   })

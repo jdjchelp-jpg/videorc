@@ -33,14 +33,16 @@ export function captionBarMetrics(
   canvasWidth: number,
   textSize: CaptionTextSize
 ): CaptionBarMetrics {
-  const fontPx = Math.max(24, Math.round((canvasWidth / 38) * SIZE_FACTOR[textSize]))
-  const paddingXPx = Math.round(fontPx * 0.9)
+  const fontPx = Math.max(24, Math.round((canvasWidth / 40) * SIZE_FACTOR[textSize]))
+  const paddingXPx = Math.round(fontPx * 0.72)
   return {
     fontPx,
-    lineHeightPx: Math.round(fontPx * 1.3),
+    lineHeightPx: Math.round(fontPx * 1.32),
     paddingXPx,
-    paddingYPx: Math.round(fontPx * 0.55),
-    radiusPx: Math.round(fontPx * 0.6),
+    paddingYPx: Math.round(fontPx * 0.4),
+    // Panel-tier corners (videorc-design): ~13px at 1080p — a caption panel,
+    // never a pill button.
+    radiusPx: Math.round(fontPx * 0.26),
     maxTextWidthPx: Math.floor(canvasWidth * MAX_BAR_WIDTH_FRACTION) - paddingXPx * 2
   }
 }
@@ -104,6 +106,12 @@ export function layoutCaptionBar(params: {
 /** Vertical safe margin the compositor uses — mirrored for burned frames. */
 export const CAPTION_FRAME_MARGIN_FRACTION = 0.04
 
+/** Transparent padding around the bar so the elevation shadow isn't clipped
+ *  when the live overlay renders on a bar-sized bitmap. */
+export function captionShadowPadPx(fontPx: number): number {
+  return Math.ceil(fontPx * 0.65)
+}
+
 /** Where the bar sits inside a full frame (pure; unit-tested). */
 export function captionBarFramePosition(params: {
   canvasWidth: number
@@ -111,8 +119,12 @@ export function captionBarFramePosition(params: {
   barWidthPx: number
   barHeightPx: number
   position: CaptionPosition
+  /** Extra inset matching the live overlay's shadow padding, so the burned
+   *  copy and the live bar sit at the same height. */
+  shadowPadPx?: number
 }): { x: number; y: number } {
-  const margin = Math.round(params.canvasHeight * CAPTION_FRAME_MARGIN_FRACTION)
+  const margin =
+    Math.round(params.canvasHeight * CAPTION_FRAME_MARGIN_FRACTION) + (params.shadowPadPx ?? 0)
   return {
     x: Math.round((params.canvasWidth - params.barWidthPx) / 2),
     y:
@@ -130,7 +142,28 @@ function paintCaptionBar(
   originY: number
 ): void {
   const { metrics } = layout
-  // Glass solid fallback (videorc-design): translucent charcoal + hairline.
+  // Glass panel over video (videorc-design solid fallback): translucent
+  // charcoal that FLOATS — soft elevation shadow, inner-top sheen, hairline
+  // ring — instead of a flat pill.
+  context.save()
+  context.shadowColor = 'rgba(0, 0, 0, 0.4)'
+  context.shadowBlur = metrics.fontPx * 0.45
+  context.shadowOffsetY = metrics.fontPx * 0.1
+  context.beginPath()
+  context.roundRect(originX, originY, layout.barWidthPx, layout.barHeightPx, metrics.radiusPx)
+  context.fillStyle = 'rgba(16, 16, 18, 0.78)'
+  context.fill()
+  context.restore()
+
+  const sheen = context.createLinearGradient(0, originY, 0, originY + layout.barHeightPx)
+  sheen.addColorStop(0, 'rgba(255, 255, 255, 0.07)')
+  sheen.addColorStop(0.35, 'rgba(255, 255, 255, 0.015)')
+  sheen.addColorStop(1, 'rgba(255, 255, 255, 0)')
+  context.beginPath()
+  context.roundRect(originX, originY, layout.barWidthPx, layout.barHeightPx, metrics.radiusPx)
+  context.fillStyle = sheen
+  context.fill()
+
   context.beginPath()
   context.roundRect(
     originX + 0.5,
@@ -139,14 +172,17 @@ function paintCaptionBar(
     layout.barHeightPx - 1,
     metrics.radiusPx
   )
-  context.fillStyle = 'rgba(28, 28, 31, 0.85)'
-  context.fill()
-  context.strokeStyle = 'rgba(255, 255, 255, 0.08)'
+  context.strokeStyle = 'rgba(255, 255, 255, 0.1)'
   context.lineWidth = 1
   context.stroke()
 
+  // Crisp text with a whisper of shadow so it survives bright video.
+  context.save()
+  context.shadowColor = 'rgba(0, 0, 0, 0.45)'
+  context.shadowBlur = metrics.fontPx * 0.08
+  context.shadowOffsetY = Math.max(1, Math.round(metrics.fontPx * 0.03))
   context.font = fontFor(metrics.fontPx)
-  context.fillStyle = '#F4F4F5'
+  context.fillStyle = '#F5F5F7'
   context.textAlign = 'center'
   context.textBaseline = 'middle'
   layout.lines.forEach((line, index) => {
@@ -157,10 +193,11 @@ function paintCaptionBar(
       layout.barWidthPx - metrics.paddingXPx
     )
   })
+  context.restore()
 }
 
 function canvasFont(fontPx: number): string {
-  return `500 ${fontPx}px -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif`
+  return `600 ${fontPx}px -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif`
 }
 
 function canvasMeasurer(): { measure: TextMeasurer } | null {
@@ -206,12 +243,16 @@ export async function renderCaptionOverlayPng(params: {
   if (!layout) {
     return null
   }
-  const canvas = new OffscreenCanvas(layout.barWidthPx, layout.barHeightPx)
+  const pad = captionShadowPadPx(layout.metrics.fontPx)
+  const canvas = new OffscreenCanvas(
+    layout.barWidthPx + pad * 2,
+    layout.barHeightPx + pad * 2
+  )
   const context = canvas.getContext('2d')
   if (!context) {
     return null
   }
-  paintCaptionBar(context, layout, canvasFont, 0, 0)
+  paintCaptionBar(context, layout, canvasFont, pad, pad)
   return canvasToBase64Png(canvas)
 }
 
@@ -249,7 +290,8 @@ export async function renderCaptionCueFramePng(params: {
         canvasHeight: params.canvasHeight,
         barWidthPx: layout.barWidthPx,
         barHeightPx: layout.barHeightPx,
-        position: params.position
+        position: params.position,
+        shadowPadPx: captionShadowPadPx(layout.metrics.fontPx)
       })
       paintCaptionBar(context, layout, canvasFont, origin.x, origin.y)
     }
