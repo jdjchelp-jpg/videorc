@@ -8,6 +8,7 @@ import {
   Selection,
   SlidersHorizontal
 } from '@phosphor-icons/react'
+import { useEffect } from 'react'
 import type { ReactElement } from 'react'
 
 import { PanelSection } from '@/components/panel-section'
@@ -17,7 +18,6 @@ import { ScreensTab } from '@/components/tabs/screens-tab'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Field, FieldContent, FieldLabel } from '@/components/ui/field'
-import { Separator } from '@/components/ui/separator'
 import { Switch } from '@/components/ui/switch'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { useBackgroundAssets } from '@/hooks/use-background-assets'
@@ -78,9 +78,17 @@ export function LayoutTab(): ReactElement {
   } = useStudio()
   const layout = captureConfig.layout
   const selectedSource = scene?.sources.find((source) => source.id === selectedSceneSourceId)
+  // SC2: the inspector follows the stage selection; default to the camera
+  // (the thing people usually frame) so the panel is never empty.
+  useEffect(() => {
+    if (selectedSceneSourceId || !scene?.sources.length) {
+      return
+    }
+    const camera = scene.sources.find((source) => source.kind === 'camera')
+    setSelectedSceneSourceId((camera ?? scene.sources[0]).id)
+  }, [scene, selectedSceneSourceId, setSelectedSceneSourceId])
   const hasCamera = hasSelectedCameraSource(captureConfig.sources)
   const hasScreen = hasSelectedScreenSource(captureConfig.sources)
-  const isScreenOnly = layout.layoutPreset === 'screen-only'
   const isCameraOnly = layout.layoutPreset === 'camera-only'
   const isSideBySide = layout.layoutPreset === 'side-by-side'
   const showOverlayControls = layout.layoutPreset === 'screen-camera'
@@ -201,81 +209,19 @@ export function LayoutTab(): ReactElement {
               )}
             </div>
 
-            <Separator />
-
-            {selectedSource ? (
-              <div className="grid gap-3">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="truncate text-sm font-semibold">{selectedSource.name}</div>
-                    <div className="text-xs text-muted-foreground">
-                      {transformLabel(selectedSource)}
-                    </div>
-                  </div>
-                  <Button
-                    disabled={isSessionActive}
-                    size="sm"
-                    variant="outline"
-                    onClick={() => void resetSceneSource(selectedSource.id)}
-                  >
-                    Reset
-                  </Button>
-                </div>
-                {/* F-012: a full-canvas source cannot move — clamping makes
-                    every nudge a no-op, so the arrows disable instead of
-                    pretending. */}
-                <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2 self-start">
-                  <span />
-                  <Button
-                    aria-label="Nudge source up"
-                    disabled={!sceneEditMode || isSessionActive || sourceIsFullCanvas(selectedSource)}
-                    size="icon"
-                    variant="outline"
-                    onClick={() => void nudgeSceneSource(selectedSource.id, 0, -1)}
-                  >
-                    <ArrowUp />
-                  </Button>
-                  <span />
-                  <Button
-                    aria-label="Nudge source left"
-                    disabled={!sceneEditMode || isSessionActive || sourceIsFullCanvas(selectedSource)}
-                    size="icon"
-                    variant="outline"
-                    onClick={() => void nudgeSceneSource(selectedSource.id, -1, 0)}
-                  >
-                    <ArrowLeft />
-                  </Button>
-                  <Button
-                    aria-label="Nudge source down"
-                    disabled={!sceneEditMode || isSessionActive || sourceIsFullCanvas(selectedSource)}
-                    size="icon"
-                    variant="outline"
-                    onClick={() => void nudgeSceneSource(selectedSource.id, 0, 1)}
-                  >
-                    <ArrowDown />
-                  </Button>
-                  <Button
-                    aria-label="Nudge source right"
-                    disabled={!sceneEditMode || isSessionActive || sourceIsFullCanvas(selectedSource)}
-                    size="icon"
-                    variant="outline"
-                    onClick={() => void nudgeSceneSource(selectedSource.id, 1, 0)}
-                  >
-                    <ArrowRight />
-                  </Button>
-                </div>
-              </div>
-            ) : null}
           </PanelSection>
         </div>
 
-        <PanelSection className="min-w-0" icon={SlidersHorizontal} title="Camera framing">
-          {isScreenOnly ? (
+        <PanelSection
+          className="min-w-0"
+          icon={SlidersHorizontal}
+          title={selectedSource ? selectedSource.name : 'Inspector'}
+        >
+          {!selectedSource ? (
             <p className="text-sm text-muted-foreground">
-              Screen only records just the screen or window — no camera is captured, so there is
-              nothing to frame.
+              Click a source on the stage (or in Scene sources) to edit it.
             </p>
-          ) : (
+          ) : selectedSource.kind === 'camera' ? (
             <>
               <span className="text-[12.5px] leading-none font-medium text-subtle">Placement</span>
               {isSideBySide ? (
@@ -442,9 +388,75 @@ export function LayoutTab(): ReactElement {
                 onChange={(cameraOffsetY) => patchLayout({ cameraOffsetY })}
               />
             </>
+          ) : (
+            <>
+              <div className="grid gap-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-semibold">{selectedSource.name}</div>
+                    <div className="text-xs text-muted-foreground">
+                      {transformLabel(selectedSource)}
+                    </div>
+                  </div>
+                  <Button
+                    disabled={isSessionActive}
+                    size="sm"
+                    variant="outline"
+                    onClick={() => void resetSceneSource(selectedSource.id)}
+                  >
+                    Reset
+                  </Button>
+                </div>
+                {/* F-012: a full-canvas source cannot move — clamping makes
+                    every nudge a no-op, so the arrows disable instead of
+                    pretending. */}
+                <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2 self-start">
+                  <span />
+                  <Button
+                    aria-label="Nudge source up"
+                    disabled={!sceneEditMode || isSessionActive || sourceIsFullCanvas(selectedSource)}
+                    size="icon"
+                    variant="outline"
+                    onClick={() => void nudgeSceneSource(selectedSource.id, 0, -1)}
+                  >
+                    <ArrowUp />
+                  </Button>
+                  <span />
+                  <Button
+                    aria-label="Nudge source left"
+                    disabled={!sceneEditMode || isSessionActive || sourceIsFullCanvas(selectedSource)}
+                    size="icon"
+                    variant="outline"
+                    onClick={() => void nudgeSceneSource(selectedSource.id, -1, 0)}
+                  >
+                    <ArrowLeft />
+                  </Button>
+                  <Button
+                    aria-label="Nudge source down"
+                    disabled={!sceneEditMode || isSessionActive || sourceIsFullCanvas(selectedSource)}
+                    size="icon"
+                    variant="outline"
+                    onClick={() => void nudgeSceneSource(selectedSource.id, 0, 1)}
+                  >
+                    <ArrowDown />
+                  </Button>
+                  <Button
+                    aria-label="Nudge source right"
+                    disabled={!sceneEditMode || isSessionActive || sourceIsFullCanvas(selectedSource)}
+                    size="icon"
+                    variant="outline"
+                    onClick={() => void nudgeSceneSource(selectedSource.id, 1, 0)}
+                  >
+                    <ArrowRight />
+                  </Button>
+                </div>
+              </div>
+            </>
           )}
         </PanelSection>
       </div>
+
+      <SceneBackgroundSection />
 
       <SceneBackgroundSection />
 
