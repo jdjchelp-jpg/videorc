@@ -29,7 +29,10 @@ const SIZE_FACTOR: Record<CaptionTextSize, number> = { s: 0.8, m: 1.0, l: 1.25 }
 const MAX_BAR_WIDTH_FRACTION = 0.92
 export const MAX_CAPTION_BAR_LINES = 2
 
-export function captionBarMetrics(canvasWidth: number, textSize: CaptionTextSize): CaptionBarMetrics {
+export function captionBarMetrics(
+  canvasWidth: number,
+  textSize: CaptionTextSize
+): CaptionBarMetrics {
   const fontPx = Math.max(24, Math.round((canvasWidth / 38) * SIZE_FACTOR[textSize]))
   const paddingXPx = Math.round(fontPx * 0.9)
   return {
@@ -98,43 +101,44 @@ export function layoutCaptionBar(params: {
   return { metrics, lines, barWidthPx, barHeightPx }
 }
 
-/**
- * Render the caption bar to a PNG (base64, no data: prefix) at the video's
- * output width. Glass solid-fallback look: translucent charcoal, hairline
- * ring, panel radius, primary-white text. Returns null for empty text.
- */
-export async function renderCaptionOverlayPng(params: {
-  text: string
+/** Vertical safe margin the compositor uses — mirrored for burned frames. */
+export const CAPTION_FRAME_MARGIN_FRACTION = 0.04
+
+/** Where the bar sits inside a full frame (pure; unit-tested). */
+export function captionBarFramePosition(params: {
   canvasWidth: number
-  textSize: CaptionTextSize
-}): Promise<string | null> {
-  const probe = new OffscreenCanvas(1, 1)
-  const probeContext = probe.getContext('2d')
-  if (!probeContext) {
-    return null
+  canvasHeight: number
+  barWidthPx: number
+  barHeightPx: number
+  position: CaptionPosition
+}): { x: number; y: number } {
+  const margin = Math.round(params.canvasHeight * CAPTION_FRAME_MARGIN_FRACTION)
+  return {
+    x: Math.round((params.canvasWidth - params.barWidthPx) / 2),
+    y:
+      params.position === 'top'
+        ? margin
+        : Math.max(0, params.canvasHeight - params.barHeightPx - margin)
   }
-  const fontFor = (fontPx: number): string =>
-    `500 ${fontPx}px -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif`
-  const measure: TextMeasurer = (text, fontPx) => {
-    probeContext.font = fontFor(fontPx)
-    return probeContext.measureText(text).width
-  }
+}
 
-  const layout = layoutCaptionBar({ ...params, measure })
-  if (!layout) {
-    return null
-  }
-
-  const canvas = new OffscreenCanvas(layout.barWidthPx, layout.barHeightPx)
-  const context = canvas.getContext('2d')
-  if (!context) {
-    return null
-  }
+function paintCaptionBar(
+  context: OffscreenCanvasRenderingContext2D,
+  layout: CaptionBarLayout,
+  fontFor: (fontPx: number) => string,
+  originX: number,
+  originY: number
+): void {
   const { metrics } = layout
-
   // Glass solid fallback (videorc-design): translucent charcoal + hairline.
   context.beginPath()
-  context.roundRect(0.5, 0.5, layout.barWidthPx - 1, layout.barHeightPx - 1, metrics.radiusPx)
+  context.roundRect(
+    originX + 0.5,
+    originY + 0.5,
+    layout.barWidthPx - 1,
+    layout.barHeightPx - 1,
+    metrics.radiusPx
+  )
   context.fillStyle = 'rgba(28, 28, 31, 0.85)'
   context.fill()
   context.strokeStyle = 'rgba(255, 255, 255, 0.08)'
@@ -148,12 +152,32 @@ export async function renderCaptionOverlayPng(params: {
   layout.lines.forEach((line, index) => {
     context.fillText(
       line,
-      layout.barWidthPx / 2,
-      metrics.paddingYPx + metrics.lineHeightPx * (index + 0.5),
+      originX + layout.barWidthPx / 2,
+      originY + metrics.paddingYPx + metrics.lineHeightPx * (index + 0.5),
       layout.barWidthPx - metrics.paddingXPx
     )
   })
+}
 
+function canvasFont(fontPx: number): string {
+  return `500 ${fontPx}px -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif`
+}
+
+function canvasMeasurer(): { measure: TextMeasurer } | null {
+  const probe = new OffscreenCanvas(1, 1)
+  const probeContext = probe.getContext('2d')
+  if (!probeContext) {
+    return null
+  }
+  return {
+    measure: (text, fontPx) => {
+      probeContext.font = canvasFont(fontPx)
+      return probeContext.measureText(text).width
+    }
+  }
+}
+
+async function canvasToBase64Png(canvas: OffscreenCanvas): Promise<string> {
   const blob = await canvas.convertToBlob({ type: 'image/png' })
   const buffer = await blob.arrayBuffer()
   let binary = ''
@@ -163,4 +187,72 @@ export async function renderCaptionOverlayPng(params: {
     binary += String.fromCharCode(...view.subarray(offset, offset + chunkSize))
   }
   return btoa(binary)
+}
+
+/**
+ * Render the caption bar to a PNG (base64, no data: prefix) at the video's
+ * output width. Returns null for empty text.
+ */
+export async function renderCaptionOverlayPng(params: {
+  text: string
+  canvasWidth: number
+  textSize: CaptionTextSize
+}): Promise<string | null> {
+  const measurer = canvasMeasurer()
+  if (!measurer) {
+    return null
+  }
+  const layout = layoutCaptionBar({ ...params, measure: measurer.measure })
+  if (!layout) {
+    return null
+  }
+  const canvas = new OffscreenCanvas(layout.barWidthPx, layout.barHeightPx)
+  const context = canvas.getContext('2d')
+  if (!context) {
+    return null
+  }
+  paintCaptionBar(context, layout, canvasFont, 0, 0)
+  return canvasToBase64Png(canvas)
+}
+
+/**
+ * Render one FULL-FRAME transparent PNG for the burned caption track (R2):
+ * the bar composited at its on-video position inside a canvas-sized frame.
+ * Empty text renders the blank (fully transparent) gap frame.
+ */
+export async function renderCaptionCueFramePng(params: {
+  text: string
+  canvasWidth: number
+  canvasHeight: number
+  position: CaptionPosition
+  textSize: CaptionTextSize
+}): Promise<string | null> {
+  const canvas = new OffscreenCanvas(Math.max(2, params.canvasWidth), Math.max(2, params.canvasHeight))
+  const context = canvas.getContext('2d')
+  if (!context) {
+    return null
+  }
+  if (params.text.trim().length > 0) {
+    const measurer = canvasMeasurer()
+    if (!measurer) {
+      return null
+    }
+    const layout = layoutCaptionBar({
+      text: params.text,
+      canvasWidth: params.canvasWidth,
+      textSize: params.textSize,
+      measure: measurer.measure
+    })
+    if (layout) {
+      const origin = captionBarFramePosition({
+        canvasWidth: params.canvasWidth,
+        canvasHeight: params.canvasHeight,
+        barWidthPx: layout.barWidthPx,
+        barHeightPx: layout.barHeightPx,
+        position: params.position
+      })
+      paintCaptionBar(context, layout, canvasFont, origin.x, origin.y)
+    }
+  }
+  return canvasToBase64Png(canvas)
 }

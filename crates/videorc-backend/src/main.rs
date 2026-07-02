@@ -1724,6 +1724,32 @@ async fn handle_text_message(state: &AppState, text: &str) -> ServerResponse {
             command.id,
             captions::clear_caption_overlay(&state.caption_overlay),
         ),
+        "captions.cues.submit" => {
+            let request_id = command
+                .params
+                .get("requestId")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let seq = command
+                .params
+                .get("seq")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(u64::MAX);
+            let png_base64 = command
+                .params
+                .get("pngBase64")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default();
+            match captions::submit_caption_cue_frame(state, &request_id, seq, png_base64).await {
+                Ok(completed) => {
+                    ServerResponse::ok(command.id, serde_json::json!({ "completed": completed }))
+                }
+                Err(error) => {
+                    ServerResponse::error(command.id, "captions-cue-invalid", error.to_string())
+                }
+            }
+        }
         "ai.capabilities.get" => match get_ai_capabilities().await {
             Ok(capabilities) => ServerResponse::ok(command.id, capabilities),
             Err(error) => {

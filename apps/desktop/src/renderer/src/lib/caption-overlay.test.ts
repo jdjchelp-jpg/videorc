@@ -74,8 +74,28 @@ describe('layoutCaptionBar', () => {
   })
 
   it('returns null for empty text', () => {
-    expect(
-      layoutCaptionBar({ text: '', canvasWidth: 1920, textSize: 'm', measure })
-    ).toBeNull()
+    expect(layoutCaptionBar({ text: '', canvasWidth: 1920, textSize: 'm', measure })).toBeNull()
+  })
+})
+
+describe('captionBarFramePosition', () => {
+  it('anchors the bar with the 4% safe margin, top or bottom, centered', async () => {
+    const { captionBarFramePosition } = await import('./caption-overlay')
+    const bottom = captionBarFramePosition({
+      canvasWidth: 1920,
+      canvasHeight: 1080,
+      barWidthPx: 800,
+      barHeightPx: 120,
+      position: 'bottom'
+    })
+    expect(bottom).toEqual({ x: 560, y: 1080 - 120 - Math.round(1080 * 0.04) })
+    const top = captionBarFramePosition({
+      canvasWidth: 1920,
+      canvasHeight: 1080,
+      barWidthPx: 800,
+      barHeightPx: 120,
+      position: 'top'
+    })
+    expect(top).toEqual({ x: 560, y: Math.round(1080 * 0.04) })
   })
 })

@@ -520,6 +520,8 @@ pub async fn start_session(
             &state,
             captions_params.position,
             captions_params.text_size,
+            params.output.video.width,
+            params.output.video.height,
         )
         .await;
     }
@@ -2422,13 +2424,14 @@ async fn monitor_session(
                     crate::captions::write_caption_artifacts(&state, &gate_session_id, &final_path)
                         .await;
                 if !caption_chunks.is_empty() {
-                    crate::captions::enqueue_caption_burn(
-                        state.clone(),
-                        gate_session_id.clone(),
-                        monitored_recording.ffmpeg_path.clone(),
-                        final_path.clone(),
-                        caption_chunks,
-                    );
+                    crate::captions::begin_caption_cue_render(
+                        &state,
+                        &gate_session_id,
+                        &monitored_recording.ffmpeg_path,
+                        &final_path,
+                        &caption_chunks,
+                    )
+                    .await;
                 }
                 enqueue_post_recording_gate(
                     state.clone(),

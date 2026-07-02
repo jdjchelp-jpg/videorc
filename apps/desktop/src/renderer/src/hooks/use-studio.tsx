@@ -136,7 +136,7 @@ import type {
   YouTubeStreamStatusResult
 } from '@/lib/backend'
 import { createEmptyLiveChatSnapshot } from '@/lib/backend'
-import { renderCaptionOverlayPng } from '@/lib/caption-overlay'
+import { renderCaptionCueFramePng, renderCaptionOverlayPng } from '@/lib/caption-overlay'
 import { appendCaptionLine } from '@/lib/captions-ui'
 import { goLiveEntitlementGate, videoProfileEntitlementGate } from '@/lib/entitlement-ui'
 import { entitlementDisabledReason } from '@/lib/entitlements'
@@ -2136,6 +2136,44 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       nextClient.on('captions.update', (payload) =>
         setCaptionLines((current) => appendCaptionLine(current, payload as CaptionsUpdate))
       ),
+      // Burned-copy cue frames (R2): the backend asks for one full-frame PNG
+      // per cue at finalize; render + submit sequentially, best-effort (the
+      // backend watchdog degrades to SRT-only if we never finish).
+      nextClient.on('captions.cues.render-request', (payload) => {
+        const request = payload as {
+          requestId: string
+          canvasWidth: number
+          canvasHeight: number
+          position: 'top' | 'bottom'
+          textSize: 's' | 'm' | 'l'
+          blankSeq: number
+          cues: { seq: number; text: string }[]
+        }
+        void (async () => {
+          const jobs = [{ seq: request.blankSeq, text: '' }, ...request.cues]
+          for (const cue of jobs) {
+            try {
+              const pngBase64 = await renderCaptionCueFramePng({
+                text: cue.text,
+                canvasWidth: request.canvasWidth,
+                canvasHeight: request.canvasHeight,
+                position: request.position,
+                textSize: request.textSize
+              })
+              if (!pngBase64) {
+                continue
+              }
+              await nextClient.request('captions.cues.submit', {
+                requestId: request.requestId,
+                seq: cue.seq,
+                pngBase64
+              })
+            } catch {
+              // Skip this cue; the backend watchdog handles incompleteness.
+            }
+          }
+        })()
+      }),
       nextClient.on('streamTargets.metadata.changed', (payload) => {
         const draft = payload as StreamMetadataDraft
         setStreamMetadataDraft(draft)

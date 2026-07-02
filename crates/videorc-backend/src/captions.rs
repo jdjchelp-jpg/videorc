@@ -140,10 +140,20 @@ pub fn caption_anchor_should_reset(last_timestamp: Option<u64>, current: u64) ->
     last_timestamp.is_some_and(|last| current < last)
 }
 
-/// Absolute cue windows (start, end, text) shared by the SRT and ASS
-/// renderers: cue per chunk, timed by word segments (chunk-window fallback),
-/// sorted, ends clamped to the next cue so captions never stack.
-fn caption_cues(chunks: &[CaptionChunkRecord]) -> Vec<(f64, f64, String)> {
+/// An absolute cue window derived from one chunk record.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptionCue {
+    pub seq: u64,
+    pub start_seconds: f64,
+    pub end_seconds: f64,
+    pub text: String,
+}
+
+/// Cue windows shared by every caption renderer (SRT, overlay track): cue per
+/// chunk, timed by word segments (chunk-window fallback), sorted, ends
+/// clamped to the next cue so captions never stack.
+pub fn caption_cues(chunks: &[CaptionChunkRecord]) -> Vec<CaptionCue> {
     let mut cues = Vec::with_capacity(chunks.len());
     for chunk in chunks {
         let text = chunk.text.trim();
@@ -151,13 +161,18 @@ fn caption_cues(chunks: &[CaptionChunkRecord]) -> Vec<(f64, f64, String)> {
             continue;
         }
         let (start, end) = chunk_cue_window(chunk);
-        cues.push((start, end, text.to_string()));
+        cues.push(CaptionCue {
+            seq: chunk.seq,
+            start_seconds: start,
+            end_seconds: end,
+            text: text.to_string(),
+        });
     }
-    cues.sort_by(|left, right| left.0.total_cmp(&right.0));
+    cues.sort_by(|left, right| left.start_seconds.total_cmp(&right.start_seconds));
     for index in 0..cues.len().saturating_sub(1) {
-        let next_start = cues[index + 1].0;
-        if cues[index].1 > next_start {
-            cues[index].1 = next_start;
+        let next_start = cues[index + 1].start_seconds;
+        if cues[index].end_seconds > next_start {
+            cues[index].end_seconds = next_start;
         }
     }
     cues
@@ -166,13 +181,13 @@ fn caption_cues(chunks: &[CaptionChunkRecord]) -> Vec<(f64, f64, String)> {
 /// Render chunk records as SubRip.
 pub fn render_srt(chunks: &[CaptionChunkRecord]) -> String {
     let mut srt = String::new();
-    for (index, (start, end, text)) in caption_cues(chunks).iter().enumerate() {
+    for (index, cue) in caption_cues(chunks).iter().enumerate() {
         srt.push_str(&format!(
             "{}\n{} --> {}\n{}\n\n",
             index + 1,
-            format_srt_timestamp(*start),
-            format_srt_timestamp((*end).max(*start + 0.001)),
-            text
+            format_srt_timestamp(cue.start_seconds),
+            format_srt_timestamp(cue.end_seconds.max(cue.start_seconds + 0.001)),
+            cue.text
         ));
     }
     srt
@@ -256,72 +271,6 @@ pub fn caption_overlay_leg_plan(
     }
 }
 
-/// ASS is authored against a fixed reference resolution; libass scales it to
-/// the actual video, so sizes stay consistent at any output.
-const ASS_PLAY_RES_X: u32 = 1920;
-const ASS_PLAY_RES_Y: u32 = 1080;
-
-/// Render chunk records as an ASS track with glass-adjacent styling:
-/// translucent charcoal opaque-box, near-white text, bottom/top center per the
-/// position knob (square corners — the ASS limit accepted in grilling Q6).
-pub fn render_ass(
-    chunks: &[CaptionChunkRecord],
-    position: CaptionOverlayPosition,
-    text_size: CaptionTextSize,
-) -> String {
-    let cues = caption_cues(chunks);
-    let size_factor = match text_size {
-        CaptionTextSize::S => 0.8,
-        CaptionTextSize::M => 1.0,
-        CaptionTextSize::L => 1.25,
-    };
-    let font_size = ((f64::from(ASS_PLAY_RES_X) / 38.0) * size_factor).round() as u32;
-    let alignment = match position {
-        CaptionOverlayPosition::Bottom => 2, // bottom-center
-        CaptionOverlayPosition::Top => 8,    // top-center
-    };
-    let margin_v = (f64::from(ASS_PLAY_RES_Y) * 0.04).round() as u32;
-
-    let mut ass = format!(
-        "[Script Info]\n\
-         ScriptType: v4.00+\n\
-         PlayResX: {ASS_PLAY_RES_X}\n\
-         PlayResY: {ASS_PLAY_RES_Y}\n\
-         WrapStyle: 0\n\
-         ScaledBorderAndShadow: yes\n\
-         \n\
-         [V4+ Styles]\n\
-         Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n\
-         Style: VideorcCaptions,Helvetica,{font_size},&H00F5F4F4,&H00F5F4F4,&H261F1C1C,&H261F1C1C,0,0,0,0,100,100,0,0,3,10,0,{alignment},60,60,{margin_v},1\n\
-         \n\
-         [Events]\n\
-         Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
-    );
-    for (start, end, text) in &cues {
-        let escaped = text
-            .replace('\n', "\\N")
-            .replace('{', "(")
-            .replace('}', ")");
-        ass.push_str(&format!(
-            "Dialogue: 0,{},{},VideorcCaptions,,0,0,0,,{}\n",
-            format_ass_timestamp(*start),
-            format_ass_timestamp((*end).max(*start + 0.01)),
-            escaped
-        ));
-    }
-    ass
-}
-
-fn format_ass_timestamp(seconds: f64) -> String {
-    let clamped = seconds.max(0.0);
-    let total_centis = (clamped * 100.0).round() as u64;
-    let hours = total_centis / 360_000;
-    let minutes = (total_centis % 360_000) / 6_000;
-    let secs = (total_centis % 6_000) / 100;
-    let centis = total_centis % 100;
-    format!("{hours}:{minutes:02}:{secs:02}.{centis:02}")
-}
-
 /// `Recording.mp4` → `Recording (captioned).mp4`.
 pub fn captioned_copy_path(recording: &std::path::Path) -> std::path::PathBuf {
     let stem = recording
@@ -333,31 +282,6 @@ pub fn captioned_copy_path(recording: &std::path::Path) -> std::path::PathBuf {
         .and_then(|value| value.to_str())
         .unwrap_or("mp4");
     recording.with_file_name(format!("{stem} (captioned).{extension}"))
-}
-
-/// Probe whether this ffmpeg build carries the libass `ass` filter.
-async fn ffmpeg_supports_ass_filter(ffmpeg_path: &str) -> bool {
-    match tokio::process::Command::new(ffmpeg_path)
-        .args(["-hide_banner", "-filters"])
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .await
-    {
-        Ok(output) => String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .any(|line| line.split_whitespace().nth(1) == Some("ass")),
-        Err(_) => false,
-    }
-}
-
-/// Escape a path for use inside an ffmpeg filter argument (ass=...).
-fn escape_ffmpeg_filter_path(path: &std::path::Path) -> String {
-    path.display()
-        .to_string()
-        .replace('\\', "\\\\")
-        .replace(':', "\\:")
-        .replace('\'', "\\'")
 }
 
 fn chunk_cue_window(chunk: &CaptionChunkRecord) -> (f64, f64) {
@@ -430,48 +354,194 @@ pub async fn write_caption_artifacts(
     chunks
 }
 
-/// Burn the aligned captions into a `(captioned)` copy of the recording via
-/// the idle-aware ffmpeg coordinator (same family as the repair gates). The
-/// original file is never touched; any failure degrades to SRT-only with a
-/// health warning. Not restart-resumable (v1): if the app quits mid-encode,
-/// the copy is simply absent while the .srt remains.
-pub fn enqueue_caption_burn(
-    state: AppState,
-    session_id: String,
-    ffmpeg_path: String,
-    recording_path: std::path::PathBuf,
-    chunks: Vec<CaptionChunkRecord>,
-) {
-    tokio::spawn(async move {
-        let (position, text_size) = state.captions.lock().await.style;
-        let ass = render_ass(&chunks, position, text_size);
-        if ass.is_empty() || !ass.contains("Dialogue:") {
-            return;
+/// Build the ffconcat playlist for the caption track: transparent gap frames
+/// alternating with cue frames, exact durations from the cue windows.
+/// Entries are bare filenames — the list resolves relative to its own
+/// location inside the frames dir, so no path escaping is ever needed.
+pub fn build_caption_track_concat(cues: &[CaptionCue], blank_seq: u64) -> String {
+    let mut list = String::from("ffconcat version 1.0\n");
+    let mut cursor = 0.0_f64;
+    for cue in cues {
+        let start = cue.start_seconds.max(cursor);
+        let end = cue.end_seconds.max(start + 0.05);
+        if start > cursor {
+            list.push_str(&format!(
+                "file '{blank_seq}.png'\nduration {:.3}\n",
+                start - cursor
+            ));
         }
-        let ass_path = recording_path.with_extension("captions.ass");
-        if let Err(error) = tokio::fs::write(&ass_path, &ass).await {
+        list.push_str(&format!(
+            "file '{}.png'\nduration {:.3}\n",
+            cue.seq,
+            end - start
+        ));
+        cursor = end;
+    }
+    // Concat-demuxer slideshow convention: the final entry's duration is
+    // unreliable, so close with a short blank and repeat it.
+    list.push_str(&format!("file '{blank_seq}.png'\nduration 0.100\n"));
+    list.push_str(&format!("file '{blank_seq}.png'\n"));
+    list
+}
+
+/// Kick off the cue-frame render round-trip (R2): ask the renderer for one
+/// full-frame transparent PNG per cue (plus the blank gap frame), collect
+/// them under `<recording>.captions-frames/`, and hand off to the overlay
+/// burn when complete. A watchdog degrades to SRT-only if frames don't
+/// arrive (renderer closed, error) — the session is never affected.
+pub async fn begin_caption_cue_render(
+    state: &AppState,
+    session_id: &str,
+    ffmpeg_path: &str,
+    recording_path: &std::path::Path,
+    chunks: &[CaptionChunkRecord],
+) {
+    let cues = caption_cues(chunks);
+    if cues.is_empty() {
+        return;
+    }
+    let frames_dir = recording_path.with_extension("captions-frames");
+    if let Err(error) = tokio::fs::create_dir_all(&frames_dir).await {
+        let _ = crate::recording::emit_health_event(
+            state,
+            Some(session_id),
+            crate::protocol::HealthLevel::Warn,
+            "captions-burn-failed",
+            &format!("Could not prepare caption frames: {error}"),
+        );
+        return;
+    }
+
+    let request_id = format!("cues-{}", uuid::Uuid::new_v4().simple());
+    let (position, text_size, canvas) = {
+        let mut coordinator = state.captions.lock().await;
+        let style = coordinator.style;
+        let canvas = coordinator.output_size;
+        let mut expected: std::collections::BTreeSet<u64> =
+            cues.iter().map(|cue| cue.seq).collect();
+        expected.insert(CAPTION_BLANK_FRAME_SEQ);
+        coordinator.pending_cue_render = Some(PendingCueRender {
+            request_id: request_id.clone(),
+            session_id: session_id.to_string(),
+            ffmpeg_path: ffmpeg_path.to_string(),
+            recording_path: recording_path.to_path_buf(),
+            frames_dir: frames_dir.clone(),
+            canvas,
+            cues: cues.clone(),
+            expected,
+            received: std::collections::BTreeSet::new(),
+        });
+        (style.0, style.1, canvas)
+    };
+
+    state.emit_event(
+        "captions.cues.render-request",
+        serde_json::json!({
+            "requestId": request_id,
+            "canvasWidth": canvas.0.max(2),
+            "canvasHeight": canvas.1.max(2),
+            "position": position,
+            "textSize": text_size,
+            "blankSeq": CAPTION_BLANK_FRAME_SEQ,
+            "cues": cues
+                .iter()
+                .map(|cue| serde_json::json!({ "seq": cue.seq, "text": cue.text }))
+                .collect::<Vec<_>>(),
+        }),
+    );
+
+    // Watchdog: if the renderer never completes this request, clean up and
+    // report — the .srt sidecar already exists either way.
+    let watchdog_state = state.clone();
+    let watchdog_request = request_id.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        let pending = {
+            let mut coordinator = watchdog_state.captions.lock().await;
+            match &coordinator.pending_cue_render {
+                Some(pending) if pending.request_id == watchdog_request => {
+                    coordinator.pending_cue_render.take()
+                }
+                _ => None,
+            }
+        };
+        if let Some(pending) = pending {
+            let _ = tokio::fs::remove_dir_all(&pending.frames_dir).await;
             let _ = crate::recording::emit_health_event(
-                &state,
-                Some(&session_id),
+                &watchdog_state,
+                Some(&pending.session_id),
                 crate::protocol::HealthLevel::Warn,
                 "captions-burn-failed",
-                &format!("Could not write the captions track: {error}"),
+                "The caption frames were not rendered in time; the .srt sidecar is still available.",
             );
-            return;
         }
+    });
+}
 
-        // The bundled ffmpeg is a minimal LGPL build WITHOUT libass (see
-        // build-ffmpeg-macos.sh) — probe for the ass filter and degrade
-        // loudly rather than failing mid-encode. Dev/homebrew ffmpeg has it.
-        if !ffmpeg_supports_ass_filter(&ffmpeg_path).await {
-            let _ = tokio::fs::remove_file(&ass_path).await;
+/// One rendered cue frame from the renderer. Returns whether the request is
+/// now complete (which triggers the overlay burn).
+pub async fn submit_caption_cue_frame(
+    state: &AppState,
+    request_id: &str,
+    seq: u64,
+    png_base64: &str,
+) -> Result<bool> {
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(png_base64.trim())
+        .map_err(|_| anyhow::anyhow!("Caption frame payload is not valid base64."))?;
+    if bytes.is_empty() || bytes.len() > OVERLAY_MAX_ENCODED_BYTES {
+        bail!("Caption frame payload size is out of range.");
+    }
+
+    let completed = {
+        let mut coordinator = state.captions.lock().await;
+        let Some(pending) = coordinator.pending_cue_render.as_mut() else {
+            bail!("No caption frame request is in flight.");
+        };
+        if pending.request_id != request_id {
+            bail!("Caption frame request is stale.");
+        }
+        if !pending.expected.contains(&seq) {
+            bail!("Caption frame seq {seq} was not requested.");
+        }
+        let path = pending.frames_dir.join(format!("{seq}.png"));
+        std::fs::write(&path, &bytes)
+            .map_err(|error| anyhow::anyhow!("Could not store caption frame: {error}"))?;
+        pending.received.insert(seq);
+        if pending.received == pending.expected {
+            coordinator.pending_cue_render.take()
+        } else {
+            None
+        }
+    };
+
+    if let Some(pending) = completed {
+        enqueue_caption_overlay_burn(state.clone(), pending);
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+/// Burn the aligned captions into a `(captioned)` copy of the recording:
+/// renderer-supplied full-frame cue PNGs play as a concat track and composite
+/// with the CORE `overlay` filter — works with the bundled dependency-free
+/// ffmpeg (no libass). Runs through the idle-aware ffmpeg coordinator; the
+/// original file is never touched; failures degrade to SRT-only with a
+/// health warning. Not restart-resumable (v1).
+fn enqueue_caption_overlay_burn(state: AppState, pending: PendingCueRender) {
+    tokio::spawn(async move {
+        let list = build_caption_track_concat(&pending.cues, CAPTION_BLANK_FRAME_SEQ);
+        let list_path = pending.frames_dir.join("track.ffconcat");
+        if let Err(error) = tokio::fs::write(&list_path, &list).await {
             let _ = crate::recording::emit_health_event(
                 &state,
-                Some(&session_id),
+                Some(&pending.session_id),
                 crate::protocol::HealthLevel::Warn,
-                "captions-burn-unsupported",
-                "This ffmpeg build has no subtitle renderer (libass); the .srt sidecar is available and the captioned copy was skipped.",
+                "captions-burn-failed",
+                &format!("Could not write the caption track list: {error}"),
             );
+            let _ = tokio::fs::remove_dir_all(&pending.frames_dir).await;
             return;
         }
 
@@ -480,19 +550,22 @@ pub fn enqueue_caption_burn(
         tokio::time::sleep(std::time::Duration::from_secs(30)).await;
         let maintenance = state.ffmpeg_work.begin_maintenance_when_idle().await;
         let cancel = maintenance.cancel_token();
-        let output_path = captioned_copy_path(&recording_path);
+        let output_path = captioned_copy_path(&pending.recording_path);
         state.emit_log(
             "info",
             format!("Burning captions into {}.", output_path.display()),
         );
 
-        let filter = format!("ass={}", escape_ffmpeg_filter_path(&ass_path));
-        let spawned = tokio::process::Command::new(&ffmpeg_path)
+        let spawned = tokio::process::Command::new(&pending.ffmpeg_path)
             .arg("-y")
             .arg("-i")
-            .arg(&recording_path)
-            .arg("-vf")
-            .arg(&filter)
+            .arg(&pending.recording_path)
+            .arg("-f")
+            .arg("concat")
+            .arg("-i")
+            .arg(&list_path)
+            .arg("-filter_complex")
+            .arg("[0:v][1:v]overlay=eof_action=pass")
             .arg("-c:a")
             .arg("copy")
             .arg(&output_path)
@@ -505,11 +578,12 @@ pub fn enqueue_caption_burn(
             Err(error) => {
                 let _ = crate::recording::emit_health_event(
                     &state,
-                    Some(&session_id),
+                    Some(&pending.session_id),
                     crate::protocol::HealthLevel::Warn,
                     "captions-burn-failed",
                     &format!("Could not start ffmpeg for the captioned copy: {error}"),
                 );
+                let _ = tokio::fs::remove_dir_all(&pending.frames_dir).await;
                 return;
             }
         };
@@ -529,10 +603,10 @@ pub fn enqueue_caption_burn(
 
         match outcome {
             Ok(()) => {
-                let _ = tokio::fs::remove_file(&ass_path).await;
+                let _ = tokio::fs::remove_dir_all(&pending.frames_dir).await;
                 let _ = crate::recording::emit_health_event(
                     &state,
-                    Some(&session_id),
+                    Some(&pending.session_id),
                     crate::protocol::HealthLevel::Info,
                     "captions-burned-copy-ready",
                     &format!("Captioned copy saved to {}.", output_path.display()),
@@ -540,9 +614,10 @@ pub fn enqueue_caption_burn(
             }
             Err(reason) => {
                 let _ = tokio::fs::remove_file(&output_path).await;
+                let _ = tokio::fs::remove_dir_all(&pending.frames_dir).await;
                 let _ = crate::recording::emit_health_event(
                     &state,
-                    Some(&session_id),
+                    Some(&pending.session_id),
                     crate::protocol::HealthLevel::Warn,
                     "captions-burn-failed",
                     &format!(
@@ -719,17 +794,41 @@ pub struct CaptionsCoordinator {
     /// Transcribed chunks awaiting the post-recording pass (drained at
     /// session stop; cleared when a new capture pipeline starts).
     chunks: Vec<CaptionChunkRecord>,
-    /// Styling knobs captured at session start for the burned copy.
+    /// Styling knobs + output size captured at session start for the burned copy.
     style: (CaptionOverlayPosition, CaptionTextSize),
+    output_size: (u32, u32),
+    /// In-flight cue-frame render request (R2): the renderer supplies one
+    /// full-frame PNG per cue; complete → the overlay burn runs.
+    pending_cue_render: Option<PendingCueRender>,
 }
 
-/// Stash the caption style for this session (used by the burned copy's ASS).
+pub struct PendingCueRender {
+    pub request_id: String,
+    pub session_id: String,
+    pub ffmpeg_path: String,
+    pub recording_path: std::path::PathBuf,
+    pub frames_dir: std::path::PathBuf,
+    pub canvas: (u32, u32),
+    pub cues: Vec<CaptionCue>,
+    pub expected: std::collections::BTreeSet<u64>,
+    pub received: std::collections::BTreeSet<u64>,
+}
+
+/// The blank (fully transparent) gap frame's pseudo-seq in a render request.
+pub const CAPTION_BLANK_FRAME_SEQ: u64 = 0;
+
+/// Stash the caption style + output size for this session (used by the
+/// burned copy's cue frames).
 pub async fn set_caption_session_style(
     state: &AppState,
     position: CaptionOverlayPosition,
     text_size: CaptionTextSize,
+    output_width: u32,
+    output_height: u32,
 ) {
-    state.captions.lock().await.style = (position, text_size);
+    let mut coordinator = state.captions.lock().await;
+    coordinator.style = (position, text_size);
+    coordinator.output_size = (output_width, output_height);
 }
 
 pub type CaptionsSlot = Arc<Mutex<CaptionsCoordinator>>;
@@ -1187,42 +1286,50 @@ mod tests {
     }
 
     #[test]
-    fn ass_renders_glass_adjacent_style_with_knobs() {
-        let ass = render_ass(
-            &[chunk(
-                1,
-                3.0,
-                "Hello viewers",
-                &[("Hello", 0.1, 0.5), ("viewers", 0.6, 1.2)],
-            )],
-            CaptionOverlayPosition::Top,
-            CaptionTextSize::L,
+    fn concat_track_alternates_gaps_and_cues_with_exact_durations() {
+        let cues = caption_cues(&[
+            chunk(3, 3.0, "hello there", &[("hello", 0.10, 0.60), ("there", 0.70, 1.20)]),
+            chunk(7, 9.0, "again", &[("again", 0.05, 0.80)]),
+        ]);
+        let list = build_caption_track_concat(&cues, 0);
+        assert_eq!(
+            list,
+            "ffconcat version 1.0\n\
+             file '0.png'\nduration 3.100\n\
+             file '3.png'\nduration 1.100\n\
+             file '0.png'\nduration 4.850\n\
+             file '7.png'\nduration 0.750\n\
+             file '0.png'\nduration 0.100\n\
+             file '0.png'\n"
         );
-        assert!(ass.contains("PlayResX: 1920"));
-        // L size = round(1920/38 * 1.25) = 63; top-center alignment = 8.
-        assert!(ass.contains(",63,&H00F5F4F4,"));
-        assert!(ass.contains(",8,60,60,43,1"));
-        assert!(
-            ass.contains("Dialogue: 0,0:00:03.10,0:00:04.20,VideorcCaptions,,0,0,0,,Hello viewers")
-        );
-
-        let bottom = render_ass(
-            &[chunk(1, 0.0, "hi", &[])],
-            CaptionOverlayPosition::Bottom,
-            CaptionTextSize::M,
-        );
-        assert!(bottom.contains(",2,60,60,43,1"));
-        assert!(bottom.contains("Dialogue: 0,0:00:00.00,0:00:03.00,"));
     }
 
     #[test]
-    fn ass_escapes_override_braces_and_newlines() {
-        let ass = render_ass(
-            &[chunk(1, 0.0, "{\\b1}bold\nnext", &[])],
-            CaptionOverlayPosition::Bottom,
-            CaptionTextSize::M,
+    fn concat_track_handles_back_to_back_cues_and_zero_length_windows() {
+        let cues = vec![
+            CaptionCue {
+                seq: 1,
+                start_seconds: 0.0,
+                end_seconds: 3.0,
+                text: "a".into(),
+            },
+            CaptionCue {
+                seq: 2,
+                start_seconds: 3.0,
+                end_seconds: 3.0, // degenerate window gets a minimum duration
+                text: "b".into(),
+            },
+        ];
+        let list = build_caption_track_concat(&cues, 0);
+        // No gap entry between back-to-back cues; degenerate cue gets 50ms.
+        assert_eq!(
+            list,
+            "ffconcat version 1.0\n\
+             file '1.png'\nduration 3.000\n\
+             file '2.png'\nduration 0.050\n\
+             file '0.png'\nduration 0.100\n\
+             file '0.png'\n"
         );
-        assert!(ass.contains(",,(\\b1)bold\\Nnext\n"));
     }
 
     #[test]
@@ -1230,14 +1337,6 @@ mod tests {
         assert_eq!(
             captioned_copy_path(std::path::Path::new("/tmp/Recording 12.mp4")),
             std::path::PathBuf::from("/tmp/Recording 12 (captioned).mp4")
-        );
-    }
-
-    #[test]
-    fn ffmpeg_filter_path_escaping_covers_specials() {
-        assert_eq!(
-            escape_ffmpeg_filter_path(std::path::Path::new("/a:b/c'd.ass")),
-            "/a\\:b/c\\'d.ass"
         );
     }
 
