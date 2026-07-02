@@ -123,10 +123,12 @@ export function QuickSettings(): ReactElement {
     (resolution) => resolutionKey(resolution.width, resolution.height) === currentResolution
   )
 
-  const sourceSummary = [
-    selectedCaptureDevice?.name ?? 'No screen',
-    selectedCamera?.name ?? 'No camera'
-  ].join(' · ')
+  // F-015: the synthetic diagnostic source replaces the screen — say so
+  // instead of claiming "No screen".
+  const screenSummary = captureConfig.sources.testPattern
+    ? 'Test pattern'
+    : (selectedCaptureDevice?.name ?? 'No screen')
+  const sourceSummary = [screenSummary, selectedCamera?.name ?? 'No camera'].join(' · ')
 
   return (
     <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">

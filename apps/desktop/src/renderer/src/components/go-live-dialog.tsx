@@ -75,7 +75,7 @@ export function GoLiveConfirmationDialog({
         <DialogHeader>
           <DialogTitle>Confirm Go Live</DialogTitle>
           <DialogDescription>
-            Review destinations and metadata before Videogre starts the livestream.
+            Review destinations and metadata before Videorc starts the livestream.
           </DialogDescription>
         </DialogHeader>
 

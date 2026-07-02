@@ -1,4 +1,4 @@
-import { Check, Plus } from '@phosphor-icons/react'
+import { Check } from '@phosphor-icons/react'
 import type { ReactElement } from 'react'
 
 import { PanelSection } from '@/components/panel-section'
@@ -30,7 +30,7 @@ export function ScenesGallery(): ReactElement {
   return (
     <PanelSection
       title="Scenes"
-      description="Switch the program layout. Saved, named scenes are coming soon."
+      description="Switch the program layout."
       action={
         <Button size="sm" variant="ghost" onClick={() => openStudioPanel('layouts')}>
           Edit scene
@@ -68,14 +68,6 @@ export function ScenesGallery(): ReactElement {
           )
         })}
 
-        <div
-          className="flex flex-col items-center justify-center gap-1 rounded-row border border-dashed p-2 text-center opacity-60"
-          title="Saved scenes are coming soon"
-        >
-          <Plus className="size-5 text-muted-foreground" />
-          <span className="text-xs font-medium text-muted-foreground">Add scene</span>
-          <span className="text-[11px] text-muted-foreground">Coming soon</span>
-        </div>
       </div>
     </PanelSection>
   )

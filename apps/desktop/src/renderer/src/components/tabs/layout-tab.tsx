@@ -211,11 +211,14 @@ export function LayoutTab(): ReactElement {
                     Reset
                   </Button>
                 </div>
+                {/* F-012: a full-canvas source cannot move — clamping makes
+                    every nudge a no-op, so the arrows disable instead of
+                    pretending. */}
                 <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2 self-start">
                   <span />
                   <Button
                     aria-label="Nudge source up"
-                    disabled={!sceneEditMode || isSessionActive}
+                    disabled={!sceneEditMode || isSessionActive || sourceIsFullCanvas(selectedSource)}
                     size="icon"
                     variant="outline"
                     onClick={() => void nudgeSceneSource(selectedSource.id, 0, -1)}
@@ -225,7 +228,7 @@ export function LayoutTab(): ReactElement {
                   <span />
                   <Button
                     aria-label="Nudge source left"
-                    disabled={!sceneEditMode || isSessionActive}
+                    disabled={!sceneEditMode || isSessionActive || sourceIsFullCanvas(selectedSource)}
                     size="icon"
                     variant="outline"
                     onClick={() => void nudgeSceneSource(selectedSource.id, -1, 0)}
@@ -234,7 +237,7 @@ export function LayoutTab(): ReactElement {
                   </Button>
                   <Button
                     aria-label="Nudge source down"
-                    disabled={!sceneEditMode || isSessionActive}
+                    disabled={!sceneEditMode || isSessionActive || sourceIsFullCanvas(selectedSource)}
                     size="icon"
                     variant="outline"
                     onClick={() => void nudgeSceneSource(selectedSource.id, 0, 1)}
@@ -243,7 +246,7 @@ export function LayoutTab(): ReactElement {
                   </Button>
                   <Button
                     aria-label="Nudge source right"
-                    disabled={!sceneEditMode || isSessionActive}
+                    disabled={!sceneEditMode || isSessionActive || sourceIsFullCanvas(selectedSource)}
                     size="icon"
                     variant="outline"
                     onClick={() => void nudgeSceneSource(selectedSource.id, 1, 0)}
@@ -586,6 +589,10 @@ function SourceRow({
       </div>
     </div>
   )
+}
+
+function sourceIsFullCanvas(source: SceneSource): boolean {
+  return source.transform.width >= 1 && source.transform.height >= 1
 }
 
 function transformLabel(source: SceneSource): string {

@@ -31,7 +31,9 @@ export function FooterActionBar({
         className
       )}
     >
-      <div className="flex items-center gap-2 text-[13px] text-subtle">{leading}</div>
+      {/* F-026: at narrow widths the actions need every pixel — the contextual
+          label yields first so the bar stays on one row longer. */}
+      <div className="hidden items-center gap-2 text-[13px] text-subtle md:flex">{leading}</div>
       <div className="ml-auto flex flex-wrap items-center gap-1.5">{children}</div>
     </div>
   )

@@ -200,13 +200,23 @@ export function OnboardingDialog({
           <Button variant="ghost" onClick={() => onComplete()}>
             Skip
           </Button>
-          <div className="flex gap-2">
+          <div className="flex items-center gap-2">
+            {/* F-009: a disabled Continue with no explanation read as broken. */}
+            {!canAdvance ? (
+              <span className="text-xs text-muted-foreground">
+                Tick the acknowledgment to continue.
+              </span>
+            ) : null}
             {stepIndex > 0 ? (
               <Button variant="outline" onClick={back}>
                 Back
               </Button>
             ) : null}
-            <Button disabled={!canAdvance} onClick={advance}>
+            <Button
+              disabled={!canAdvance}
+              title={canAdvance ? undefined : 'Tick the acknowledgment to continue.'}
+              onClick={advance}
+            >
               {step === 'finish' ? 'Open workspace' : 'Continue'}
               <ArrowRight data-icon="inline-end" />
             </Button>

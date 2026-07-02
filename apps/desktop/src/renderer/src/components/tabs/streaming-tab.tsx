@@ -1701,13 +1701,15 @@ function StreamingReadiness({
   const compatibilityHint = true4kStreamActive
     ? ' · keep 4K on YouTube and companions stream-safe'
     : ' · choose stream-safe 1080p'
+  // F-025: neutral fact labels — the ok flag and detail carry the verdict, so
+  // the label can't contradict a warning icon.
   const outputCompatibilityLabel = true4kStreamActive
     ? mixedDestinationOutputs
-      ? 'Mixed stream outputs compatible'
-      : 'YouTube 4K stream compatible'
+      ? 'Mixed stream outputs'
+      : 'YouTube 4K stream'
     : splitOutputActive
-      ? 'Stream output compatible'
-      : 'Output preset compatible'
+      ? 'Stream output'
+      : 'Output preset'
   const outputCompatibilityDetail =
     targetOutputs.length > 1
       ? `${formatTargetOutputSummary(targetOutputs)}${presetOk ? '' : compatibilityHint}`
@@ -1727,7 +1729,7 @@ function StreamingReadiness({
         detail={
           enabled.length ? `${readyCount}/${enabled.length} ready` : 'No destinations enabled'
         }
-        label="Destination credentials saved"
+        label="Destinations ready"
         ok={allReady}
       />
       {showRecordingOutput ? (
@@ -1763,7 +1765,7 @@ function StreamingReadiness({
             : 'YouTube 4K30 uses normal latency. Keep stable upload comfortably above 30 Mbps.'
           : splitOutputActive
             ? 'Recording and livestreaming use separate output encoders; the stream leg stays platform-safe for every destination.'
-            : 'v1 streams the same encode to every destination via FFmpeg, so the bitrate is capped by the strictest platform (Twitch ~6000 kbps).'}
+            : 'All destinations share one encode, so the bitrate is capped by the strictest platform (Twitch ~6000 kbps).'}
       </p>
     </PanelSection>
   )

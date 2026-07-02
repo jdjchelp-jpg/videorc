@@ -77,10 +77,14 @@ function SessionRow({
 }): ReactElement {
   const { openSessionCommentsWindow } = useStudio()
   const filePath = session.mp4Path ?? session.outputPath ?? null
+  // "tee" is the internal ffmpeg fan-out container for record+stream sessions
+  // (F-019) — show the user what the file actually is instead.
   const format = session.mp4Path
     ? 'MP4'
     : session.container
-      ? session.container.toUpperCase()
+      ? session.container.toLowerCase() === 'tee'
+        ? 'MKV + stream'
+        : session.container.toUpperCase()
       : null
 
   return (

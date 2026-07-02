@@ -4773,6 +4773,10 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
   const runAiWorkflow = useCallback(
     async (sessionId: string) => {
       if (!client) {
+        // F-023: this used to be a silent no-op — the button appeared dead.
+        toast.error('AI workflow', {
+          description: 'Backend is not connected — try again in a moment.'
+        })
         return
       }
       if (aiConsent && !currentCloudAiReadiness.ready) {
