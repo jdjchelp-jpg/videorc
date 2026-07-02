@@ -510,6 +510,17 @@ pub async fn start_session(
     } else {
         None
     };
+    // Remember this session's caption styling for the post-recording burned
+    // copy (defaults when captions params are absent).
+    {
+        let captions_params = params.captions.clone().unwrap_or_default();
+        crate::captions::set_caption_session_style(
+            &state,
+            captions_params.position,
+            captions_params.text_size,
+        )
+        .await;
+    }
     // Burn-in needs a stream leg it can own: the auxiliary render (record +
     // stream) or the primary render (stream-only). Outside those shapes the
     // captions stay UI-only — say so instead of silently skipping pixels.
@@ -2400,14 +2411,24 @@ async fn monitor_session(
             // the hot path. The recording is already marked complete; the gate only ever
             // replaces the visible file with a validated better version, keeping a backup.
             if let Some(final_path) = mp4_path.clone().or(output_path.clone()) {
-                // Aligned captions (burn-in plan B2): drain this session's live
-                // caption chunks into an .srt sidecar next to the recording.
-                let _ = crate::captions::write_caption_artifacts(
+                // Aligned captions (burn-in plan B2/B3): drain this session's
+                // live caption chunks into an .srt sidecar, then queue the
+                // idle-time captioned copy from the same chunks.
+                let caption_chunks = crate::captions::write_caption_artifacts(
                     &state,
                     &gate_session_id,
                     &final_path,
                 )
                 .await;
+                if !caption_chunks.is_empty() {
+                    crate::captions::enqueue_caption_burn(
+                        state.clone(),
+                        gate_session_id.clone(),
+                        monitored_recording.ffmpeg_path.clone(),
+                        final_path.clone(),
+                        caption_chunks,
+                    );
+                }
                 enqueue_post_recording_gate(
                     state.clone(),
                     gate_session_id,
@@ -9911,6 +9932,7 @@ mod tests {
 
         params.captions = Some(crate::protocol::CaptionsSessionParams {
             burn_in_enabled: true,
+            ..Default::default()
         });
         let with_burn_in = recording_compositor_stream_output(
             &params,

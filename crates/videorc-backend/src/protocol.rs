@@ -746,12 +746,17 @@ pub struct StartSessionParams {
 }
 
 /// Live-caption burn-in intent for this session (the bar itself arrives via
-/// captions.overlay.set; this only shapes output legs — see burn-in plan A0).
+/// captions.overlay.set; this shapes output legs — see burn-in plan A0 — and
+/// styles the post-recording captioned copy).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct CaptionsSessionParams {
     #[serde(default)]
     pub burn_in_enabled: bool,
+    #[serde(default)]
+    pub position: crate::captions::CaptionOverlayPosition,
+    #[serde(default)]
+    pub text_size: crate::captions::CaptionTextSize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

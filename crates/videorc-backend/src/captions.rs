@@ -142,10 +142,10 @@ pub fn caption_anchor_should_reset(last_timestamp: Option<u64>, current: u64) ->
     last_timestamp.is_some_and(|last| current < last)
 }
 
-/// Render chunk records as SubRip: one cue per chunk, timed by the chunk's
-/// word segments when present (falling back to the chunk window), clamped so
-/// consecutive cues never overlap.
-pub fn render_srt(chunks: &[CaptionChunkRecord]) -> String {
+/// Absolute cue windows (start, end, text) shared by the SRT and ASS
+/// renderers: cue per chunk, timed by word segments (chunk-window fallback),
+/// sorted, ends clamped to the next cue so captions never stack.
+fn caption_cues(chunks: &[CaptionChunkRecord]) -> Vec<(f64, f64, String)> {
     let mut cues = Vec::with_capacity(chunks.len());
     for chunk in chunks {
         let text = chunk.text.trim();
@@ -156,16 +156,19 @@ pub fn render_srt(chunks: &[CaptionChunkRecord]) -> String {
         cues.push((start, end, text.to_string()));
     }
     cues.sort_by(|left, right| left.0.total_cmp(&right.0));
-    // Clamp cue ends to the next cue's start so players never stack captions.
     for index in 0..cues.len().saturating_sub(1) {
         let next_start = cues[index + 1].0;
         if cues[index].1 > next_start {
             cues[index].1 = next_start;
         }
     }
+    cues
+}
 
+/// Render chunk records as SubRip.
+pub fn render_srt(chunks: &[CaptionChunkRecord]) -> String {
     let mut srt = String::new();
-    for (index, (start, end, text)) in cues.iter().enumerate() {
+    for (index, (start, end, text)) in caption_cues(chunks).iter().enumerate() {
         srt.push_str(&format!(
             "{}\n{} --> {}\n{}\n\n",
             index + 1,
@@ -175,6 +178,101 @@ pub fn render_srt(chunks: &[CaptionChunkRecord]) -> String {
         ));
     }
     srt
+}
+
+/// Caption text size for the burned copy (mirrors the renderer knob).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CaptionTextSize {
+    S,
+    #[default]
+    M,
+    L,
+}
+
+/// ASS is authored against a fixed reference resolution; libass scales it to
+/// the actual video, so sizes stay consistent at any output.
+const ASS_PLAY_RES_X: u32 = 1920;
+const ASS_PLAY_RES_Y: u32 = 1080;
+
+/// Render chunk records as an ASS track with glass-adjacent styling:
+/// translucent charcoal opaque-box, near-white text, bottom/top center per the
+/// position knob (square corners — the ASS limit accepted in grilling Q6).
+pub fn render_ass(
+    chunks: &[CaptionChunkRecord],
+    position: CaptionOverlayPosition,
+    text_size: CaptionTextSize,
+) -> String {
+    let cues = caption_cues(chunks);
+    let size_factor = match text_size {
+        CaptionTextSize::S => 0.8,
+        CaptionTextSize::M => 1.0,
+        CaptionTextSize::L => 1.25,
+    };
+    let font_size = ((f64::from(ASS_PLAY_RES_X) / 38.0) * size_factor).round() as u32;
+    let alignment = match position {
+        CaptionOverlayPosition::Bottom => 2, // bottom-center
+        CaptionOverlayPosition::Top => 8,    // top-center
+    };
+    let margin_v = (f64::from(ASS_PLAY_RES_Y) * 0.04).round() as u32;
+
+    let mut ass = format!(
+        "[Script Info]\n\
+         ScriptType: v4.00+\n\
+         PlayResX: {ASS_PLAY_RES_X}\n\
+         PlayResY: {ASS_PLAY_RES_Y}\n\
+         WrapStyle: 0\n\
+         ScaledBorderAndShadow: yes\n\
+         \n\
+         [V4+ Styles]\n\
+         Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n\
+         Style: VideorcCaptions,Helvetica,{font_size},&H00F5F4F4,&H00F5F4F4,&H261F1C1C,&H261F1C1C,0,0,0,0,100,100,0,0,3,10,0,{alignment},60,60,{margin_v},1\n\
+         \n\
+         [Events]\n\
+         Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+    );
+    for (start, end, text) in &cues {
+        let escaped = text.replace('\n', "\\N").replace('{', "(").replace('}', ")");
+        ass.push_str(&format!(
+            "Dialogue: 0,{},{},VideorcCaptions,,0,0,0,,{}\n",
+            format_ass_timestamp(*start),
+            format_ass_timestamp((*end).max(*start + 0.01)),
+            escaped
+        ));
+    }
+    ass
+}
+
+fn format_ass_timestamp(seconds: f64) -> String {
+    let clamped = seconds.max(0.0);
+    let total_centis = (clamped * 100.0).round() as u64;
+    let hours = total_centis / 360_000;
+    let minutes = (total_centis % 360_000) / 6_000;
+    let secs = (total_centis % 6_000) / 100;
+    let centis = total_centis % 100;
+    format!("{hours}:{minutes:02}:{secs:02}.{centis:02}")
+}
+
+/// `Recording.mp4` → `Recording (captioned).mp4`.
+pub fn captioned_copy_path(recording: &std::path::Path) -> std::path::PathBuf {
+    let stem = recording
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("recording");
+    let extension = recording
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("mp4");
+    recording.with_file_name(format!("{stem} (captioned).{extension}"))
+}
+
+/// Escape a path for use inside an ffmpeg filter argument (ass=...).
+fn escape_ffmpeg_filter_path(path: &std::path::Path) -> String {
+    path.display()
+        .to_string()
+        .replace('\\', "\\\\")
+        .replace(':', "\\:")
+        .replace('\'', "\\'")
 }
 
 fn chunk_cue_window(chunk: &CaptionChunkRecord) -> (f64, f64) {
@@ -247,6 +345,113 @@ pub async fn write_caption_artifacts(
     chunks
 }
 
+/// Burn the aligned captions into a `(captioned)` copy of the recording via
+/// the idle-aware ffmpeg coordinator (same family as the repair gates). The
+/// original file is never touched; any failure degrades to SRT-only with a
+/// health warning. Not restart-resumable (v1): if the app quits mid-encode,
+/// the copy is simply absent while the .srt remains.
+pub fn enqueue_caption_burn(
+    state: AppState,
+    session_id: String,
+    ffmpeg_path: String,
+    recording_path: std::path::PathBuf,
+    chunks: Vec<CaptionChunkRecord>,
+) {
+    tokio::spawn(async move {
+        let (position, text_size) = state.captions.lock().await.style;
+        let ass = render_ass(&chunks, position, text_size);
+        if ass.is_empty() || !ass.contains("Dialogue:") {
+            return;
+        }
+        let ass_path = recording_path.with_extension("captions.ass");
+        if let Err(error) = tokio::fs::write(&ass_path, &ass).await {
+            let _ = crate::recording::emit_health_event(
+                &state,
+                Some(&session_id),
+                crate::protocol::HealthLevel::Warn,
+                "captions-burn-failed",
+                &format!("Could not write the captions track: {error}"),
+            );
+            return;
+        }
+
+        // Wait out the same idle window as the quality gates, then hold the
+        // maintenance permit so the encode never competes with a capture.
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        let maintenance = state.ffmpeg_work.begin_maintenance_when_idle().await;
+        let cancel = maintenance.cancel_token();
+        let output_path = captioned_copy_path(&recording_path);
+        state.emit_log(
+            "info",
+            format!("Burning captions into {}.", output_path.display()),
+        );
+
+        let filter = format!("ass={}", escape_ffmpeg_filter_path(&ass_path));
+        let spawned = tokio::process::Command::new(&ffmpeg_path)
+            .arg("-y")
+            .arg("-i")
+            .arg(&recording_path)
+            .arg("-vf")
+            .arg(&filter)
+            .arg("-c:a")
+            .arg("copy")
+            .arg(&output_path)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        let mut child = match spawned {
+            Ok(child) => child,
+            Err(error) => {
+                let _ = crate::recording::emit_health_event(
+                    &state,
+                    Some(&session_id),
+                    crate::protocol::HealthLevel::Warn,
+                    "captions-burn-failed",
+                    &format!("Could not start ffmpeg for the captioned copy: {error}"),
+                );
+                return;
+            }
+        };
+
+        let outcome = loop {
+            if cancel.is_cancelled() {
+                let _ = child.kill().await;
+                break Err("capture started; captioned copy cancelled".to_string());
+            }
+            match child.try_wait() {
+                Ok(Some(status)) if status.success() => break Ok(()),
+                Ok(Some(status)) => break Err(format!("ffmpeg exited with {status}")),
+                Ok(None) => tokio::time::sleep(std::time::Duration::from_millis(250)).await,
+                Err(error) => break Err(format!("could not wait for ffmpeg: {error}")),
+            }
+        };
+
+        match outcome {
+            Ok(()) => {
+                let _ = tokio::fs::remove_file(&ass_path).await;
+                let _ = crate::recording::emit_health_event(
+                    &state,
+                    Some(&session_id),
+                    crate::protocol::HealthLevel::Info,
+                    "captions-burned-copy-ready",
+                    &format!("Captioned copy saved to {}.", output_path.display()),
+                );
+            }
+            Err(reason) => {
+                let _ = tokio::fs::remove_file(&output_path).await;
+                let _ = crate::recording::emit_health_event(
+                    &state,
+                    Some(&session_id),
+                    crate::protocol::HealthLevel::Warn,
+                    "captions-burn-failed",
+                    &format!("Captioned copy was not created ({reason}); the .srt sidecar is still available."),
+                );
+            }
+        }
+    });
+}
+
 // ---------------------------------------------------------------------------
 // Burn-in overlay: a pre-rendered caption bar (RGBA) the compositor composites
 // into the STREAM leg. Session-transient — set/cleared by the renderer as
@@ -262,10 +467,11 @@ const OVERLAY_MAX_WIDTH: u32 = 4096;
 const OVERLAY_MAX_HEIGHT: u32 = 2048;
 const OVERLAY_MAX_ENCODED_BYTES: usize = 4 * 1024 * 1024;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum CaptionOverlayPosition {
     Top,
+    #[default]
     Bottom,
 }
 
@@ -408,6 +614,17 @@ pub struct CaptionsCoordinator {
     /// Transcribed chunks awaiting the post-recording pass (drained at
     /// session stop; cleared when a new capture pipeline starts).
     chunks: Vec<CaptionChunkRecord>,
+    /// Styling knobs captured at session start for the burned copy.
+    style: (CaptionOverlayPosition, CaptionTextSize),
+}
+
+/// Stash the caption style for this session (used by the burned copy's ASS).
+pub async fn set_caption_session_style(
+    state: &AppState,
+    position: CaptionOverlayPosition,
+    text_size: CaptionTextSize,
+) {
+    state.captions.lock().await.style = (position, text_size);
 }
 
 pub type CaptionsSlot = Arc<Mutex<CaptionsCoordinator>>;
@@ -744,6 +961,50 @@ mod tests {
     fn srt_skips_empty_chunks_entirely() {
         assert_eq!(render_srt(&[chunk(1, 0.0, "   ", &[])]), "");
         assert_eq!(render_srt(&[]), "");
+    }
+
+    #[test]
+    fn ass_renders_glass_adjacent_style_with_knobs() {
+        let ass = render_ass(
+            &[chunk(1, 3.0, "Hello viewers", &[("Hello", 0.1, 0.5), ("viewers", 0.6, 1.2)])],
+            CaptionOverlayPosition::Top,
+            CaptionTextSize::L,
+        );
+        assert!(ass.contains("PlayResX: 1920"));
+        // L size = round(1920/38 * 1.25) = 63; top-center alignment = 8.
+        assert!(ass.contains(",63,&H00F5F4F4,"));
+        assert!(ass.contains(",8,60,60,43,1"));
+        assert!(ass.contains("Dialogue: 0,0:00:03.10,0:00:04.20,VideorcCaptions,,0,0,0,,Hello viewers"));
+
+        let bottom = render_ass(&[chunk(1, 0.0, "hi", &[])], CaptionOverlayPosition::Bottom, CaptionTextSize::M);
+        assert!(bottom.contains(",2,60,60,43,1"));
+        assert!(bottom.contains("Dialogue: 0,0:00:00.00,0:00:03.00,"));
+    }
+
+    #[test]
+    fn ass_escapes_override_braces_and_newlines() {
+        let ass = render_ass(
+            &[chunk(1, 0.0, "{\\b1}bold\nnext", &[])],
+            CaptionOverlayPosition::Bottom,
+            CaptionTextSize::M,
+        );
+        assert!(ass.contains(",,(\\b1)bold\\Nnext\n"));
+    }
+
+    #[test]
+    fn captioned_copy_path_appends_suffix() {
+        assert_eq!(
+            captioned_copy_path(std::path::Path::new("/tmp/Recording 12.mp4")),
+            std::path::PathBuf::from("/tmp/Recording 12 (captioned).mp4")
+        );
+    }
+
+    #[test]
+    fn ffmpeg_filter_path_escaping_covers_specials() {
+        assert_eq!(
+            escape_ffmpeg_filter_path(std::path::Path::new("/a:b/c'd.ass")),
+            "/a\\:b/c\\'d.ass"
+        );
     }
 
     #[test]

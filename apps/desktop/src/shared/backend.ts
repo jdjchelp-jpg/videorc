@@ -881,9 +881,12 @@ export interface StartSessionParams {
   captions?: CaptionsSessionParams
 }
 
-/** Burn-in intent for the session (shapes output legs; see burn-in plan A0). */
+/** Burn-in intent for the session (shapes output legs; see burn-in plan A0)
+ *  plus the styling the post-recording captioned copy uses. */
 export interface CaptionsSessionParams {
   burnInEnabled: boolean
+  position?: 'top' | 'bottom'
+  textSize?: 's' | 'm' | 'l'
 }
 
 export interface AudioSettings {
