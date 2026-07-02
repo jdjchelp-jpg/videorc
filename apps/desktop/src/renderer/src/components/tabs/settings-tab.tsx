@@ -1,45 +1,43 @@
 import {
   ArrowClockwise,
+  Broadcast,
   Bug,
   CaretDown,
   CheckCircle,
   CircleNotch,
   Database,
   DownloadSimple,
+  FilmSlate,
   FolderOpen,
   GearSix,
   LockKey,
+  PaintBrush,
   Sparkle,
   Warning
 } from '@phosphor-icons/react'
 import { useTheme } from 'next-themes'
 import type { ReactElement } from 'react'
 
+import { NavigableRow } from '@/components/navigable-row'
 import { ConfigGrid } from '@/components/page'
 import { PanelSection } from '@/components/panel-section'
-import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
-import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui/field'
+import { Field, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
-import {
-  Select,
-  SelectContent,
-  SelectGroup,
-  SelectItem,
-  SelectTrigger,
-  SelectValue
-} from '@/components/ui/select'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
-import { VideoPresetSelectItems } from '@/components/video-preset-select-items'
+import { useWorkspaceNav } from '@/components/workspace-nav'
 import { useStudio } from '@/hooks/use-studio'
 import { useUpdater } from '@/hooks/use-updater'
-import type { RtmpPreset, SystemPermissionPane, UpdateStatus, VideoPreset } from '@/lib/backend'
-import { videoProfileEntitlementGate } from '@/lib/entitlement-ui'
+import type { SystemPermissionPane, UpdateStatus } from '@/lib/backend'
 import { isActiveRecordingState } from '@/lib/format'
-import { VIDEORC_PREMIUM_URL } from '@/lib/premium-upgrade'
+import { recordingQuality, streamingSummary } from '@/lib/studio-session-view'
 import { isUpdateInstallable } from '@/lib/update-ui'
 
+// ST1 (UX rework): Settings holds app-level facts and tools only. Session
+// capture settings have ONE home each (Output ⌘6, Livestream ⌘5) — the rows
+// below NAVIGATE there instead of duplicating the controls, which is what the
+// old "Defaults" selects did (they edited the live captureConfig).
 export function SettingsTab({
   onResetOnboarding,
   onShowWhatsNew
@@ -52,22 +50,12 @@ export function SettingsTab({
     setSettings,
     health,
     captureConfig,
-    applyVideoPreset,
-    applyRtmpPreset,
     openSystemPermission,
-    entitlements,
     exportSupportBundle,
     supportBundleExportPending
   } = useStudio()
+  const { openStudioPanel } = useWorkspaceNav()
   const { theme, setTheme } = useTheme()
-  const defaultProfileGate = videoProfileEntitlementGate({
-    entitlements,
-    kind: 'recording',
-    video: captureConfig.video
-  })
-  const defaultProfileEntitlementMessage = defaultProfileGate.allowed
-    ? null
-    : defaultProfileGate.reason
 
   const locateFfmpeg = async (): Promise<void> => {
     const path = await window.videorc?.pickFile?.()
@@ -79,9 +67,9 @@ export function SettingsTab({
   return (
     <ConfigGrid>
       <PanelSection
-        description="Where recordings are written and which FFmpeg binary is used."
+        description="Where recordings are written and what new sessions use."
         icon={GearSix}
-        title="Storage & tools"
+        title="Recording & storage"
       >
         <FieldGroup>
           <Field>
@@ -96,6 +84,21 @@ export function SettingsTab({
             />
           </Field>
         </FieldGroup>
+
+        <div className="flex flex-col gap-0.5">
+          <NavigableRow
+            icon={FilmSlate}
+            label="Recording preset"
+            value={recordingQuality(captureConfig.video)}
+            onNavigate={() => openStudioPanel('recording')}
+          />
+          <NavigableRow
+            icon={Broadcast}
+            label="Stream destinations"
+            value={streamingSummary(captureConfig.streamEnabled, captureConfig.streaming.targets)}
+            onNavigate={() => openStudioPanel('live')}
+          />
+        </div>
 
         {/* FFmpeg ships bundled with the packaged app, so normal users never set
             a path. Show a quiet status; surface a friendly, actionable card only
@@ -115,7 +118,7 @@ export function SettingsTab({
             </div>
             <p className="text-xs text-muted-foreground">
               {import.meta.env.DEV
-                ? 'For local development, install it with “brew install ffmpeg” — or locate an existing binary.'
+                ? 'For local development, install it with \u201cbrew install ffmpeg\u201d \u2014 or locate an existing binary.'
                 : 'FFmpeg ships with Videorc, so this usually means the install is damaged. Reinstall Videorc, or locate the binary manually.'}
             </p>
             <Button
@@ -125,11 +128,11 @@ export function SettingsTab({
               onClick={() => void locateFfmpeg()}
             >
               <FolderOpen data-icon="inline-start" />
-              Locate FFmpeg…
+              Locate FFmpeg\u2026
             </Button>
           </div>
         ) : (
-          <p className="text-xs text-muted-foreground">Checking for FFmpeg…</p>
+          <p className="text-xs text-muted-foreground">Checking for FFmpeg\u2026</p>
         )}
 
         <Collapsible>
@@ -137,7 +140,7 @@ export function SettingsTab({
             <CaretDown className="size-3.5 shrink-0 transition-transform group-data-[state=open]:rotate-180" />
             <span>Advanced</span>
           </CollapsibleTrigger>
-          <CollapsibleContent className="pt-2">
+          <CollapsibleContent className="flex flex-col gap-3 pt-2">
             <Field>
               <FieldLabel htmlFor="ffmpeg-path">FFmpeg path override</FieldLabel>
               <Input
@@ -148,91 +151,59 @@ export function SettingsTab({
                   setSettings((current) => ({ ...current, ffmpegPath: event.target.value }))
                 }
               />
-              <FieldDescription>
-                Leave blank to use the FFmpeg that ships with Videorc. Set a path only to point at a
-                custom build.
-              </FieldDescription>
             </Field>
+            <div className="flex items-center gap-2 rounded-row border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+              <Database className="size-4 shrink-0" weight="duotone" />
+              <span className="truncate">{health?.databasePath ?? 'Waiting for SQLite path.'}</span>
+            </div>
           </CollapsibleContent>
         </Collapsible>
-        <div className="flex items-center gap-2 rounded-row border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-          <Database className="size-4 shrink-0" weight="duotone" />
-          <span className="truncate">{health?.databasePath ?? 'Waiting for SQLite path.'}</span>
+      </PanelSection>
+
+      <PanelSection
+        description="Open the macOS panes used by screen, camera, and microphone capture."
+        icon={LockKey}
+        title="System access"
+      >
+        <div className="flex flex-wrap gap-2">
+          {PERMISSION_SHORTCUTS.map((shortcut) => (
+            <Button
+              key={shortcut.pane}
+              size="sm"
+              variant="outline"
+              onClick={() => void openSystemPermission(shortcut.pane)}
+            >
+              {shortcut.label}
+            </Button>
+          ))}
         </div>
       </PanelSection>
 
       <PanelSection
-        description="Defaults applied to new capture sessions."
-        icon={GearSix}
-        title="Defaults"
+        description="How Videorc looks and behaves on this Mac."
+        icon={PaintBrush}
+        title="Appearance & behavior"
       >
-        <FieldGroup>
-          <Field>
-            <FieldLabel htmlFor="default-preset">Default recording preset</FieldLabel>
-            <Select
-              value={captureConfig.video.preset}
-              onValueChange={(value) =>
-                applyVideoPreset(value as VideoPreset, { kind: 'recording' })
-              }
-            >
-              <SelectTrigger className="w-full" id="default-preset">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <VideoPresetSelectItems entitlements={entitlements} kind="recording" />
-              </SelectContent>
-            </Select>
-            {defaultProfileEntitlementMessage ? (
-              <Alert variant="warning">
-                <Warning className="size-4" weight="fill" />
-                <AlertDescription className="flex flex-wrap items-center gap-2">
-                  <span>{defaultProfileEntitlementMessage}</span>
-                  {!defaultProfileGate.allowed && defaultProfileGate.upgradeUrl ? (
-                    <Button
-                      size="xs"
-                      variant="outline"
-                      onClick={() => openExternalUrl(VIDEORC_PREMIUM_URL)}
-                    >
-                      View Premium
-                    </Button>
-                  ) : null}
-                </AlertDescription>
-              </Alert>
-            ) : null}
-          </Field>
-          <Field>
-            <FieldLabel htmlFor="default-rtmp">Default RTMP preset</FieldLabel>
-            <Select
-              value={captureConfig.rtmpPreset}
-              onValueChange={(value) => applyRtmpPreset(value as RtmpPreset)}
-            >
-              <SelectTrigger className="w-full" id="default-rtmp">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectGroup>
-                  <SelectItem value="youtube">YouTube</SelectItem>
-                  <SelectItem value="twitch">Twitch</SelectItem>
-                  <SelectItem value="x">X / Twitter</SelectItem>
-                  <SelectItem value="custom">Custom RTMP</SelectItem>
-                </SelectGroup>
-              </SelectContent>
-            </Select>
-          </Field>
-          <Field>
-            <FieldLabel>Theme</FieldLabel>
-            <ToggleGroup
-              type="single"
-              value={theme ?? 'system'}
-              variant="outline"
-              onValueChange={(value) => value && setTheme(value)}
-            >
-              <ToggleGroupItem value="light">Light</ToggleGroupItem>
-              <ToggleGroupItem value="dark">Dark</ToggleGroupItem>
-              <ToggleGroupItem value="system">System</ToggleGroupItem>
-            </ToggleGroup>
-          </Field>
-        </FieldGroup>
+        <Field>
+          <FieldLabel>Theme</FieldLabel>
+          <ToggleGroup
+            type="single"
+            value={theme ?? 'system'}
+            variant="outline"
+            onValueChange={(value) => value && setTheme(value)}
+          >
+            <ToggleGroupItem value="light">Light</ToggleGroupItem>
+            <ToggleGroupItem value="dark">Dark</ToggleGroupItem>
+            <ToggleGroupItem value="system">System</ToggleGroupItem>
+          </ToggleGroup>
+        </Field>
+      </PanelSection>
+
+      <PanelSection
+        description="Get help, report a problem, or replay the first-run tour."
+        icon={Bug}
+        title="Support"
+      >
         <div className="flex flex-col gap-2">
           <div className="flex flex-wrap gap-2">
             <Button size="sm" variant="outline" onClick={onResetOnboarding}>
@@ -246,33 +217,13 @@ export function SettingsTab({
               onClick={() => void exportSupportBundle()}
             >
               <Bug data-icon="inline-start" />
-              {supportBundleExportPending ? 'Exporting…' : 'Export support bundle'}
+              {supportBundleExportPending ? 'Exporting\u2026' : 'Export support bundle'}
             </Button>
           </div>
           <p className="text-xs text-muted-foreground">
             Reporting a problem? Export a support bundle (redacted logs + diagnostics) to share with
             us.
           </p>
-        </div>
-      </PanelSection>
-
-      <PanelSection
-        className="lg:col-span-2"
-        description="Open the macOS panes used by screen, camera, and microphone capture."
-        icon={LockKey}
-        title="Permissions"
-      >
-        <div className="flex flex-wrap gap-2">
-          {PERMISSION_SHORTCUTS.map((shortcut) => (
-            <Button
-              key={shortcut.pane}
-              size="sm"
-              variant="outline"
-              onClick={() => void openSystemPermission(shortcut.pane)}
-            >
-              {shortcut.label}
-            </Button>
-          ))}
         </div>
       </PanelSection>
 
@@ -422,16 +373,6 @@ function UpdateControl({
         </Button>
       )
   }
-}
-
-function openExternalUrl(url: string): void {
-  const opener = window.videorc?.openOAuthUrl
-  if (opener) {
-    void opener(url)
-    return
-  }
-
-  window.open(url, '_blank', 'noopener,noreferrer')
 }
 
 const PERMISSION_SHORTCUTS: Array<{ label: string; pane: SystemPermissionPane }> = [
