@@ -1,10 +1,17 @@
-import { VideoCamera, Warning } from '@phosphor-icons/react'
+import { ArrowSquareOut, PushPinSimple, VideoCamera, Warning } from '@phosphor-icons/react'
 import type { ReactElement } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
+import { useDockSlotReporter } from '@/hooks/use-dock-slot'
 import { useStudio } from '@/hooks/use-studio'
-import type { PreviewLiveStatus, PreviewSupervisorState, PreviewSurfaceStatus } from '@/lib/backend'
+import type {
+  DockHiddenReason,
+  PreviewLiveStatus,
+  PreviewSupervisorState,
+  PreviewSurfaceStatus,
+  PreviewWindowState
+} from '@/lib/backend'
 import { cn } from '@/lib/utils'
 
 type PreviewStageProps = {
@@ -24,8 +31,38 @@ export function PreviewStage({
   onOpenPermissions,
   className
 }: PreviewStageProps): ReactElement {
-  const { previewWindow, openPreviewWindow, closePreviewWindow, setPreviewWindowAlwaysOnTop } =
-    useStudio()
+  const {
+    previewWindow,
+    openPreviewWindow,
+    closePreviewWindow,
+    setPreviewWindowAlwaysOnTop,
+    setPreviewWindowMode,
+    captureConfig
+  } = useStudio()
+
+  const docked =
+    nativePreviewSurfaceEnabled && previewWindow.open && previewWindow.mode === 'docked'
+  // The reporter is active exactly while the docked frame is on screen; its
+  // cleanup tells main the slot unmounted (tab switch, undock, close).
+  const slotRef = useDockSlotReporter(docked, previewWindow.dockEpoch)
+
+  if (docked) {
+    return (
+      <DockedPreviewFrame
+        aspect={{
+          width: captureConfig.video.width,
+          height: captureConfig.video.height
+        }}
+        className={className}
+        previewSurfaceStatus={previewSurfaceStatus}
+        previewWindow={previewWindow}
+        slotRef={slotRef}
+        onClose={() => void closePreviewWindow()}
+        onOpenPermissions={onOpenPermissions}
+        onPopOut={() => void setPreviewWindowMode('floating')}
+      />
+    )
+  }
 
   return (
     <DetachedPreviewCard
@@ -41,8 +78,122 @@ export function PreviewStage({
       onOpen={() => void openPreviewWindow()}
       onOpenPermissions={onOpenPermissions}
       onRetry={onRetry}
+      onStick={() => void setPreviewWindowMode('docked')}
     />
   )
+}
+
+// Docked ("stick") mode: the native preview surface floats glued over the slot
+// below, so this frame is what shows through when the surface is hidden — it
+// must always state WHY (dockHiddenReason / supervisor copy), never sit blank.
+function DockedPreviewFrame({
+  previewWindow,
+  previewSurfaceStatus,
+  aspect,
+  slotRef,
+  onPopOut,
+  onClose,
+  onOpenPermissions,
+  className
+}: {
+  previewWindow: PreviewWindowState
+  previewSurfaceStatus?: PreviewSurfaceStatus
+  aspect: { width: number; height: number }
+  slotRef: (element: HTMLElement | null) => void
+  onPopOut: () => void
+  onClose: () => void
+  onOpenPermissions?: () => void
+  className?: string
+}): ReactElement {
+  const supervisor = previewWindow.supervisor
+  const hidden = dockHiddenDisplay(previewWindow.dockHiddenReason)
+  const status = hidden ?? {
+    title: previewSupervisorDisplay(true, supervisor, previewSurfaceStatus).title,
+    detail: previewSupervisorDisplay(true, supervisor, previewSurfaceStatus).detail
+  }
+  const transportLabel = previewTransportLabel(supervisor.transport, supervisor.backing)
+  const showPermissionAction = supervisor.lifecycleState === 'permission-required'
+  const aspectRatio =
+    aspect.width > 0 && aspect.height > 0 ? `${aspect.width} / ${aspect.height}` : '16 / 9'
+
+  return (
+    <div
+      className={cn('flex w-full flex-col overflow-hidden rounded-panel border', className)}
+      data-videorc-preview-card
+      data-videorc-preview-docked
+    >
+      {/* The slot the native surface covers. Solid charcoal (it frames video,
+          matching the preview window's own base) and output-aspect-locked so
+          the surface can never be squeezed. */}
+      <div
+        ref={slotRef}
+        className="relative w-full bg-[#0D0D0F]"
+        data-videorc-dock-slot
+        style={{ aspectRatio }}
+      >
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 px-6 text-center">
+          <VideoCamera className="size-8 text-muted-foreground" weight="duotone" />
+          <span className="text-sm font-medium text-[#F4F4F5]">{status.title}</span>
+          <span className="text-xs text-[#A1A1AA]">{status.detail}</span>
+        </div>
+      </div>
+      <div className="flex items-center justify-between gap-2 border-t px-3 py-1.5">
+        <span className="text-xs text-muted-foreground">
+          {transportLabel ?? 'Preview docked in the app'}
+        </span>
+        <div className="flex items-center gap-1">
+          {showPermissionAction && onOpenPermissions ? (
+            <Button size="sm" variant="outline" onClick={onOpenPermissions}>
+              Open permissions
+            </Button>
+          ) : null}
+          <Button
+            data-videorc-preview-pop-out
+            size="sm"
+            title="Pop the preview out into its own window"
+            variant="ghost"
+            onClick={onPopOut}
+          >
+            <ArrowSquareOut className="size-4" />
+            Pop out
+          </Button>
+          <Button size="sm" variant="ghost" onClick={onClose}>
+            Close
+          </Button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function dockHiddenDisplay(
+  reason: DockHiddenReason | null
+): { title: string; detail: string } | null {
+  switch (reason) {
+    case 'no-slot-report':
+      return { title: 'Placing preview', detail: 'Sticking the preview into this panel.' }
+    case 'overlay-open':
+      return {
+        title: 'Preview paused behind dialog',
+        detail: 'It returns as soon as the dialog closes.'
+      }
+    case 'scrolled-away':
+      return {
+        title: 'Preview hidden while scrolled away',
+        detail: 'Scroll the panel fully into view to see it again.'
+      }
+    case 'main-window-fullscreen':
+      return {
+        title: 'Preview hidden in fullscreen',
+        detail: 'Pop the preview out to watch it in fullscreen.'
+      }
+    // The two remaining reasons cannot be on screen at the same time as this
+    // card (the tab or the window itself is gone).
+    case 'slot-unmounted':
+    case 'main-window-hidden':
+    case null:
+      return null
+  }
 }
 
 function DetachedPreviewCard({
@@ -55,6 +206,7 @@ function DetachedPreviewCard({
   onAlwaysOnTopChange,
   onOpen,
   onClose,
+  onStick,
   onRetry,
   onOpenPermissions,
   className
@@ -68,6 +220,7 @@ function DetachedPreviewCard({
   onAlwaysOnTopChange: (alwaysOnTop: boolean) => void
   onOpen: () => void
   onClose: () => void
+  onStick: () => void
   onRetry?: () => void
   onOpenPermissions?: () => void
   className?: string
@@ -119,6 +272,10 @@ function DetachedPreviewCard({
               <Button size="sm" variant="secondary" onClick={onOpen}>
                 Focus window
               </Button>
+              <Button data-videorc-preview-stick size="sm" variant="outline" onClick={onStick}>
+                <PushPinSimple className="size-4" />
+                Stick to app
+              </Button>
               <Button size="sm" variant="outline" onClick={onClose}>
                 Close preview
               </Button>
@@ -138,7 +295,7 @@ function DetachedPreviewCard({
             <div className="flex flex-col gap-1">
               <span className="text-sm font-medium">Preview lives in its own window</span>
               <span className="text-xs text-muted-foreground">
-                Open it to watch the program output.
+                Open it to watch the program output — or stick it into this panel.
               </span>
             </div>
             <Button data-videorc-open-preview-window size="sm" onClick={onOpen}>

@@ -1,4 +1,4 @@
-import { ArrowSquareOut, WarningCircle } from '@phosphor-icons/react'
+import { ArrowSquareOut, PushPinSimple, WarningCircle } from '@phosphor-icons/react'
 import { useEffect, useRef, useState, type ReactElement } from 'react'
 
 import { BlockingBanner } from '@/components/blocking-banner'
@@ -45,6 +45,8 @@ export function StudioTab(): ReactElement {
     refreshPreview,
     openPreviewPermissions,
     openPreviewWindow,
+    previewWindow,
+    setPreviewWindowMode,
     wsStatus,
     health,
     diagnosticStats,
@@ -202,16 +204,40 @@ export function StudioTab(): ReactElement {
                     tone={sessionStatusTone(recording.state, wsStatus)}
                     value={sessionStatusLabel(recording.state, wsStatus)}
                   />
-                  <Button
-                    aria-label="Open preview window"
-                    className="size-8"
-                    size="icon"
-                    title="Open preview in its own window"
-                    variant="ghost"
-                    onClick={() => void openPreviewWindow()}
-                  >
-                    <ArrowSquareOut className="size-4" />
-                  </Button>
+                  {previewWindow.open && previewWindow.mode === 'floating' ? (
+                    <Button
+                      aria-label="Stick preview into the app"
+                      className="size-8"
+                      size="icon"
+                      title="Stick the preview into this panel"
+                      variant="ghost"
+                      onClick={() => void setPreviewWindowMode('docked')}
+                    >
+                      <PushPinSimple className="size-4" />
+                    </Button>
+                  ) : previewWindow.open ? (
+                    <Button
+                      aria-label="Pop preview out into its own window"
+                      className="size-8"
+                      size="icon"
+                      title="Pop the preview out into its own window"
+                      variant="ghost"
+                      onClick={() => void setPreviewWindowMode('floating')}
+                    >
+                      <ArrowSquareOut className="size-4" />
+                    </Button>
+                  ) : (
+                    <Button
+                      aria-label="Open preview window"
+                      className="size-8"
+                      size="icon"
+                      title="Open preview in its own window"
+                      variant="ghost"
+                      onClick={() => void openPreviewWindow()}
+                    >
+                      <ArrowSquareOut className="size-4" />
+                    </Button>
+                  )}
                 </div>
               }
             >

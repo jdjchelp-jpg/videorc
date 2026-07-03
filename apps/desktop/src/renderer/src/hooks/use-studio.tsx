@@ -97,6 +97,7 @@ import type {
   PreviewSurfaceSceneUpdateParams,
   PreviewSurfaceStatus,
   PreviewSupervisorState,
+  PreviewWindowMode,
   PreviewWindowState,
   PreviewLiveStatus,
   PlatformAccount,
@@ -369,6 +370,7 @@ export type StudioContextValue = {
   previewWindow: PreviewWindowState
   openPreviewWindow: () => Promise<void>
   closePreviewWindow: () => Promise<void>
+  setPreviewWindowMode: (mode: PreviewWindowMode) => Promise<void>
   togglePreviewWindow: () => Promise<void>
   setPreviewWindowAlwaysOnTop: (alwaysOnTop: boolean) => Promise<void>
   notesWindow: NotesWindowState
@@ -3414,6 +3416,13 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     }
   }, [])
 
+  const setPreviewWindowMode = useCallback(async (mode: PreviewWindowMode) => {
+    const next = await window.videorc?.setPreviewWindowMode?.(mode)
+    if (next) {
+      setPreviewWindow(next)
+    }
+  }, [])
+
   // --- Detached Notes window ---------------------------------------------------
   // Internal only until the recording artifact smoke proves capture invisibility.
   const [notesWindow, setNotesWindow] = useState<NotesWindowState>(idleNotesWindowState)
@@ -5328,6 +5337,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       closePreviewWindow,
       togglePreviewWindow,
       setPreviewWindowAlwaysOnTop,
+      setPreviewWindowMode,
       notesWindow,
       openNotesWindow,
       closeNotesWindow,
@@ -5491,6 +5501,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       closePreviewWindow,
       togglePreviewWindow,
       setPreviewWindowAlwaysOnTop,
+      setPreviewWindowMode,
       notesWindow,
       openNotesWindow,
       closeNotesWindow,
