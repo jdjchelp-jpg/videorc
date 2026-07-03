@@ -5,9 +5,9 @@ description: Videorc's UI design language — a Raycast-style dark glass command
 
 # Videorc Design Language
 
-The single source of truth for how Videorc looks and feels. Every UI task follows this skill. The reference is a Raycast-style launcher: a floating, dark, translucent glass panel with crisp white typography, muted gray metadata, hairline structure, vivid rounded-square icons, and keyboard-first affordances.
+The single source of truth for how Videorc looks and feels. Every UI task follows this skill. The reference is the Videorc logo: a glossy BLACK-GLASS orb with chrome/silver detail and one LED-red accent — expressed as a Raycast-style command surface: floating translucent black-glass panels, crisp chrome typography, muted gray metadata, hairline structure, vivid rounded-square icons, and keyboard-first affordances. Light mode is the porcelain-white twin of the same structure.
 
-**Status: target, not current state.** The existing UI does NOT follow this language yet. A dedicated migration plan will convert it screen by screen. Until a task explicitly executes that migration, do not restyle existing screens ad hoc — apply this skill fully to NEW surfaces, and to existing ones only when the task says so.
+**Status: shipped.** The renderer was migrated to this language 2026-06-24 (17 slices) and retuned to the black-glass palette 2026-07-02 (`styles.css` is the implementation of the token table below; main-side data-URL windows mirror it via `src/main/window-palette.ts`). Do not restyle screens ad hoc — fix tokens, not components.
 
 ## Hard rules
 
@@ -18,22 +18,25 @@ The single source of truth for how Videorc looks and feels. Every UI task follow
 
 ## Tokens
 
-Express these as shadcn CSS variables (`--background`, `--foreground`, `--muted`, `--accent`, `--border`, `--radius`, …) in `globals.css`; values below are the design intent.
+Implemented as shadcn CSS variables in `apps/desktop/src/renderer/src/styles.css` (oklch; that file is the live source of truth). Main-process data-URL windows (Notes/Comments/Preview — dark-always, they frame video) mirror the solid values in `src/main/window-palette.ts`; change them together.
 
-Surfaces (dark · light)
-- Window/panel base, translucent over the OS blur material: dark `rgba(24,24,27,0.65)` · light `rgba(245,245,247,0.70)`. Solid fallback where blur is unavailable (nested popovers at `0.92`): dark `#1C1C1F` · light `#F5F5F7`.
+Surfaces (dark = black glass · light = porcelain)
+- Window/panel base, translucent over the wallpaper frost: dark `oklch(0.13 0.003 286 / 68%)` (solid `#0D0D0F`) · light `oklch(0.985 0.001 286 / 62%)` (solid `#FAFAFB`). Never pure #000 — it kills the glass depth. Card/popover float at 92%: dark `oklch(0.16)` (`#141417`) · light `#FFFFFF`.
 - Electron implementation note (bisected with scripts/ui-glass-bisect-probe.mjs): real backdrop blur is unreachable — NSVisualEffectView materials paint fully opaque through Electron on current macOS, and CSS `backdrop-filter` cannot see behind the window (putting it on the root also kills alpha pass-through). The frost is therefore the `GlassWallpaperUnderlay`: main fetches the actual wallpaper (System Events), the renderer draws it blurred (70px, saturate 1.4) as the app's bottom layer, geometry-tracked to the window, under the theme's translucent `--background` coat. The window stays `transparent: true` + `backgroundColor: '#00000000'` so the underlay's absence (Automation denied) degrades to plain translucent glass. Exactly ONE element paints `--background` (the body) plus the underlay's tint layer — never add further coats.
 - Panels float: rounded corners `16–20px` (panel), layered shadow (`0 16px 70px rgba(0,0,0,0.55)` dark · `rgba(0,0,0,0.25)` light) + a tight `0 0 0 1px` hairline ring.
-- Hairlines and borders: dark white-8% (`rgba(255,255,255,0.08)`) · light black-8% (`rgba(0,0,0,0.08)`); never solid gray borders.
+- Hairlines and borders: dark white-10% (`rgba(255,255,255,0.10)`) — the polished edge of the black glass · light black-8% (`rgba(0,0,0,0.08)`); never solid gray borders.
 
 Text (three tiers, nothing else; dark · light)
-- Primary: `#F4F4F5` · `#1C1C1E`, weight 500 for titles/labels.
+- Primary (chrome · ink): `#F4F4F5` · `#1C1C1E`, weight 500 for titles/labels.
 - Secondary: `#A1A1AA` · `#6E6E73`, weight 400 — inline context after a title, right-aligned metadata, placeholders.
 - Tertiary: `#71717A` · `#98989D` — section headers, footer hints, disabled.
 
 Selection & interaction (dark · light)
 - Selected/hovered row: white-8% · black-6% overlay, radius `8–10px`, full-row block; no outlines, no color fills.
-- Pressed: white-12% · black-10%. Focus-visible: 2px ring at 25% of the theme's hairline color (keyboard only).
+- Pressed: white-12% · black-10%. Focus-visible: 2px ring (dark white-28% · light black-25%, keyboard only).
+
+Brand red (the logo's LED-glow eyes)
+- ONE saturated accent, semantic only — record, LIVE, destructive: dark `oklch(0.60-0.62 0.23-0.24 27)` · light `oklch(0.55 0.24 27)` (`--destructive`/`--live`). Never chrome, never decorative: the logo has two red eyes, not a red face.
 
 Geometry & rhythm
 - Radii: panel 16–20, rows/cards 8–10, key chips & small controls 6.
@@ -53,7 +56,7 @@ Motion
 
 ## Core patterns
 
-**Glass panel** — the universal container (windows, dialogs, palettes): translucent blurred charcoal, hairline ring, big radius, floating shadow. Content sits directly on it; no nested cards-on-cards.
+**Glass panel** — the universal container (windows, dialogs, palettes): translucent blurred black glass, hairline ring, big radius, floating shadow. Content sits directly on it; no nested cards-on-cards.
 
 **Search header** — borderless input on the panel itself: leading 24px icon, large placeholder in secondary gray, trailing hint (tertiary text + key chip). No input box outline; the panel IS the input surface. Use shadcn `Command` (cmdk) — this pattern is its native shape.
 
