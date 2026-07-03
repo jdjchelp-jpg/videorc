@@ -1,13 +1,4 @@
-import {
-  ArrowSquareOut,
-  Broadcast,
-  CaretDown,
-  GearSix,
-  Record,
-  StopCircle,
-  WarningCircle,
-  X
-} from '@phosphor-icons/react'
+import { ArrowSquareOut, WarningCircle, X } from '@phosphor-icons/react'
 import { useEffect, useRef, useState, type ReactElement } from 'react'
 
 import { BlockingBanner } from '@/components/blocking-banner'
@@ -22,15 +13,7 @@ import { QuickSettings } from '@/components/studio/quick-settings'
 import { ScenesGallery } from '@/components/studio/scenes-gallery'
 import { SessionPanel } from '@/components/studio/session-panel'
 import { Button } from '@/components/ui/button'
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger
-} from '@/components/ui/dropdown-menu'
-import { Kbd } from '@/components/ui/kbd'
-import { useWorkspaceNav, type StudioPanel, type WorkspaceTab } from '@/components/workspace-nav'
+import type { StudioPanel, WorkspaceTab } from '@/components/workspace-nav'
 import { useStudio } from '@/hooks/use-studio'
 import { videoProfileCompatibility } from '@/lib/capture'
 import { goLiveEntitlementGate } from '@/lib/entitlement-ui'
@@ -47,7 +30,6 @@ export function StudioTab(): ReactElement {
   const studio = useStudio()
   const {
     recording,
-    elapsed,
     canStop,
     startRequestPending,
     stopRequestPending,
@@ -199,29 +181,9 @@ export function StudioTab(): ReactElement {
         />
 
         <PageStack>
-          {/* Dashboard header: title + the transport (Record split-button + Go
-              Live, or the timer + Stop while live). Reuses the existing
-              record/go-live/stop handlers — no second session state machine. */}
           <PageHeader
             title="Studio"
             description="Professional recording and streaming made simple."
-            action={
-              <StudioTransport
-                active={active}
-                canStop={canStop}
-                elapsed={elapsed}
-                liveStreamBlockedReason={liveStreamBlockedReason}
-                recordBlockedReason={recordBlockedReason}
-                recordingMessage={recording.message ?? null}
-                recordingState={recording.state}
-                startRequestPending={startRequestPending}
-                stopLabel={stopLabel}
-                wsStatus={wsStatus}
-                onLiveStream={handleLiveStream}
-                onRecord={handleRecord}
-                onStop={stopSession}
-              />
-            }
           />
 
           {/* Hard block (can't start): a banner with a jump to the owning page. */}
@@ -321,134 +283,6 @@ export function StudioTab(): ReactElement {
           onPopOut={studio.toggleCommentsWindow}
         />
       ) : null}
-    </div>
-  )
-}
-
-// Dashboard transport (Record split-button + Go Live; timer + Stop while live).
-// Pure presentation: it calls the same handlers StudioTab owns (record/go-live
-// set the mode then start; Go Live flows through the existing preflight dialog),
-// so there is no second session state machine. Blocked reasons surface as the
-// button title; a 'failed' state shows inline so it is never lost.
-function StudioTransport({
-  active,
-  canStop,
-  elapsed,
-  startRequestPending,
-  stopLabel,
-  recordBlockedReason,
-  liveStreamBlockedReason,
-  recordingState,
-  recordingMessage,
-  wsStatus,
-  onRecord,
-  onLiveStream,
-  onStop
-}: {
-  active: boolean
-  canStop: boolean
-  elapsed: string
-  startRequestPending: boolean
-  stopLabel: string
-  recordBlockedReason: string | null
-  liveStreamBlockedReason: string | null
-  recordingState: string
-  recordingMessage: string | null
-  wsStatus: string
-  onRecord: () => void
-  onLiveStream: () => void
-  onStop: () => void
-}): ReactElement {
-  const { openStudioPanel } = useWorkspaceNav()
-
-  return (
-    <div className="flex items-center gap-2">
-      {/* Live region: recording state is otherwise conveyed only by the button
-          set, so announce idle→recording→streaming→stopped/failed for screen
-          readers. A failure also renders visibly here. */}
-      <div aria-atomic="true" aria-live="polite">
-        {recordingState === 'failed' ? (
-          <span className="flex items-center gap-1.5 rounded-chip bg-destructive/10 px-2 py-1 text-xs font-medium text-destructive">
-            <WarningCircle className="size-3.5 shrink-0" weight="fill" />
-            {recordingMessage ?? 'Recording failed'}
-          </span>
-        ) : (
-          <span className="sr-only">{`Recording ${recordingState}. ${recordingMessage ?? ''}`}</span>
-        )}
-      </div>
-
-      {active ? (
-        <>
-          <time className="px-1.5 font-heading text-lg font-semibold tabular-nums">{elapsed}</time>
-          <Button disabled={!canStop} size="sm" variant="destructive" onClick={onStop}>
-            <StopCircle data-icon="inline-start" weight="fill" />
-            {stopLabel}
-            <Kbd className="ml-1.5">␣</Kbd>
-          </Button>
-        </>
-      ) : (
-        <>
-          {/* Record split-button: primary records to file; the caret carries
-              record-specific options (settings shortcut). */}
-          <div className="flex items-center">
-            <Button
-              className="rounded-r-none"
-              disabled={Boolean(recordBlockedReason) || startRequestPending}
-              size="sm"
-              title={recordBlockedReason ?? 'Record to a file (Space)'}
-              variant="destructive"
-              onClick={onRecord}
-            >
-              <Record data-icon="inline-start" weight="fill" />
-              {startRequestPending ? 'Starting…' : 'Record'}
-              <Kbd className="ml-1.5">␣</Kbd>
-            </Button>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  aria-label="Record options"
-                  className="rounded-l-none border-l border-l-black/15 px-1.5 dark:border-l-white/15"
-                  disabled={startRequestPending}
-                  size="sm"
-                  variant="destructive"
-                >
-                  <CaretDown className="size-3.5" weight="bold" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem
-                  disabled={Boolean(recordBlockedReason)}
-                  onSelect={(event) => {
-                    event.preventDefault()
-                    onRecord()
-                  }}
-                >
-                  <Record data-icon="inline-start" weight="fill" />
-                  Record to file
-                  <Kbd className="ml-auto">␣</Kbd>
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem onSelect={() => openStudioPanel('recording')}>
-                  <GearSix data-icon="inline-start" />
-                  Recording settings…
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-          <Button
-            disabled={
-              wsStatus !== 'connected' || startRequestPending || Boolean(liveStreamBlockedReason)
-            }
-            size="sm"
-            title={liveStreamBlockedReason ?? 'Start livestream'}
-            variant="outline"
-            onClick={onLiveStream}
-          >
-            <Broadcast data-icon="inline-start" weight="fill" />
-            Go Live
-          </Button>
-        </>
-      )}
     </div>
   )
 }
