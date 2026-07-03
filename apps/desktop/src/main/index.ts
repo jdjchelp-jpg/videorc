@@ -48,6 +48,7 @@ import {
 import { createMediaPermissionGrantWatcher } from './system-permission-watch'
 import { PreviewSupervisorModel } from './preview-supervisor'
 import { backendIsolationEnv } from './backend-isolation'
+import { DARK_WINDOW_PALETTE, windowPalette } from './window-palette'
 import {
   assessFirstFrame,
   emptyFirstFrameLedger,
@@ -551,7 +552,7 @@ function platformWindowChromeOptions(): BrowserWindowConstructorOptions {
     // Solid themed base so the 75%-alpha glass tokens don't composite over
     // default white; the standard native frame is guaranteed movable and
     // carries native min/max/close without renderer drag regions.
-    return { backgroundColor: nativeTheme.shouldUseDarkColors ? '#1C1C1F' : '#F5F5F7' }
+    return { backgroundColor: windowPalette(nativeTheme.shouldUseDarkColors).base }
   }
 
   return {
@@ -583,7 +584,7 @@ function platformWindowChromeOptions(): BrowserWindowConstructorOptions {
             ? { vibrancy: glassVibrancyMaterial }
             : {})
         }
-      : { backgroundColor: nativeTheme.shouldUseDarkColors ? '#1C1C1F' : '#F5F5F7' }),
+      : { backgroundColor: windowPalette(nativeTheme.shouldUseDarkColors).base }),
     visualEffectState: 'active',
     // Probe knob: which window frame the glass uses. hiddenInset keeps the
     // framed NSWindow; transparency may require the frameless styles.
@@ -998,33 +999,33 @@ function notesWindowHtml(document: NotesDocument): string {
     }`
     : ''
   return `<!doctype html><html><head><meta charset="utf-8"><style>
-    html, body { margin: 0; height: 100%; background: #101012; color: #f4f4f5;
+    html, body { margin: 0; height: 100%; background: ${DARK_WINDOW_PALETTE.base}; color: ${DARK_WINDOW_PALETTE.textPrimary};
       font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       overflow: hidden; user-select: none; -webkit-user-select: none; }
     body { display: flex; flex-direction: column; }
     .drag-bar { height: 34px; display: flex; align-items: center; gap: 10px;
-      padding: 0 12px 0 78px; box-sizing: border-box; background: #18181b;
-      border-bottom: 1px solid rgba(255,255,255,.08); -webkit-app-region: drag; }
-    .title { color: #a1a1aa; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
+      padding: 0 12px 0 78px; box-sizing: border-box; background: ${DARK_WINDOW_PALETTE.panel};
+      border-bottom: 1px solid ${DARK_WINDOW_PALETTE.hairline}; -webkit-app-region: drag; }
+    .title { color: ${DARK_WINDOW_PALETTE.textSecondary}; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
     .spacer { flex: 1; }
-    button { -webkit-app-region: no-drag; border: 1px solid rgba(255,255,255,.12);
-      border-radius: 6px; background: rgba(255,255,255,.06); color: #e4e4e7;
+    button { -webkit-app-region: no-drag; border: 1px solid ${DARK_WINDOW_PALETTE.controlBorder};
+      border-radius: 6px; background: ${DARK_WINDOW_PALETTE.controlBg}; color: ${DARK_WINDOW_PALETTE.textPrimary};
       height: 22px; padding: 0 8px; font: inherit; font-size: 11px; cursor: default; }
-    button[aria-pressed="true"] { background: #f4f4f5; color: #18181b; border-color: #f4f4f5; }
+    button[aria-pressed="true"] { background: ${DARK_WINDOW_PALETTE.chromeFill}; color: ${DARK_WINDOW_PALETTE.chromeFillText}; border-color: ${DARK_WINDOW_PALETTE.chromeFill}; }
     .icon-button { width: 24px; padding: 0; display: inline-flex; align-items: center;
       justify-content: center; }
     .icon-button svg { width: 14px; height: 14px; stroke: currentColor; stroke-width: 2;
       fill: none; stroke-linecap: round; stroke-linejoin: round; }
     textarea { flex: 1; resize: none; border: 0; outline: none; padding: 20px 22px;
-      box-sizing: border-box; background: #101012; color: #f4f4f5; caret-color: #f4f4f5;
+      box-sizing: border-box; background: ${DARK_WINDOW_PALETTE.base}; color: ${DARK_WINDOW_PALETTE.textPrimary}; caret-color: ${DARK_WINDOW_PALETTE.textPrimary};
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       line-height: 1.45; -webkit-app-region: no-drag; }
     body[data-font-scale="sm"] textarea { font-size: 18px; }
     body[data-font-scale="md"] textarea { font-size: 24px; }
     body[data-font-scale="lg"] textarea { font-size: 32px; }
-    textarea::placeholder { color: #71717a; }
+    textarea::placeholder { color: ${DARK_WINDOW_PALETTE.textTertiary}; }
     .footer { height: 28px; display: flex; align-items: center; gap: 12px; padding: 0 12px;
-      border-top: 1px solid rgba(255,255,255,.08); color: #71717a; font-size: 11px; }
+      border-top: 1px solid ${DARK_WINDOW_PALETTE.hairline}; color: ${DARK_WINDOW_PALETTE.textTertiary}; font-size: 11px; }
     ${smokeMarkerCss}
   </style></head><body data-smoke-marker="${notesWindowSmokeMarkerEnabled ? 'true' : 'false'}">
     <div class="drag-bar"><span class="title">Videorc Notes</span><span class="spacer"></span>
@@ -1171,7 +1172,7 @@ async function openNotesWindow(): Promise<NotesWindowState> {
     minHeight: 240,
     title: 'Videorc Notes',
     ...(isMac ? { titleBarStyle: 'hiddenInset' as const } : {}),
-    backgroundColor: '#101012',
+    backgroundColor: DARK_WINDOW_PALETTE.base,
     show: false,
     ...appWindowIconOptions(),
     webPreferences: {
@@ -1390,7 +1391,7 @@ async function openCommentsWindow(): Promise<CommentsWindowState> {
     minHeight: 360,
     title: 'Videorc Comments',
     ...(isMac ? { titleBarStyle: 'hiddenInset' as const } : {}),
-    backgroundColor: '#101012',
+    backgroundColor: DARK_WINDOW_PALETTE.base,
     show: false,
     ...appWindowIconOptions(),
     webPreferences: {
@@ -1604,7 +1605,7 @@ async function openCaptionsWindow(): Promise<CaptionsWindowState> {
     minHeight: 200,
     title: 'Videorc Captions',
     ...(isMac ? { titleBarStyle: 'hiddenInset' as const } : {}),
-    backgroundColor: '#101012',
+    backgroundColor: DARK_WINDOW_PALETTE.base,
     show: false,
     ...appWindowIconOptions(),
     webPreferences: {
@@ -1848,23 +1849,23 @@ const PREVIEW_WINDOW_HTML = `<!doctype html><html><head><meta charset="utf-8"><s
   /* Glass tokens (videorc-design): the preview window frames video, so it
      stays dark in both themes — charcoal surface, white-8% hairline,
      tertiary-gray label. */
-  html, body { margin: 0; height: 100%; background: #1c1c1f; color: #a1a1aa;
+  html, body { margin: 0; height: 100%; background: ${DARK_WINDOW_PALETTE.base}; color: ${DARK_WINDOW_PALETTE.textSecondary};
     font: 12px/1.4 -apple-system, BlinkMacSystemFont, sans-serif; overflow: hidden;
     user-select: none; -webkit-user-select: none; -webkit-app-region: drag; }
   .drag-bar { position: fixed; top: 0; left: 0; right: 0; height: 28px;
     display: flex; align-items: center; gap: 10px; cursor: grab;
     padding: 0 12px 0 78px; /* traffic lights live in the left inset */
-    background: rgba(24, 24, 27, 0.88); border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    background: ${DARK_WINDOW_PALETTE.panel}; border-bottom: 1px solid ${DARK_WINDOW_PALETTE.hairline};
     box-sizing: border-box; }
   .drag-bar:active { cursor: grabbing; }
-  .drag-bar .label { color: #71717a; font-size: 11px; letter-spacing: 0.08em;
+  .drag-bar .label { color: ${DARK_WINDOW_PALETTE.textTertiary}; font-size: 11px; letter-spacing: 0.08em;
     text-transform: uppercase; white-space: nowrap; }
   .drag-bar .grip { flex: 1; height: 8px; background-image:
     radial-gradient(circle, rgba(255, 255, 255, 0.18) 1px, transparent 1.2px);
     background-size: 6px 4px; background-position: center; }
   .hint { position: fixed; top: 28px; left: 0; right: 0; bottom: 0; display: flex;
     align-items: center; justify-content: center; flex-direction: column; gap: 6px; }
-  .hint .title { color: #f4f4f5; font-size: 13px; }
+  .hint .title { color: ${DARK_WINDOW_PALETTE.textPrimary}; font-size: 13px; }
 </style></head><body>
   <div class="hint"><div class="title">Waiting for preview</div>
   <div id="videorc-wait-detail">The native surface appears here as soon as the compositor presents.</div></div>
@@ -1900,7 +1901,7 @@ async function openPreviewWindow(): Promise<PreviewWindowState> {
     // preview window draggable without renderer drag regions (Phase 4 owns
     // the frameless Windows chrome).
     ...(isMac ? { titleBarStyle: 'hiddenInset' as const } : {}),
-    backgroundColor: '#09090b',
+    backgroundColor: DARK_WINDOW_PALETTE.base,
     show: true,
     ...appWindowIconOptions(),
     webPreferences: {
