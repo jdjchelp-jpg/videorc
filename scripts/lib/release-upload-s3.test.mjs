@@ -150,6 +150,15 @@ describe('release S3 upload plan', () => {
           sizeBytes: Buffer.byteLength(manifestJson)
         },
         {
+          // The stable download manifest: videorc-web's
+          // VIDEORC_DOWNLOAD_MANIFEST_OBJECT_KEY points here once and every
+          // release refreshes the download page automatically.
+          contentType: 'application/json',
+          label: 'latest-manifest',
+          objectKey: 'releases/macos/latest/release.json',
+          sizeBytes: Buffer.byteLength(manifestJson)
+        },
+        {
           contentType: 'text/yaml; charset=utf-8',
           label: 'feed-manifest',
           objectKey: 'updates/macos/latest-mac.yml',
@@ -205,13 +214,14 @@ describe('release S3 upload plan', () => {
     assert.equal(prefixed.artifacts.at(-1)?.objectKey, 'public/changelog/changelog.json')
   })
 
-  it('allows explicit archive and feed prefixes', async () => {
+  it('allows explicit archive, feed, and latest-manifest prefixes', async () => {
     const { releaseDir, manifestPath } = await seedReleaseDir()
 
     const plan = await buildReleaseUploadPlan({
       env: {
         VIDEORC_RELEASE_UPLOAD_PREFIX: ' macos/beta/latest/ ',
-        VIDEORC_RELEASE_UPDATES_PREFIX: ' channels/stable/ '
+        VIDEORC_RELEASE_UPDATES_PREFIX: ' channels/stable/ ',
+        VIDEORC_RELEASE_LATEST_MANIFEST_PREFIX: ' downloads/current/ '
       },
       manifest,
       manifestPath,
@@ -221,7 +231,8 @@ describe('release S3 upload plan', () => {
     assert.equal(plan.prefix, 'macos/beta/latest')
     assert.equal(plan.updatesPrefix, 'channels/stable')
     assert.equal(plan.artifacts.at(0)?.objectKey, 'macos/beta/latest/Videorc-0.9.0-mac-arm64.dmg')
-    assert.equal(plan.artifacts.at(3)?.objectKey, 'channels/stable/latest-mac.yml')
+    assert.equal(plan.artifacts.at(3)?.objectKey, 'downloads/current/release.json')
+    assert.equal(plan.artifacts.at(4)?.objectKey, 'channels/stable/latest-mac.yml')
   })
 
   it('fails closed when the feed manifest is missing', async () => {

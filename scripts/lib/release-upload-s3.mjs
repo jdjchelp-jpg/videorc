@@ -96,6 +96,14 @@ export async function buildReleaseUploadPlan({
   const changelogPrefix = normalizeObjectPrefix(
     nonEmpty(env.VIDEORC_RELEASE_CHANGELOG_PREFIX) ?? 'changelog'
   )
+  // The download page's manifest, at a STABLE key: videorc-web's
+  // VIDEORC_DOWNLOAD_MANIFEST_OBJECT_KEY points here ONCE and every release
+  // refreshes it — before this, the web download stayed pinned to whatever
+  // versioned manifest the env was set to at launch (stuck on 0.9.0 while the
+  // update feed served 0.9.3).
+  const latestManifestPrefix = normalizeObjectPrefix(
+    nonEmpty(env.VIDEORC_RELEASE_LATEST_MANIFEST_PREFIX) ?? 'releases/macos/latest'
+  )
 
   const artifacts = [
     {
@@ -114,6 +122,12 @@ export async function buildReleaseUploadPlan({
       contentType: contentTypeFor('release.json'),
       label: 'manifest',
       objectKey: `${prefix}/release.json`,
+      path: manifestPath
+    },
+    {
+      contentType: contentTypeFor('release.json'),
+      label: 'latest-manifest',
+      objectKey: `${latestManifestPrefix}/release.json`,
       path: manifestPath
     },
     {

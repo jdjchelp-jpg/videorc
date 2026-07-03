@@ -99,8 +99,11 @@ curl -s -o /dev/null -w '%{http_code}\n' -L \
   https://videorc-web.vercel.app/api/updates/Videorc-0.9.1-mac-arm64.zip
 ```
 
-If the web app pins the download manifest, point it at the new release and
-redeploy: `VIDEORC_DOWNLOAD_MANIFEST_OBJECT_KEY=releases/macos/<releaseId>/release.json`.
+The download page follows automatically: the upload also publishes the
+manifest to the STABLE key `releases/macos/latest/release.json`, which
+videorc-web's `VIDEORC_DOWNLOAD_MANIFEST_OBJECT_KEY` points at (one-time Vercel
+setting — do NOT pin it to a versioned key, or the download page freezes on
+that release while the update feed moves on).
 
 ## Acceptance gate
 
