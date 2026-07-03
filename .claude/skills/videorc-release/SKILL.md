@@ -61,6 +61,15 @@ Verify the feed serves the new version (follow the redirect to R2):
 curl -sL https://videorc-web.vercel.app/api/updates/latest-mac.yml | head   # -> version: <new>
 ```
 
+**Also verify the web download/admin page shows the new version** (ask the
+owner to check the signed-in download page). The upload publishes the manifest
+to the STABLE key `releases/macos/latest/release.json`, so the page follows
+each release automatically — IF videorc-web's Vercel env is set to it
+(one-time): `VIDEORC_DOWNLOAD_MANIFEST_OBJECT_KEY=releases/macos/latest/release.json`.
+If admin still shows an old version (it sat on "0.9.0 beta 1" for three
+releases), that env is pinned to a versioned key — fix the env + redeploy,
+never hand-edit per release.
+
 ### 6. Commit the release note
 Update `docs/releases/<version>.md` (check off build/upload/verify), commit + push.
 
