@@ -139,7 +139,13 @@ import type {
 } from '@/lib/backend'
 import { createEmptyLiveChatSnapshot } from '@/lib/backend'
 import { renderCaptionCueFramePng, renderCaptionOverlayPng } from '@/lib/caption-overlay'
-import { appendCaptionLine } from '@/lib/captions-ui'
+import {
+  appendCaptionLine,
+  captionLineAboveFloor,
+  captionSessionFloor,
+  decideOverlayPush,
+  type CaptionSessionFloor
+} from '@/lib/captions-ui'
 import { goLiveEntitlementGate, videoProfileEntitlementGate } from '@/lib/entitlement-ui'
 import { entitlementDisabledReason } from '@/lib/entitlements'
 import {
@@ -860,6 +866,14 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
   // audio itself never reaches the renderer (the Rust backend uploads chunks).
   const [captionsStatus, setCaptionsStatus] = useState<CaptionsStatus>({ state: 'idle' })
   const [captionLines, setCaptionLines] = useState<CaptionsUpdate[]>([])
+  const captionLinesRef = useRef(captionLines)
+  captionLinesRef.current = captionLines
+  // Captions belong to the video they were spoken in: recorded at each
+  // capture-session start (see the rising-edge effect below), this floor
+  // rejects late transcripts of previous-video audio — the chunked uploader's
+  // responses can land seconds after the next recording began, and the
+  // capture-epoch filter only guards the .srt/burn chunks, not these events.
+  const captionSessionFloorRef = useRef<CaptionSessionFloor | null>(null)
   const startCaptions = useCallback(async () => {
     // F-022: both failure shapes must THROW so the toggle's error handler can
     // toast — a missing client and a non-live status used to revert the switch
@@ -2210,7 +2224,11 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       ),
       nextClient.on('captions.status', (payload) => setCaptionsStatus(payload as CaptionsStatus)),
       nextClient.on('captions.update', (payload) =>
-        setCaptionLines((current) => appendCaptionLine(current, payload as CaptionsUpdate))
+        setCaptionLines((current) =>
+          captionLineAboveFloor(payload as CaptionsUpdate, captionSessionFloorRef.current)
+            ? appendCaptionLine(current, payload as CaptionsUpdate)
+            : current
+        )
       ),
       // Burned-copy cue frames (R2): the backend asks for one full-frame PNG
       // per cue at finalize; render + submit sequentially, best-effort (the
@@ -3814,26 +3832,48 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
   // with a stale bar.
   const captionOverlayBusy = useRef(false)
   const captionOverlayPushedKey = useRef<string | null>(null)
+
+  // Capture-session rising edge: the caption strip/window and the burn bar
+  // start EMPTY for every new video. The floor is recorded before the buffer
+  // clears so a previous-video line — still in the buffer, or arriving late
+  // from an in-flight chunk upload — can never be shown or re-pushed into the
+  // new session (the 2026-07-04 carry-over bug: the driver re-pushed
+  // captionLines.at(-1) from the previous video at each session start).
+  const captionSessionWasActiveRef = useRef(false)
+  useEffect(() => {
+    if (isSessionActive && !captionSessionWasActiveRef.current) {
+      const lines = captionLinesRef.current
+      captionSessionFloorRef.current = captionSessionFloor(lines) ?? captionSessionFloorRef.current
+      captionOverlayPushedKey.current = null
+      if (lines.length > 0) {
+        setCaptionLines([])
+      }
+    }
+    captionSessionWasActiveRef.current = isSessionActive
+  }, [isSessionActive])
+
   useEffect(() => {
     if (!client) {
       return
     }
-    const burnIn = captureConfig.captions.burnTarget !== 'off'
-    const latest = captionLines.at(-1)
-    const captionsRunning = captionsStatus.state === 'live' || captionsStatus.state === 'degraded'
-    if (!burnIn || !captionsRunning || !isSessionActive) {
-      if (captionOverlayPushedKey.current !== null) {
-        captionOverlayPushedKey.current = null
-        void client.request('captions.overlay.clear').catch(() => {})
-      }
+    const decision = decideOverlayPush({
+      burnIn: captureConfig.captions.burnTarget !== 'off',
+      captionsRunning: captionsStatus.state === 'live' || captionsStatus.state === 'degraded',
+      sessionActive: isSessionActive,
+      latest: captionLines.at(-1),
+      floor: captionSessionFloorRef.current,
+      pushedKey: captionOverlayPushedKey.current,
+      busy: captionOverlayBusy.current
+    })
+    if (decision.action === 'clear') {
+      captionOverlayPushedKey.current = null
+      void client.request('captions.overlay.clear').catch(() => {})
       return
     }
-    // Streaming partials share a seq while the text evolves — key on both so
-    // the live bar refreshes with every refinement.
-    const latestKey = latest ? `${latest.seq}:${latest.text}` : null
-    if (!latest || captionOverlayBusy.current || captionOverlayPushedKey.current === latestKey) {
+    if (decision.action !== 'push') {
       return
     }
+    const latest = captionLines.at(-1)!
     captionOverlayBusy.current = true
     const streamVideo = streamOutputVideoSettings(
       captureConfig.video,
@@ -3854,7 +3894,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
             position: captureConfig.captions.position
           })
           .then(() => {
-            captionOverlayPushedKey.current = latestKey
+            captionOverlayPushedKey.current = decision.key
           })
       })
       .catch(() => {
