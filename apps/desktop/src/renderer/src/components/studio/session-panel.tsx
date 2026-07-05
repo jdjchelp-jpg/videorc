@@ -86,13 +86,20 @@ export function SessionPanel({
       <div className="flex flex-col gap-2 border-t border-border pt-4">
         <div className="flex gap-2">
           {active ? (
-            <Button disabled={!canStop} size="sm" variant="destructive" onClick={onStop}>
+            <Button
+              className="flex-1"
+              disabled={!canStop}
+              size="sm"
+              variant="destructive"
+              onClick={onStop}
+            >
               <StopCircle data-icon="inline-start" weight="fill" />
               {stopLabel}
             </Button>
           ) : (
             <>
               <Button
+                className="flex-1"
                 disabled={Boolean(recordBlockedReason) || startRequestPending}
                 size="sm"
                 title={recordBlockedReason ?? undefined}
@@ -100,10 +107,11 @@ export function SessionPanel({
                 onClick={onRecord}
               >
                 <Record data-icon="inline-start" weight="fill" />
-                Start recording
+                Record
                 <Kbd className="ml-1.5">␣</Kbd>
               </Button>
               <Button
+                className="flex-1"
                 disabled={Boolean(liveStreamBlockedReason) || startRequestPending}
                 size="sm"
                 title={liveStreamBlockedReason ?? undefined}
