@@ -553,11 +553,15 @@ mod macos {
     /// This is the host shape needed by an Electron native addon or backend AppKit
     /// overlay that receives `metalTargetIosurfaceId` from compositor status. It still
     /// only returns activation after a real layer present succeeds.
+    // One imported view per compositor ring slot, plus headroom for a
+    // transition frame while the ring rebuilds after a size change.
+    const IMPORTED_TEXTURE_CACHE_SIZE: usize = 4;
+
     #[derive(Debug)]
     pub struct NativePreviewIosurfacePresenterRunner {
         presenter: MetalPreviewPresenter,
         overlay: Option<NativePreviewOverlayHost>,
-        cached_texture: Option<MetalImportedIosurfaceTexture>,
+        cached_textures: Vec<MetalImportedIosurfaceTexture>,
     }
 
     impl NativePreviewIosurfacePresenterRunner {
@@ -565,12 +569,12 @@ mod macos {
             Some(Self {
                 presenter: MetalPreviewPresenter::new_default()?,
                 overlay: None,
-                cached_texture: None,
+                cached_textures: Vec::new(),
             })
         }
 
         pub fn apply_command(&mut self, command: NativePreviewHostCommand, mtm: MainThreadMarker) {
-            self.cached_texture = None;
+            self.cached_textures.clear();
             apply_overlay_command(&self.presenter, &mut self.overlay, command, mtm);
         }
 
@@ -595,24 +599,38 @@ mod macos {
             if self.overlay.is_none() {
                 return Err(NativePreviewHostPresentFailure::MissingOverlay);
             }
-            let needs_import = self
-                .cached_texture
-                .as_ref()
-                .is_none_or(|texture| !texture.matches(iosurface_id, width, height));
-            if needs_import {
-                let imported = self
-                    .presenter
-                    .import_iosurface_texture_handle(iosurface_id, width, height)
-                    .ok_or(NativePreviewHostPresentFailure::IosurfaceImportFailed)?;
-                self.cached_texture = Some(imported);
-            }
+            // The compositor rotates its target through a small IOSurface ring
+            // (tear fix), so consecutive presents carry different ids. Cache
+            // one imported view PER RING SLOT — a single-slot cache would
+            // re-import every frame and pay the wrap cost on the hot path.
+            let cached_index = self
+                .cached_textures
+                .iter()
+                .position(|texture| texture.matches(iosurface_id, width, height));
+            let imported_index = match cached_index {
+                Some(index) => index,
+                None => {
+                    let imported = self
+                        .presenter
+                        .import_iosurface_texture_handle(iosurface_id, width, height)
+                        .ok_or(NativePreviewHostPresentFailure::IosurfaceImportFailed)?;
+                    // A size change obsoletes every cached slot at once.
+                    self.cached_textures
+                        .retain(|texture| texture.matches(texture.iosurface_id(), width, height));
+                    if self.cached_textures.len() >= IMPORTED_TEXTURE_CACHE_SIZE {
+                        self.cached_textures.remove(0);
+                    }
+                    self.cached_textures.push(imported);
+                    self.cached_textures.len() - 1
+                }
+            };
             let overlay = self
                 .overlay
                 .as_ref()
                 .ok_or(NativePreviewHostPresentFailure::MissingOverlay)?;
             let imported = self
-                .cached_texture
-                .as_ref()
+                .cached_textures
+                .get(imported_index)
                 .ok_or(NativePreviewHostPresentFailure::IosurfaceImportFailed)?;
             self.presenter
                 .try_present_imported_iosurface_to_layer(overlay.layer(), imported)
