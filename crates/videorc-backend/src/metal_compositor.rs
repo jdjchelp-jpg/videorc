@@ -312,12 +312,23 @@ pub fn composite_sources(
 /// once and reused per frame (compiling shaders per frame would stutter). This is the
 /// hot-path-ready form of `composite_sources`, used by the flag-gated Metal path in the
 /// compositor loop.
+// The offscreen target is a RING, not a single texture: the native preview
+// helper presents the exported IOSurface from its own process (its own GPU
+// queue — no implicit ordering with ours), and VideoToolbox adopts it for the
+// recording leg. Re-rendering the same surface every frame let a new render
+// land mid-present/mid-encode, which showed up as horizontal tearing on
+// moving content (the camera circle). With the ring, frame N is presented and
+// encoded from a slot no render touches again until N+TARGET_RING_SIZE.
+const TARGET_RING_SIZE: usize = 3;
+
 pub struct MetalSceneCompositor {
     device: Retained<MetalDevice>,
     queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
     pipeline: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
     sampler: Retained<ProtocolObject<dyn MTLSamplerState>>,
-    target: Option<CachedTargetTexture>,
+    targets: Vec<CachedTargetTexture>,
+    // Index of the LAST-RENDERED slot; advanced at the start of each compose.
+    target_cursor: usize,
     target_width: usize,
     target_height: usize,
     source_textures: Vec<Option<CachedSourceTexture>>,
@@ -490,7 +501,8 @@ impl MetalSceneCompositor {
             queue,
             pipeline,
             sampler,
-            target: None,
+            targets: Vec::new(),
+            target_cursor: 0,
             target_width: 0,
             target_height: 0,
             source_textures: Vec::new(),
@@ -519,7 +531,7 @@ impl MetalSceneCompositor {
     ) -> Option<MetalBgraComposeOutput> {
         let timings =
             self.compose_target_with_timings(out_width, out_height, background, sources)?;
-        let target = self.target.as_ref()?;
+        let target = self.latest_target()?;
         Some(MetalBgraComposeOutput {
             bgra: read_texture_bgra(&target.texture, out_width, out_height),
             timings,
@@ -553,7 +565,7 @@ impl MetalSceneCompositor {
         let ensure_target_ms = ensure_started_at.elapsed().as_secs_f64() * 1000.0;
         let command_buffer = self.queue.commandBuffer()?;
         let encoder = {
-            let target = self.target.as_ref()?;
+            let target = self.latest_target()?;
             let pass = clear_pass(&target.texture, background);
             command_buffer.renderCommandEncoderWithDescriptor(&pass)?
         };
@@ -650,7 +662,7 @@ impl MetalSceneCompositor {
         presenter: &MetalPreviewPresenter,
         layer: &CAMetalLayer,
     ) -> bool {
-        let Some(target) = self.target.as_ref() else {
+        let Some(target) = self.latest_target() else {
             return false;
         };
         presenter.present_texture_to_layer(layer, &target.texture)
@@ -669,7 +681,7 @@ impl MetalSceneCompositor {
     /// compositor had to fall back to a plain `MTLTexture`. The existing readback path
     /// remains available in both cases.
     pub fn latest_target_pixel_buffer(&self) -> Option<MetalCompositorTargetPixelBuffer> {
-        let target = self.target.as_ref()?;
+        let target = self.latest_target()?;
         Some(MetalCompositorTargetPixelBuffer {
             pixel_buffer: target.pixel_buffer.as_ref()?.clone(),
             width: self.target_width,
@@ -677,14 +689,31 @@ impl MetalSceneCompositor {
         })
     }
 
+    // Advance to the next ring slot and make sure it exists at the requested
+    // size. Called once at the start of each compose; after it returns,
+    // `latest_target()` is the slot this frame renders into.
     fn ensure_target_texture(&mut self, width: usize, height: usize) -> Option<()> {
-        if self.target.is_some() && self.target_width == width && self.target_height == height {
+        if self.target_width != width || self.target_height != height {
+            self.targets.clear();
+            self.target_cursor = 0;
+            self.target_width = width;
+            self.target_height = height;
+        }
+        if self.targets.len() < TARGET_RING_SIZE {
+            self.targets
+                .push(make_target_texture(&self.device, width, height)?);
+            self.target_cursor = self.targets.len() - 1;
             return Some(());
         }
-        self.target = Some(make_target_texture(&self.device, width, height)?);
-        self.target_width = width;
-        self.target_height = height;
+        self.target_cursor = (self.target_cursor + 1) % TARGET_RING_SIZE;
         Some(())
+    }
+
+    // The slot most recently selected by `ensure_target_texture` — during a
+    // compose this is the render target; after a compose it is the frame that
+    // presents/exports until the next compose advances the ring.
+    fn latest_target(&self) -> Option<&CachedTargetTexture> {
+        self.targets.get(self.target_cursor)
     }
 
     fn ensure_source_texture(
@@ -767,17 +796,27 @@ impl MetalSceneCompositor {
 
     #[cfg(test)]
     fn cached_target_size(&self) -> Option<(usize, usize)> {
-        self.target
-            .as_ref()
+        self.latest_target()
             .map(|_| (self.target_width, self.target_height))
     }
 
     #[cfg(test)]
     fn cached_target_is_iosurface_backed(&self) -> bool {
-        self.target
-            .as_ref()
+        self.latest_target()
             .and_then(|target| target.pixel_buffer.as_ref())
             .is_some()
+    }
+
+    #[cfg(test)]
+    fn target_ring_iosurface_ids(&self) -> Vec<Option<u32>> {
+        self.targets
+            .iter()
+            .map(|target| {
+                let pixel_buffer = target.pixel_buffer.as_ref()?;
+                let iosurface = CVPixelBufferGetIOSurface(Some(pixel_buffer.as_ref()))?;
+                Some(iosurface.id())
+            })
+            .collect()
     }
 
     #[cfg(test)]
@@ -1506,7 +1545,7 @@ mod tests {
 
         assert_eq!(pixel(&pixels, 4, 0, 0), [0, 0, 255, 255]);
         assert_eq!(pixel(&pixels, 4, 3, 3), [0, 0, 255, 255]);
-        if let Some(target) = compositor.target.as_ref() {
+        if let Some(target) = compositor.latest_target() {
             if compositor.cached_target_is_iosurface_backed() {
                 assert!(
                     target.texture.iosurface().is_some(),
@@ -1543,6 +1582,56 @@ mod tests {
         assert_eq!(CVPixelBufferGetWidth(&pixel_buffer), 8);
         assert_eq!(CVPixelBufferGetHeight(&pixel_buffer), 4);
         assert!(CVPixelBufferGetIOSurface(Some(&pixel_buffer)).is_some());
+    }
+
+    // PT3 regression (preview res/tearing plan): the target must ROTATE
+    // across composes so the helper process never presents a surface the next
+    // render is writing into (cross-process queues have no implicit ordering
+    // — a single reused surface tore on moving content).
+    #[test]
+    fn metal_scene_compositor_rotates_target_ring_across_composes_or_skips() {
+        let Some(mut compositor) = MetalSceneCompositor::new() else {
+            eprintln!("skipping: no Metal device available in this environment");
+            return;
+        };
+        let red = [0u8, 0, 255, 255];
+        let sources = [full_frame(&red, 1, 1, false, false, [0.0; 4])];
+
+        let mut exported_ids = Vec::new();
+        for _ in 0..(TARGET_RING_SIZE * 2) {
+            compositor
+                .compose_bgra(8, 4, [0.0, 0.0, 0.0, 1.0], &sources)
+                .expect("compose into ring target");
+            let Some(target) = compositor.latest_target_pixel_buffer() else {
+                eprintln!("skipping: IOSurface-backed render target unavailable on this device");
+                return;
+            };
+            exported_ids.push(target.iosurface_id());
+        }
+
+        let ring_ids = compositor.target_ring_iosurface_ids();
+        assert_eq!(ring_ids.len(), TARGET_RING_SIZE);
+        assert!(
+            ring_ids.iter().all(Option::is_some),
+            "every ring slot should be IOSurface-backed: {ring_ids:?}"
+        );
+
+        // Consecutive frames never export the same surface...
+        for pair in exported_ids.windows(2) {
+            assert_ne!(
+                pair[0], pair[1],
+                "consecutive exports must differ: {exported_ids:?}"
+            );
+        }
+        // ...and the ring wraps: frame N and frame N+RING share a slot.
+        assert_eq!(exported_ids[0], exported_ids[TARGET_RING_SIZE]);
+
+        // A size change rebuilds the ring rather than stretching stale slots.
+        compositor
+            .compose_bgra(16, 8, [0.0, 0.0, 0.0, 1.0], &sources)
+            .expect("compose after resize");
+        assert_eq!(compositor.cached_target_size(), Some((16, 8)));
+        assert_eq!(compositor.target_ring_iosurface_ids().len(), 1);
     }
 
     #[test]
