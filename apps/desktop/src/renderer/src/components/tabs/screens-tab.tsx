@@ -131,7 +131,7 @@ function ScreenTile({
 
   return (
     <div className="flex min-w-0 flex-col overflow-hidden rounded-row border bg-background">
-      <div className="relative aspect-video bg-muted">
+      <div className="relative aspect-[4/3] bg-muted">
         {!missing ? (
           <img
             alt=""
@@ -179,21 +179,20 @@ function ScreenTile({
           </Button>
         </div>
         <span className="truncate text-xs text-muted-foreground">{screen.imagePath}</span>
-        {/* Compact row: the tile clips overflow (rounded card), so every
-            control must fit at the narrowest gallery column — the delete
-            button used to be pushed past the clip edge and disappear. */}
+        {/* Activate gets its own full-width row so the label never truncates;
+            the icon controls share a second row inside the tile's clip edge. */}
+        <Button
+          className="w-full"
+          disabled={activationDisabled || missing}
+          size="sm"
+          type="button"
+          variant={active ? 'outline' : 'secondary'}
+          onClick={onActivate}
+        >
+          <ImageSquare data-icon="inline-start" weight="duotone" />
+          {active ? 'Deactivate' : 'Activate'}
+        </Button>
         <div className="flex min-w-0 items-center gap-1.5">
-          <Button
-            className="min-w-0 flex-1"
-            disabled={activationDisabled || missing}
-            size="sm"
-            type="button"
-            variant={active ? 'outline' : 'secondary'}
-            onClick={onActivate}
-          >
-            <ImageSquare data-icon="inline-start" weight="duotone" />
-            <span className="truncate">{active ? 'Deactivate' : 'Activate'}</span>
-          </Button>
           <Button
             aria-label="Move Screen up"
             disabled={disabled || index === 0}
@@ -218,6 +217,7 @@ function ScreenTile({
           </Button>
           <Button
             aria-label="Delete Screen"
+            className="ml-auto"
             disabled={disabled}
             size="icon-sm"
             title="Delete Screen"
