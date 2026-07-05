@@ -76,6 +76,48 @@ try {
       throw new Error('Fake feed contained unexpected message shapes.')
     }
 
+    // Send fan-out honesty (Comments upgrade S4/S5): the fake provider has no
+    // sender, so a send must report per-platform results and NEVER claim
+    // success — the no-destination case is stated, not silent.
+    const sendResults = await request(ws, timeoutMs, 'liveChat.send', { text: 'hello chat' })
+    if (!Array.isArray(sendResults) || sendResults.length === 0) {
+      throw new Error(
+        `liveChat.send returned no per-platform results: ${JSON.stringify(sendResults)}`
+      )
+    }
+    if (sendResults.some((result) => result.status === 'sent')) {
+      throw new Error(
+        `liveChat.send claimed success with no real sender: ${JSON.stringify(sendResults)}`
+      )
+    }
+    let sendRejected = false
+    try {
+      await request(ws, timeoutMs, 'liveChat.send', { text: '' })
+    } catch {
+      sendRejected = true
+    }
+    if (!sendRejected) {
+      throw new Error('liveChat.send accepted an empty message.')
+    }
+
+    // Comment-highlight overlay round-trip (Comments upgrade S2/S3): install a
+    // tiny PNG into the DEDICATED highlight slot, then clear it.
+    const onePixelPng =
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
+    const highlightSet = await request(ws, timeoutMs, 'comments.highlight.set', {
+      pngBase64: onePixelPng,
+      position: 'top'
+    })
+    if (!highlightSet.active || highlightSet.width !== 1) {
+      throw new Error(`comments.highlight.set did not install: ${JSON.stringify(highlightSet)}`)
+    }
+    const highlightCleared = await request(ws, timeoutMs, 'comments.highlight.clear', {})
+    if (highlightCleared.active) {
+      throw new Error(
+        `comments.highlight.clear left the overlay active: ${JSON.stringify(highlightCleared)}`
+      )
+    }
+
     // Clearing the local view empties the feed without ending the session.
     const cleared = await request(ws, timeoutMs, 'liveChat.clearLocal', {})
     if (cleared.messages.length !== 0) {
