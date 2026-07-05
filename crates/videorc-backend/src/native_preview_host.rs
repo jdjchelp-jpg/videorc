@@ -347,9 +347,12 @@ mod macos {
     // PT1 diagnostic (preview res/tearing plan): one change-triggered line that
     // pins whether a blurry preview is a bounds/scale problem (scale=1 on a
     // Retina panel, tiny drawable) before anyone touches the present path.
+    // eprintln!, not tracing: this code runs inside the host HELPER process,
+    // which has no tracing subscriber and whose stdout is the JSON protocol
+    // pipe — stderr is the helper's free-text lane and is relayed to the log.
     fn log_surface_sizing(reason: &str, bounds: NativePreviewHostBounds) {
         let (drawable_width, drawable_height) = bounds.drawable_size();
-        tracing::info!(
+        eprintln!(
             "[videorc-native-preview-sizing] {reason} bounds_pts={:.0}x{:.0} scale={:.2} drawable_px={:.0}x{:.0} visible={:?}",
             bounds.width,
             bounds.height,
