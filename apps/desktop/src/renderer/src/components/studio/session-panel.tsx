@@ -16,12 +16,7 @@ import { Button } from '@/components/ui/button'
 import { Kbd } from '@/components/ui/kbd'
 import { useWorkspaceNav } from '@/components/workspace-nav'
 import { useStudio } from '@/hooks/use-studio'
-import {
-  outputSummary,
-  recordingQuality,
-  sessionMode,
-  streamingSummary
-} from '@/lib/studio-session-view'
+import { outputSummary, recordingQuality, streamingSummary } from '@/lib/studio-session-view'
 
 /**
  * Session panel (SD1): the glanceable session facts as a label→value list, plus
@@ -68,11 +63,6 @@ export function SessionPanel({
   return (
     <PanelSection>
       <div className="flex flex-col gap-0.5">
-        <SessionRow
-          icon={Record}
-          label="Mode"
-          value={sessionMode(captureConfig.recordEnabled, captureConfig.streamEnabled)}
-        />
         <SessionRow
           icon={Aperture}
           label="Output profile"
