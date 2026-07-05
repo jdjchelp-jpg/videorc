@@ -801,6 +801,27 @@ fn points_to_pixels(points: f64, scale: f64) -> u32 {
         .max(1.0) as u32
 }
 
+#[allow(clippy::too_many_arguments)]
+fn rects_intersect(
+    a_x: f64,
+    a_y: f64,
+    a_width: f64,
+    a_height: f64,
+    b_x: f64,
+    b_y: f64,
+    b_width: f64,
+    b_height: f64,
+) -> bool {
+    a_width > 0.0
+        && a_height > 0.0
+        && b_width > 0.0
+        && b_height > 0.0
+        && a_x < b_x + b_width
+        && b_x < a_x + a_width
+        && a_y < b_y + b_height
+        && b_y < a_y + a_height
+}
+
 fn rect_contains_point(
     origin_x: f64,
     origin_y: f64,
@@ -1647,6 +1668,18 @@ mod macos {
                     )));
                 }
                 let frame = unsafe { window.frame() };
+                // F-021 (same class as F-013): wrapping a window whose frame
+                // SkyLight cannot map to a live display ABORTS the process
+                // inside SLSGetDisplaysWithRect (assert → SIGABRT) during
+                // SCContentFilter init — seen as a crash loop when a window
+                // sits on a disconnected display. Reject it as source-missing
+                // BEFORE ScreenCaptureKit touches it.
+                if !window_frame_is_capturable(content, &frame) {
+                    return Err(NativeScreenStartup::SourceMissing(format!(
+                        "ScreenCaptureKit window {} has no on-display frame (degenerate rect or a disconnected display) and cannot be captured",
+                        config.source_id
+                    )));
+                }
                 let filter = unsafe {
                     SCContentFilter::initWithDesktopIndependentWindow(
                         SCContentFilter::alloc(),
@@ -2090,6 +2123,41 @@ mod macos {
         value.max(1) as u32
     }
 
+    // A window frame is capturable when it is a real rect (finite, ≥1pt) that
+    // overlaps at least one CURRENT display — SkyLight asserts (aborts the
+    // process) on rects it cannot map to a display, e.g. after that display
+    // disconnects.
+    fn window_frame_is_capturable(
+        content: &SCShareableContent,
+        window_frame: &objc2_core_foundation::CGRect,
+    ) -> bool {
+        let (x, y) = (window_frame.origin.x, window_frame.origin.y);
+        let (width, height) = (window_frame.size.width, window_frame.size.height);
+        if ![x, y, width, height].iter().all(|value| value.is_finite())
+            || width < 1.0
+            || height < 1.0
+        {
+            return false;
+        }
+        let displays = unsafe { content.displays() };
+        for index in 0..displays.count() {
+            let display_frame = unsafe { displays.objectAtIndex(index).frame() };
+            if rects_intersect(
+                display_frame.origin.x,
+                display_frame.origin.y,
+                display_frame.size.width,
+                display_frame.size.height,
+                x,
+                y,
+                width,
+                height,
+            ) {
+                return true;
+            }
+        }
+        false
+    }
+
     // Resolve the point→pixel scale of the display containing the window's
     // midpoint (SCWindow.frame and SCDisplay.frame share the global CG point
     // space). Falls back to the first display's scale, then 1.0 — a wrong 1.0
@@ -2227,6 +2295,33 @@ mod tests {
         let video = test_video();
         assert!(width <= video.width && height <= video.height);
         assert!(width >= 1 && height >= 1);
+    }
+
+    // F-021 regression: a window rect that maps to no live display must be
+    // rejected before SCContentFilter init (SkyLight aborts the process on
+    // such rects — seen as a backend crash loop after a display disconnect).
+    #[test]
+    fn window_rects_off_every_display_are_not_capturable() {
+        let display = (0.0, 0.0, 1512.0, 982.0);
+        // On-display window intersects.
+        assert!(rects_intersect(
+            display.0, display.1, display.2, display.3, 100.0, 100.0, 800.0, 600.0
+        ));
+        // A window parked on a disconnected display to the right: no overlap.
+        assert!(!rects_intersect(
+            display.0, display.1, display.2, display.3, 1600.0, 0.0, 800.0, 600.0
+        ));
+        // Straddling the edge still counts as capturable.
+        assert!(rects_intersect(
+            display.0, display.1, display.2, display.3, 1400.0, 100.0, 800.0, 600.0
+        ));
+        // Degenerate/negative sizes never intersect.
+        assert!(!rects_intersect(
+            display.0, display.1, display.2, display.3, 100.0, 100.0, 0.0, 0.0
+        ));
+        assert!(!rects_intersect(
+            display.0, display.1, display.2, display.3, 100.0, 100.0, -50.0, -50.0
+        ));
     }
 
     #[test]
