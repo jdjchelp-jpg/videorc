@@ -883,13 +883,19 @@ fn startup_frame_advances_required_sources(
     let Some(previous) = previous else {
         return true;
     };
-    if requirements.require_camera_source {
-        return current.camera_sequence.is_some()
-            && current.camera_sequence != previous.camera_sequence;
+    if requirements.require_camera_source && current.camera_sequence.is_some() {
+        return current.camera_sequence != previous.camera_sequence;
+    }
+    if requirements.require_camera_source && !current.has_image_source {
+        // Camera required, absent, and nothing covering it — never advances
+        // (startup_frame_block_reason names the missing source).
+        return false;
     }
     // Screen sources must be PRESENT (startup_frame_block_reason enforces that) but
     // are never required to advance: ScreenCaptureKit delivers frames only when the
     // screen changes, so a static screen legitimately repeats one sequence forever.
+    // An ACTIVE takeover image is the same shape: it intentionally hides the other
+    // layers and is static by nature, so recording may start on the image alone.
     true
 }
 
@@ -914,7 +920,12 @@ fn startup_frame_block_reason(
     }
 
     let mut missing_sources = Vec::new();
-    if params.requirements.require_camera_source && evidence.camera_sequence.is_none() {
+    // An active takeover image intentionally hides the camera/screen layers —
+    // the frame IS the image, so neither source may block recording startup.
+    if params.requirements.require_camera_source
+        && evidence.camera_sequence.is_none()
+        && !evidence.has_image_source
+    {
         missing_sources.push("camera");
     }
     if params.requirements.require_screen_source
@@ -5167,6 +5178,76 @@ mod tests {
                 Some(8)
             );
         }
+    }
+
+    // Regression: recording start with an ACTIVE takeover image must not
+    // block on the camera the takeover intentionally hides ("latest
+    // compositor frame is missing required camera source(s)").
+    #[test]
+    fn startup_barrier_waives_hidden_sources_under_an_active_takeover_image() {
+        let evidence = |camera: Option<u64>, image: bool| CompositorFrameEvidence {
+            sequence: 10,
+            scene_revision: Some(1),
+            width: 1920,
+            height: 1080,
+            has_real_source: true,
+            camera_sequence: camera,
+            screen_sequence: None,
+            has_image_source: image,
+            published_at: Instant::now(),
+        };
+        let params = |camera_required: bool| CompositorStartupBarrierParams {
+            width: 1920,
+            height: 1080,
+            required_scene_revision: Some(1),
+            min_consecutive_frames: 1,
+            max_frame_gap: None,
+            timeout: Duration::from_secs(1),
+            requirements: CompositorStartupSourceRequirements {
+                require_real_source: false,
+                require_camera_source: camera_required,
+                require_screen_source: true,
+            },
+        };
+
+        // Takeover active: camera and screen both hidden — no block.
+        assert_eq!(
+            startup_frame_block_reason(evidence(None, true), params(true)),
+            None
+        );
+        // No takeover and no camera: still blocks with the named source.
+        let reason = startup_frame_block_reason(evidence(None, false), params(true))
+            .expect("camera absence without a takeover must block");
+        assert!(reason.contains("camera"));
+        // Camera present (screen still absent, no takeover): only the screen blocks.
+        let reason = startup_frame_block_reason(evidence(Some(3), false), params(true))
+            .expect("screen absence without a takeover must still block");
+        assert!(reason.contains("screen") && !reason.contains("camera"));
+
+        // Advancement: a static takeover frame counts as progressing…
+        let requirements = params(true).requirements;
+        assert!(startup_frame_advances_required_sources(
+            Some(evidence(None, true)),
+            evidence(None, true),
+            requirements
+        ));
+        // …a present camera must still actually advance…
+        assert!(!startup_frame_advances_required_sources(
+            Some(evidence(Some(3), false)),
+            evidence(Some(3), false),
+            requirements
+        ));
+        assert!(startup_frame_advances_required_sources(
+            Some(evidence(Some(3), false)),
+            evidence(Some(4), false),
+            requirements
+        ));
+        // …and a required-but-absent camera with no takeover never advances.
+        assert!(!startup_frame_advances_required_sources(
+            Some(evidence(None, false)),
+            evidence(None, false),
+            requirements
+        ));
     }
 
     async fn set_latest_frame_evidence(
