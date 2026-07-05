@@ -50,8 +50,6 @@ export type BackgroundStyle = {
   visibilityPercent: number
 }
 
-export type BackgroundStyleOverrides = Partial<BackgroundStyle>
-
 export type BackgroundAsset = {
   id: string
   name: string
@@ -81,9 +79,6 @@ export type BackgroundAssetRegistry = {
   // Always points at a 'ready' slot or is null — enforced by applySlot and
   // reconcileRegistry so a dangling/empty active can never persist.
   activeSlotId: string | null
-  // Per-scene overrides on the active background's asset defaults (A5). A present
-  // field shadows the asset default; an absent field inherits it.
-  sceneOverrides: BackgroundStyleOverrides
   // Used to seed bundled presets into older localStorage registries exactly once.
   bundledPresetVersion: number
 }
@@ -164,7 +159,6 @@ export function createDefaultRegistry(): BackgroundAssetRegistry {
     slots: createDefaultBackgroundSlots(),
     assets,
     activeSlotId: null,
-    sceneOverrides: {},
     bundledPresetVersion: BUNDLED_PRESET_VERSION
   }
 }
@@ -530,7 +524,6 @@ export function reconcileRegistry(loaded: unknown): BackgroundAssetRegistry {
     slots?: unknown
     assets?: unknown
     activeSlotId?: unknown
-    sceneOverrides?: unknown
     bundledPresetVersion?: unknown
   }
   const assets: Record<string, BackgroundAsset> = { ...base.assets }
@@ -585,40 +578,8 @@ export function reconcileRegistry(loaded: unknown): BackgroundAssetRegistry {
     slots,
     assets: prunedAssets,
     activeSlotId,
-    sceneOverrides: normalizeOverrides(data.sceneOverrides),
     bundledPresetVersion: BUNDLED_PRESET_VERSION
   }
-}
-
-function normalizeOverrides(raw: unknown): BackgroundStyleOverrides {
-  if (!raw || typeof raw !== 'object') {
-    return {}
-  }
-  const data = raw as Partial<BackgroundStyle>
-  const result: BackgroundStyleOverrides = {}
-  const num = (value: unknown): value is number =>
-    typeof value === 'number' && Number.isFinite(value)
-  if (data.fit === 'fill' || data.fit === 'fit' || data.fit === 'stretch') {
-    result.fit = data.fit
-  }
-  if (num(data.scale)) result.scale = data.scale
-  if (num(data.offsetX)) result.offsetX = data.offsetX
-  if (num(data.offsetY)) result.offsetY = data.offsetY
-  if (num(data.blurPx)) result.blurPx = data.blurPx
-  if (num(data.dimPercent)) result.dimPercent = data.dimPercent
-  if (num(data.saturationPercent)) result.saturationPercent = data.saturationPercent
-  if (num(data.vignettePercent)) result.vignettePercent = data.vignettePercent
-  return result
-}
-
-// Asset defaults with the scene's overrides layered on top — the concrete style
-// the compositor renders. Editing an asset default flows through for any field
-// the scene hasn't overridden.
-export function effectiveStyle(
-  asset: BackgroundAsset,
-  overrides: BackgroundStyleOverrides
-): BackgroundStyle {
-  return { ...asset.styleDefaults, ...overrides }
 }
 
 // The resolved background for the active scene, or null when nothing usable is
@@ -638,7 +599,10 @@ export function effectiveSceneBackground(
   if (!asset || !asset.assetPath) {
     return null
   }
-  const style = effectiveStyle(asset, registry.sceneOverrides)
+  // The asset's style defaults ARE the style — the scene-override layer was
+  // removed with the Scene-page Background section (its map was global, never
+  // actually per-scene); Assets' Adjust-style popover is the single editing home.
+  const style = asset.styleDefaults
   return {
     assetId: asset.id,
     managedAssetPath: asset.assetPath,
@@ -652,32 +616,4 @@ export function effectiveSceneBackground(
     vignettePercent: style.vignettePercent,
     visibilityPercent: style.visibilityPercent
   }
-}
-
-export function isFieldOverridden(
-  registry: BackgroundAssetRegistry,
-  key: keyof BackgroundStyle
-): boolean {
-  return registry.sceneOverrides[key] !== undefined
-}
-
-// Set one or more per-scene overrides. To clear a field back to the asset
-// default, use resetSceneOverride (setting undefined would persist a hole).
-export function setSceneOverride(
-  registry: BackgroundAssetRegistry,
-  patch: BackgroundStyleOverrides
-): BackgroundAssetRegistry {
-  return { ...registry, sceneOverrides: { ...registry.sceneOverrides, ...patch } }
-}
-
-export function resetSceneOverride(
-  registry: BackgroundAssetRegistry,
-  key: keyof BackgroundStyle
-): BackgroundAssetRegistry {
-  if (registry.sceneOverrides[key] === undefined) {
-    return registry
-  }
-  const sceneOverrides = { ...registry.sceneOverrides }
-  delete sceneOverrides[key]
-  return { ...registry, sceneOverrides }
 }

@@ -12,14 +12,11 @@ import {
   defaultBackgroundStyle,
   effectiveSceneBackground,
   importIntoSlot,
-  isFieldOverridden,
   markSlotStatus,
   reconcileRegistry,
   removeSlotAsset,
   renameAsset,
-  resetSceneOverride,
   setAssetStyle,
-  setSceneOverride,
   slotDisplayStatus,
   slotName,
   type BackgroundAsset,
@@ -370,7 +367,7 @@ describe('reconcileRegistry with imported assets', () => {
   })
 })
 
-describe('effective scene background and overrides', () => {
+describe('effective scene background', () => {
   it('returns null when no slot is active', () => {
     expect(effectiveSceneBackground(createDefaultRegistry())).toBeNull()
   })
@@ -393,10 +390,10 @@ describe('effective scene background and overrides', () => {
     })
   })
 
-  it('carries a visibility override into the effective background', () => {
+  it('carries the asset visibility default into the effective background', () => {
     let registry = importIntoSlot(createDefaultRegistry(), 'bg-02', importedAsset('a1', 'Sunset'))
+    registry = setAssetStyle(registry, 'a1', { visibilityPercent: 0 })
     registry = applySlot(registry, 'bg-02')
-    registry = setSceneOverride(registry, { visibilityPercent: 0 })
 
     // 0 keeps the recording full-canvas; the backend maps this to a zero stage margin.
     expect(effectiveSceneBackground(registry)?.visibilityPercent).toBe(0)
@@ -422,32 +419,23 @@ describe('effective scene background and overrides', () => {
     expect(effectiveSceneBackground(registry)).toBeNull()
   })
 
-  it('layers scene overrides over asset defaults', () => {
+  it('renders the asset style defaults exactly (no hidden override layer)', () => {
     let registry = importIntoSlot(createDefaultRegistry(), 'bg-02', importedAsset('a1', 'Sunset'))
     registry = setAssetStyle(registry, 'a1', { blurPx: 4, scale: 150 })
     registry = applySlot(registry, 'bg-02')
-    registry = setSceneOverride(registry, { blurPx: 20 })
 
     const effective = effectiveSceneBackground(registry)
-    expect(effective?.blurPx).toBe(20) // scene override wins
-    expect(effective?.scale).toBe(150) // un-overridden asset default inherited
+    expect(effective?.blurPx).toBe(4)
+    expect(effective?.scale).toBe(150)
   })
 
-  it('tracks and resets overridden fields', () => {
-    let registry = setSceneOverride(createDefaultRegistry(), { blurPx: 12 })
-    expect(isFieldOverridden(registry, 'blurPx')).toBe(true)
-    expect(isFieldOverridden(registry, 'scale')).toBe(false)
-
-    registry = resetSceneOverride(registry, 'blurPx')
-    expect(isFieldOverridden(registry, 'blurPx')).toBe(false)
-    expect(resetSceneOverride(registry, 'blurPx')).toBe(registry)
-  })
-
-  it('restores scene overrides through reconcile, dropping junk values', () => {
+  it('ignores sceneOverrides persisted by older builds', () => {
+    // The override layer was removed with the Scene-page Background section;
+    // stale persisted overrides must not shape the output invisibly.
     const restored = reconcileRegistry({
-      sceneOverrides: { blurPx: 9, scale: 'nope', fit: 'fit', bogus: 1 }
-    })
-    expect(restored.sceneOverrides).toEqual({ blurPx: 9, fit: 'fit' })
+      sceneOverrides: { blurPx: 9, fit: 'fit' }
+    }) as unknown as Record<string, unknown>
+    expect('sceneOverrides' in restored).toBe(false)
   })
 })
 
