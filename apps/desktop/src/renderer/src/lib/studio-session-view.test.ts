@@ -23,7 +23,9 @@ describe('sessionMode', () => {
 describe('qualityName', () => {
   it('classifies common heights and falls back to <h>p', () => {
     expect(qualityName(2160)).toBe('4K')
-    expect(qualityName(1440)).toBe('1440p')
+    // Q7 (plan 022): 1440 gets its class name — "1440p · 1440p30" read as a
+    // stutter in the compact Output control.
+    expect(qualityName(1440)).toBe('2K')
     expect(qualityName(1080)).toBe('1080p')
     expect(qualityName(720)).toBe('720p')
     expect(qualityName(480)).toBe('480p')
@@ -34,6 +36,9 @@ describe('recordingQuality / outputSummary', () => {
   it('formats quality and output strings', () => {
     const video = { width: 3840, height: 2160, fps: 30 }
     expect(recordingQuality(video)).toBe('4K · 2160p30')
+    expect(recordingQuality({ width: 2560, height: 1440, fps: 30 })).toBe('2K · 1440p30')
+    // When the class IS the height, skip the redundant doubling.
+    expect(recordingQuality({ width: 1920, height: 1080, fps: 60 })).toBe('1080p60')
     expect(outputSummary(video)).toBe('3840×2160 · 30fps')
   })
 })
