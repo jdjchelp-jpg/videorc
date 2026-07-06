@@ -25,7 +25,23 @@
   (smoke provider accounts/credentials)
 - **Category**: renderer crash, QA infrastructure, UI polish, theming
 - **Planned at**: commit `057a6cf4`, 2026-07-06
-- **Execution**: TODO
+- **Execution**: EXECUTED 2026-07-06 (Q0 `5dd94a30`, Q1/Q2 agent side
+  `d3f7f292`, Q3 `c45798c4`, Q4 `a683d0e2`, Q5 `caeb40cd`, Q6 `06046bd5`,
+  Q7 `f69cd283`+`34f308a1`, Q8 `2ce03900` on main). Notes:
+  - Q0: no latent errors surfaced by the widened typecheck include; the
+    gate hole is proven closed (removed import fails `pnpm typecheck`).
+  - Q1 owner-side still pending: today's attempt discovered sources but
+    was env-blocked (camera TCC missing for the dev target; screen live
+    frames=0 on the in-use display). RC gate sequence documented in the
+    runbook.
+  - Q2 owner-side still pending (provider accounts); strict-flag docs +
+    runbook step landed.
+  - Q7 follow-up from the screenshot sweep: qualityName gained a 2K tier
+    and recordingQuality stops doubling the height ("1440p · 1440p30" →
+    "2K · 1440p30").
+  - Screenshot sweeps re-run after Q5 and Q7; light theme, System Access
+    rows, selects, and compact labels verified in the captures — owner
+    by-eye still owed.
 
 ## Verified Root Causes (2026-07-06, current main)
 

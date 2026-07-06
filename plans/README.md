@@ -37,7 +37,7 @@ row when done.
 | 019 | Finish Windows v1 capture and package acceptance | P2 | L | 001, 002, 003, 006, 012 | IN PROGRESS (2026-06-13; Windows status and local gate script landed, real Windows package/capture/signing evidence pending) |
 | 020 | Remediate leaked Google OAuth desktop client secret | P0 | M | Google Cloud + release access | IN PROGRESS (2026-07-06; env rotated + validation hardened, rotated release + old-secret disable pending) |
 | 021 | Fix the first external-tester feedback batch (preview vanish, nudge d-pad, silent mic) | P0 | M | Reporter support bundle (F3 attribution only) | DONE (2026-07-06; F1–F4 on main, gates PASS; pending owner: F0 Discord ask + reporter confirmation on the next shipped build) |
-| 022 | Full-app QA fix list: comments crash + gate hole, device-gate repeatability, toast/settings/light-theme/select polish | P0 | M | Owner for Q1 TCC grants + Q2 provider accounts | TODO |
+| 022 | Full-app QA fix list: comments crash + gate hole, device-gate repeatability, toast/settings/light-theme/select polish | P0 | M | Owner for Q1 TCC grants + Q2 provider accounts | DONE (2026-07-06; Q0–Q8 on main, gates PASS; pending owner: Q1 TCC grants + device-gate run, Q2 provider accounts, UI by-eye) |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) |
 REJECTED (with one-line rationale).
