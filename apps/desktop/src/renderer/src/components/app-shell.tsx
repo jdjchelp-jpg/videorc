@@ -162,9 +162,16 @@ export function AppShell(): ReactElement {
 
   // ⌘1–⌘9 / ⌘, arrive from the main process (Chromium swallows ⌘+digit before
   // the renderer keydown — see main's before-input-event handler). Map the raw
-  // key to a page here, where navigation state lives.
+  // key to a page here, where navigation state lives. FX6: the IPC path
+  // bypasses dialog focus entirely, so navigating behind an open modal has to
+  // be gated here explicitly (ref — the subscription outlives renders).
+  const modalOpenRef = useRef(false)
+  modalOpenRef.current = onboardingOpen || whatsNew.open
   useEffect(() => {
     const off = window.videorc?.onShortcutNavigate?.((key) => {
+      if (modalOpenRef.current) {
+        return
+      }
       const shortcut = WORKSPACE_SHORTCUTS.find((entry) => entry.digit === key)
       if (shortcut) {
         setActive(shortcut.tab)

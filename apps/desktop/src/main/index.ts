@@ -1236,6 +1236,49 @@ function notesWindowHtml(document: NotesDocument): string {
   </body></html>`
 }
 
+// FX6: app shortcuts died while an aux window (Notes/Comments) held key focus
+// — the forwarding above only listens on the main window. Aux windows forward
+// the exact same chords: ⌘1–9/⌘, focus main and navigate; ⌘⇧N/⌘⇧J toggle the
+// aux windows. Nothing else is intercepted (typing in Notes stays untouched).
+function attachAuxWindowShortcuts(window: BrowserWindow): void {
+  window.webContents.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown' || input.alt || !(input.meta || input.control)) {
+      return
+    }
+    if (input.shift) {
+      const key = input.key.toLowerCase()
+      if (key === 'n') {
+        event.preventDefault()
+        if (notesWindowIsOpen()) {
+          closeNotesWindow()
+        } else {
+          void openNotesWindow()
+        }
+      } else if (key === 'j') {
+        event.preventDefault()
+        if (commentsWindowIsOpen()) {
+          closeCommentsWindow()
+        } else {
+          void openCommentsWindow()
+        }
+      }
+      return
+    }
+    const isDigit = input.key >= '1' && input.key <= '9'
+    if (isDigit || input.key === ',') {
+      event.preventDefault()
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        if (mainWindow.isMinimized()) {
+          mainWindow.restore()
+        }
+        mainWindow.show()
+        mainWindow.focus()
+        mainWindow.webContents.send('shortcut:navigate', input.key)
+      }
+    }
+  })
+}
+
 async function openNotesWindow(): Promise<NotesWindowState> {
   if (!notesWindowFeatureEnabled) {
     return notesWindowState()
@@ -1275,6 +1318,7 @@ async function openNotesWindow(): Promise<NotesWindowState> {
   })
   notesWindowClosing = false
   notesWindow = window
+  attachAuxWindowShortcuts(window)
   notesWindowAlwaysOnTop = notesWindowAlwaysOnTopPreference(prefs)
   notesWindowContentProtected = false
   try {
@@ -1494,6 +1538,7 @@ async function openCommentsWindow(): Promise<CommentsWindowState> {
   })
   commentsWindowClosing = false
   commentsWindow = window
+  attachAuxWindowShortcuts(window)
   commentsWindowContentProtected = false
   try {
     window.setContentProtection(true)
