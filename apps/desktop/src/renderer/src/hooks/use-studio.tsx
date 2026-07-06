@@ -333,6 +333,9 @@ export type StudioContextValue = {
   recording: RecordingStatus
   logs: BackendLogEvent[]
   healthEvents: HealthEvent[]
+  /** Durable record of automatic source swaps (Q3); cleared by dismissal or a manual re-pick. */
+  sourceFallbackNotices: string[]
+  dismissSourceFallbackNotices: () => void
   streamHealth: StreamHealth | null
   streamTargets: StreamTargetRuntime[]
   diagnosticStats: DiagnosticStats
@@ -851,6 +854,10 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
   const [recording, setRecording] = useState<RecordingStatus>({ state: 'idle', message: 'Ready.' })
   const [logs, setLogs] = useState<BackendLogEvent[]>([])
   const [healthEvents, setHealthEvents] = useState<HealthEvent[]>([])
+  // Q3 (plan 022): the durable record of automatic source swaps. The toast is
+  // transient; this feeds a dismissible Sources-tab notice that persists until
+  // the user re-picks a source (acknowledgement) or dismisses it.
+  const [sourceFallbackNotices, setSourceFallbackNotices] = useState<string[]>([])
   const [streamHealth, setStreamHealth] = useState<StreamHealth | null>(null)
   const [streamTargets, setStreamTargets] = useState<StreamTargetRuntime[]>([])
   const [diagnosticStats, setDiagnosticStats] = useState<DiagnosticStats>(idleDiagnosticStats)
@@ -2208,9 +2215,18 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       // FX9: these fire during churny moments (backend restart, window
       // closed) — the default 4s toast expired unseen by-eye. A source
       // swap changes what gets recorded; give it time to be read.
-      toast.warning(message, { duration: 10_000 })
+      // Q3 (plan 022): keyed by message so repeated reconciliation of the
+      // same source UPDATES one toast instead of stacking a covering pile.
+      toast.warning(message, { duration: 10_000, id: `source-reconciliation:${message}` })
+    }
+    if (messages.length > 0) {
+      setSourceFallbackNotices((current) => [...new Set([...current, ...messages])])
     }
   }, [captureConfig.sources])
+
+  const dismissSourceFallbackNotices = useCallback(() => {
+    setSourceFallbackNotices([])
+  }, [])
 
   useEffect(() => {
     if (!connection) {
@@ -5672,6 +5688,8 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       recording,
       logs,
       healthEvents,
+      sourceFallbackNotices,
+      dismissSourceFallbackNotices,
       streamHealth,
       streamTargets,
       diagnosticStats,
@@ -5845,6 +5863,8 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       recording,
       logs,
       healthEvents,
+      sourceFallbackNotices,
+      dismissSourceFallbackNotices,
       streamHealth,
       streamTargets,
       diagnosticStats,

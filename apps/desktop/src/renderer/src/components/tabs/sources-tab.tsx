@@ -118,7 +118,9 @@ export function SourcesTab(): ReactElement {
     openSystemPermission,
     openPreviewPermissions,
     revealPermissionTarget,
-    runtimeInfo
+    runtimeInfo,
+    sourceFallbackNotices,
+    dismissSourceFallbackNotices
   } = useStudio()
   const captureDevices = capturePickerDevices(deviceList.devices)
   const cameras = deviceList.devices.filter((device) => device.kind === 'camera')
@@ -156,6 +158,8 @@ export function SourcesTab(): ReactElement {
     buildCameraSources(captureConfig.sources, cameras, cameraId)
 
   const applyCaptureSource = (captureId: string | undefined): void => {
+    // A manual pick acknowledges any automatic fallback (Q3, plan 022).
+    dismissSourceFallbackNotices()
     const sources = captureSourcesForDevice(captureId)
     if (isSessionActive) {
       void switchSourceDeviceLive('capture', sources)
@@ -165,6 +169,7 @@ export function SourcesTab(): ReactElement {
   }
 
   const applyCameraSource = (cameraId: string | undefined): void => {
+    dismissSourceFallbackNotices()
     const sources = cameraSourcesForDevice(cameraId)
     if (isSessionActive) {
       void switchSourceDeviceLive('camera', sources)
@@ -232,6 +237,25 @@ export function SourcesTab(): ReactElement {
             <AlertTitle>{warning}</AlertTitle>
           </Alert>
         ))}
+        {/* Durable record of automatic source swaps (Q3, plan 022): the toast
+            is transient; this stays until dismissed or a source is re-picked. */}
+        {sourceFallbackNotices.length > 0 ? (
+          <Alert variant="warning">
+            <Warning weight="fill" />
+            <AlertTitle>Videorc changed a capture source automatically.</AlertTitle>
+            <AlertDescription className="flex flex-col gap-2 pt-2">
+              {sourceFallbackNotices.map((notice) => (
+                <span key={notice}>{notice}</span>
+              ))}
+              <div>
+                <Button size="sm" variant="outline" onClick={dismissSourceFallbackNotices}>
+                  <Check data-icon="inline-start" />
+                  Got it
+                </Button>
+              </div>
+            </AlertDescription>
+          </Alert>
+        ) : null}
         {hasCapturePermissionRequired ? (
           <Alert variant="warning">
             <Warning weight="fill" />
