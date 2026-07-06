@@ -86,6 +86,7 @@ import {
   type PresentingAssessment,
   type PresentingWatchState
 } from './native-preview-first-frame'
+import { discoverObs, readObsSetup, readObsStreamKey } from './obs-import'
 import { initAutoUpdater, registerUpdaterIpc } from './updater'
 import {
   DEFAULT_NATIVE_PREVIEW_MAX_HANDOFF_AGE_MS,
@@ -7371,6 +7372,18 @@ app.whenReady().then(async () => {
   )
   ipcMain.handle('system:reveal-permission-target', () => revealPermissionTarget())
   ipcMain.handle('system:reveal-path', (_event, targetPath: string) => revealPath(targetPath))
+  // OBS setup import (O1): read-only discovery over OBS Studio's config files.
+  // The stream key never rides these payloads — obs:read strips it; the apply
+  // flow requests it exactly once via obs:read-stream-key.
+  ipcMain.handle('obs:discover', () => discoverObs())
+  ipcMain.handle('obs:read', (_event, collection: string, profile: string) =>
+    typeof collection === 'string' && typeof profile === 'string'
+      ? readObsSetup(collection, profile)
+      : null
+  )
+  ipcMain.handle('obs:read-stream-key', (_event, profile: string) =>
+    typeof profile === 'string' ? readObsStreamKey(profile) : null
+  )
   // Library Delete: recordings move to the system Trash — Trash IS the undo;
   // nothing in the app hard-deletes a user's file (Library rewrite L3).
   ipcMain.handle('system:trash-paths', async (_event, paths: unknown) => {

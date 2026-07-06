@@ -2294,6 +2294,9 @@ export interface VideorcApi {
   ) => Promise<{ granted: boolean; restarted: boolean }>
   revealPermissionTarget: () => Promise<void>
   revealPath: (path: string) => Promise<void>
+  obsDiscover?: () => Promise<ObsDiscovery>
+  obsRead?: (collection: string, profile: string) => Promise<ObsSetup | null>
+  obsReadStreamKey?: (profile: string) => Promise<string | null>
   /** Open a file in the system default app (Library Play); resolves to an
    * error string when the OS refuses, empty string on success. */
   openPath: (path: string) => Promise<string>
@@ -2513,4 +2516,86 @@ export interface CaptionsWindowState {
   alwaysOnTop: boolean
   enabled: boolean
   message?: string
+}
+
+// --- OBS setup import (plan: vault 2026-07-07 OBS Import) ----------------
+
+/** One OBS input source, reduced to the kinds Videorc can reason about. */
+export interface ObsSource {
+  name: string
+  /** Videorc-facing classification of the OBS source id. */
+  kind:
+    | 'display'
+    | 'window'
+    | 'application'
+    | 'camera'
+    | 'microphone'
+    | 'image'
+    | 'browser'
+    | 'text'
+    | 'media'
+    | 'other'
+  /** The raw OBS source id (e.g. "screen_capture") for the report. */
+  obsKind: string
+  /** Camera/mic device name when OBS recorded one. */
+  deviceName?: string
+  /** Window/application hint for window captures. */
+  applicationHint?: string
+  /** Image file path for image sources. */
+  filePath?: string
+}
+
+export interface ObsSceneItem {
+  sourceName: string
+  visible: boolean
+  /** Position in canvas pixels. */
+  x: number
+  y: number
+  scaleX: number
+  scaleY: number
+  boundsType: number
+  boundsX: number
+  boundsY: number
+  cropLeft: number
+  cropTop: number
+  cropRight: number
+  cropBottom: number
+}
+
+export interface ObsScene {
+  name: string
+  current: boolean
+  items: ObsSceneItem[]
+}
+
+export interface ObsStreamService {
+  type: 'rtmp_common' | 'rtmp_custom'
+  /** rtmp_common service label ("YouTube - RTMPS", "Twitch"). */
+  service?: string
+  server?: string
+  /** The key itself NEVER crosses to the renderer in discovery — only on apply. */
+  hasKey: boolean
+}
+
+export interface ObsSetup {
+  collectionName: string
+  canvasWidth: number
+  canvasHeight: number
+  outputWidth: number
+  outputHeight: number
+  fps: number
+  recordingPath?: string
+  sources: ObsSource[]
+  scenes: ObsScene[]
+  globalMicDeviceName?: string
+  hasDesktopAudio: boolean
+  service?: ObsStreamService
+}
+
+export interface ObsDiscovery {
+  available: boolean
+  collections: string[]
+  profiles: string[]
+  currentCollection?: string
+  currentProfile?: string
 }
