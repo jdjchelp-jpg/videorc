@@ -2,6 +2,7 @@ import type { AiCapabilities, AiQuotaStatus, VideorcAccountSnapshot } from './ba
 
 export type CloudAiReadinessState =
   | 'signed-out'
+  | 'session-expired'
   | 'checking'
   | 'premium-required'
   | 'server-unconfigured'
@@ -40,6 +41,18 @@ export function cloudAiReadiness({
   }
 
   if (error && !capabilities) {
+    // FX2: the local account snapshot can say signed-in while the web API
+    // rejects the stored token (401 surfaces as a "Sign in…" message — the
+    // same signal the backend matches on). Rendering the raw error read as
+    // "you are signed out" next to a signed-in sidebar; name the real
+    // problem instead.
+    if (/sign in/i.test(error)) {
+      return disabled(
+        'session-expired',
+        'Videorc session expired',
+        'Your sign-in expired on this Mac — sign in again to use cloud AI.'
+      )
+    }
     return disabled('error', 'Cloud AI unavailable', error)
   }
 

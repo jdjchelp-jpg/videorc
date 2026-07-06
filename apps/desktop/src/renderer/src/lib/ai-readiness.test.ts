@@ -224,6 +224,34 @@ describe('cloudAiReadiness', () => {
     expect(readiness.ready).toBe(false)
   })
 
+  it('maps an expired token (401 "Sign in…" error while signed-in) to session-expired, never signed-out copy', () => {
+    const readiness = cloudAiReadiness({
+      account: signedInAccount,
+      capabilities: null,
+      error: 'Sign in to use cloud AI.',
+      loading: false,
+      quota: null
+    })
+
+    expect(readiness.state).toBe('session-expired')
+    expect(readiness.ready).toBe(false)
+    expect(readiness.title).toBe('Videorc session expired')
+    expect(readiness.description).toMatch(/sign in again/i)
+  })
+
+  it('keeps non-auth capability errors on the plain error state', () => {
+    const readiness = cloudAiReadiness({
+      account: signedInAccount,
+      capabilities: null,
+      error: 'Videorc API request failed (503): upstream down',
+      loading: false,
+      quota: null
+    })
+
+    expect(readiness.state).toBe('error')
+    expect(readiness.description).toMatch(/503/)
+  })
+
   it('blocks Basic accounts with a Premium reason from server capabilities', () => {
     const readiness = cloudAiReadiness({
       account: signedInAccount,
