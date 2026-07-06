@@ -47,6 +47,31 @@ pub fn import_extension_allowed(path: &Path) -> bool {
         .is_some_and(|ext| IMPORTABLE_EXTENSIONS.contains(&ext.as_str()))
 }
 
+/// Where an import lands. A BLANK setting means the platform default — the
+/// same contract recording uses (Settings says "Blank uses the default") — so
+/// import creates and uses it instead of demanding explicit configuration.
+/// An explicitly configured directory must already exist: a typo should
+/// surface here, not silently divert imports somewhere else.
+fn resolve_import_output_dir(output_directory: &str, default_dir: PathBuf) -> Result<PathBuf> {
+    let trimmed = output_directory.trim();
+    if trimmed.is_empty() {
+        std::fs::create_dir_all(&default_dir).with_context(|| {
+            format!(
+                "Could not create the default recordings directory {}.",
+                default_dir.display()
+            )
+        })?;
+        return Ok(default_dir);
+    }
+    let dir = PathBuf::from(trimmed);
+    if !dir.is_dir() {
+        bail!(
+            "The output directory in Settings does not exist. Fix it there, or clear it to use the default."
+        );
+    }
+    Ok(dir)
+}
+
 /// Copy-safe destination inside the output directory for an import (pure
 /// candidate builder; uniqueness handled like Duplicate).
 fn import_destination(output_directory: &Path, source: &Path) -> PathBuf {
@@ -155,10 +180,8 @@ pub async fn import_recording(
     if !import_extension_allowed(&source) {
         bail!("Only MP4, MOV, M4V, MKV, and WebM files can be imported.");
     }
-    let output_dir = PathBuf::from(output_directory.trim());
-    if output_directory.trim().is_empty() || !output_dir.is_dir() {
-        bail!("Set a valid output directory in Settings before importing.");
-    }
+    let output_dir =
+        resolve_import_output_dir(output_directory, crate::recording::default_recordings_dir())?;
     let destination = import_destination(&output_dir, &source);
     let copy_source = source.clone();
     let copy_destination = destination.clone();
@@ -270,5 +293,38 @@ mod tests {
         assert!(import_extension_allowed(Path::new("/x/a.webm")));
         assert!(!import_extension_allowed(Path::new("/x/a.txt")));
         assert!(!import_extension_allowed(Path::new("/x/noext")));
+    }
+
+    // Regression (2026-07-06): import demanded an explicit output directory
+    // while Settings promises "Blank uses the default" — a blank setting must
+    // resolve (and create) the default recordings dir, like recording does.
+    #[test]
+    fn blank_output_directory_resolves_and_creates_the_default() {
+        let base =
+            std::env::temp_dir().join(format!("videorc-import-dir-{}", uuid::Uuid::new_v4()));
+        let default_dir = base.join("Videorc").join("Recordings");
+
+        let resolved = resolve_import_output_dir("  ", default_dir.clone()).unwrap();
+
+        assert_eq!(resolved, default_dir);
+        assert!(default_dir.is_dir());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn configured_output_directory_is_used_when_it_exists_and_errors_when_missing() {
+        let base =
+            std::env::temp_dir().join(format!("videorc-import-cfg-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&base).unwrap();
+
+        let resolved =
+            resolve_import_output_dir(base.to_str().unwrap(), PathBuf::from("/unused")).unwrap();
+        assert_eq!(resolved, base);
+
+        let missing = base.join("nope");
+        let error = resolve_import_output_dir(missing.to_str().unwrap(), PathBuf::from("/unused"))
+            .unwrap_err();
+        assert!(error.to_string().contains("does not exist"), "{error}");
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

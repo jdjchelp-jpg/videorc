@@ -5143,13 +5143,11 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     if (!sourcePath) {
       return
     }
-    const outputDirectory = settings.outputDirectory?.trim()
-    if (!outputDirectory) {
-      throw new Error('Set an output directory in Settings before importing.')
-    }
+    // Blank means the platform default — the backend resolves and creates it,
+    // exactly like recording does (Settings: "Blank uses the default").
     await client.request('sessions.import', {
       sourcePath,
-      outputDirectory,
+      outputDirectory: settings.outputDirectory?.trim() ?? '',
       ffmpegPath: settings.ffmpegPath.trim() || undefined
     })
     await refreshSessions(client)
