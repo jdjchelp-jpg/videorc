@@ -3,9 +3,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/TheOrcDev/videorc/stargazers"><img src="https://shieldcn.dev/github/stars/TheOrcDev/videorc.svg?variant=secondary" alt="GitHub stars" /></a>
-  <a href="https://github.com/TheOrcDev/videorc/actions/workflows/ci.yml"><img src="https://shieldcn.dev/github/ci/TheOrcDev/videorc.svg?variant=secondary&workflow=CI" alt="CI status" /></a>
-  <a href="LICENSE"><img src="https://shieldcn.dev/github/license/TheOrcDev/videorc.svg?variant=secondary" alt="License" /></a>
+  <a href="https://github.com/TheOrcDev/videorc/stargazers"><img src="https://img.shields.io/github/stars/TheOrcDev/videorc?style=flat-square&logo=github" alt="GitHub stars" /></a>
+  <a href="https://github.com/TheOrcDev/videorc/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/TheOrcDev/videorc/ci.yml?branch=main&style=flat-square&label=CI" alt="CI status" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/TheOrcDev/videorc?style=flat-square" alt="License" /></a>
   <img src="https://shieldcn.dev/badge/platform-macOS-18181b.svg?variant=secondary&logo=apple" alt="Platform: macOS" />
   <a href="https://videorc.com"><img src="https://shieldcn.dev/badge/download-videorc.com-e11d48.svg?variant=branded&logo=apple" alt="Download at videorc.com" /></a>
 </p>
