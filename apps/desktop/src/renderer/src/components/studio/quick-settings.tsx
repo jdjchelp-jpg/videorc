@@ -26,6 +26,7 @@ import { Separator } from '@/components/ui/separator'
 import { Switch } from '@/components/ui/switch'
 import { useWorkspaceNav } from '@/components/workspace-nav'
 import { useStudio } from '@/hooks/use-studio'
+import { recordingQuality } from '@/lib/studio-session-view'
 import type { LayoutPreset } from '@/lib/backend'
 import { cloudAiUploadGate } from '@/lib/entitlement-ui'
 import {
@@ -129,17 +130,21 @@ export function QuickSettings(): ReactElement {
 
   // F-015: the synthetic diagnostic source replaces the screen — say so
   // instead of claiming "No screen".
+  // Q7 (plan 022): the compact trigger lost its distinguishing tail to
+  // truncation ("No screen - …"). Name only what IS selected; absence gets one
+  // short phrase instead of two "No …" fragments fighting for the width.
   const screenSummary = captureConfig.sources.testPattern
     ? 'Test pattern'
-    : (selectedCaptureDevice?.name ?? 'No screen')
-  const sourceSummary = [screenSummary, selectedCamera?.name ?? 'No camera'].join(' · ')
+    : selectedCaptureDevice?.name
+  const sourceSummary =
+    [screenSummary, selectedCamera?.name].filter(Boolean).join(' · ') || 'No sources selected'
 
   return (
     <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
       {/* SOURCE — screen + camera, edited off-air; full picker on Sources. */}
       <QuickCard icon={Monitor} label="Source">
         <Popover>
-          <PopoverTrigger className={TRIGGER_CLASS}>
+          <PopoverTrigger className={TRIGGER_CLASS} title={sourceSummary}>
             <span className="min-w-0 flex-1 truncate text-left font-medium">{sourceSummary}</span>
             <CaretDown className="size-3 shrink-0 text-muted-foreground" />
           </PopoverTrigger>
@@ -275,7 +280,9 @@ export function QuickSettings(): ReactElement {
           }}
         >
           <SelectTrigger className="w-full rounded-row border-border bg-background hover:bg-accent data-[state=open]:bg-accent">
-            <SelectValue placeholder="Custom" />
+            {/* Q7 (plan 022): the compact trigger shows the short canonical
+                form ("2K · 1440p30"); the full dimensions live in the items. */}
+            <SelectValue placeholder="Custom">{recordingQuality(captureConfig.video)}</SelectValue>
           </SelectTrigger>
           <SelectContent>
             {RESOLUTIONS.map((resolution) => (
