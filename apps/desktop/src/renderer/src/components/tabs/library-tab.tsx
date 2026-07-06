@@ -560,6 +560,21 @@ function RowActions({
       setAssessment(next)
       setHasBackup(next.hasBackup)
       setPhase('assessed')
+      // FX4: the kebab menu closes on click, so without a toast the check
+      // completed invisibly (repair already reports this way).
+      if (next.issues.length === 0) {
+        toast.success('Passes every quality gate.')
+      } else {
+        const first = next.reasons[0] ?? next.issues[0]?.kind
+        toast.warning(
+          `${next.issues.length} quality issue${next.issues.length === 1 ? '' : 's'} found.`,
+          {
+            description: next.repairable
+              ? `${first ? `${first} ` : ''}Repair is available from this menu.`
+              : first
+          }
+        )
+      }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Quality check failed.')
       setPhase('idle')
