@@ -2,7 +2,7 @@
 // Content side of the newsletter only — sending stays manual (no ESP wired);
 // paste the output into the sending tool of choice.
 
-const DEFAULT_WEB_BASE_URL = 'https://videorc-web.vercel.app'
+const DEFAULT_WEB_BASE_URL = 'https://www.videorc.com'
 
 export function resolveWebBaseUrl(env = process.env) {
   const raw = env.VIDEORC_WEB_BASE_URL?.trim()

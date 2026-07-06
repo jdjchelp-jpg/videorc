@@ -6,7 +6,7 @@
 //
 // Writes dist/changelog/email/<version>.html and .txt and prints the subject.
 // Sending stays manual (no ESP wired yet) — paste into the sending tool.
-// VIDEORC_WEB_BASE_URL overrides the link host (default videorc-web.vercel.app;
+// VIDEORC_WEB_BASE_URL overrides the link host (default www.videorc.com;
 // flip to videorc.com at launch).
 
 import { mkdir, writeFile } from 'node:fs/promises'

@@ -14,7 +14,7 @@ npmRebuild: false
 # See "plans/planned/2026-06-30 - Videorc Desktop Distribution Channel Plan".
 publish:
   provider: generic
-  url: https://videorc-web.vercel.app/api/updates/
+  url: https://www.videorc.com/api/updates/
 
 directories:
   buildResources: build-resources

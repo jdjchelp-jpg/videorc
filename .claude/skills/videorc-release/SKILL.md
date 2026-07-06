@@ -62,7 +62,7 @@ pnpm package:backend:macos && pnpm ffmpeg:build:macos && pnpm package:preflight:
 Verify the feed serves the new version (follow the redirect to R2):
 
 ```sh
-curl -sL https://videorc-web.vercel.app/api/updates/latest-mac.yml | head   # -> version: <new>
+curl -sL https://www.videorc.com/api/updates/latest-mac.yml | head   # -> version: <new>
 ```
 
 **Also verify the web download/admin page shows the new version** (ask the
@@ -88,9 +88,11 @@ Update `docs/releases/<version>.md` (check off build/upload/verify), commit + pu
   as-is locally; it starts with that preflight.)
 - **Feed = `package.json` `version`, not releaseId** — bump `version` to ship an
   update; the `-beta.N` suffix only names the download archive.
-- **Feed URL is the Vercel host** — `videorc.com` is a teaser until launch; the
-  app's baked `publish.url` (electron-builder.yml) and `videorc-web-links.ts`
-  point at `videorc-web.vercel.app`. Flip both to videorc.com at launch.
+- **Feed URL is `https://www.videorc.com`** (flipped at launch, 2026-07-07) —
+  WWW is load-bearing: the apex 307-redirects every path to www, and redirect
+  hops drop Authorization headers in some clients. The app's baked
+  `publish.url` (electron-builder.yml), `videorc-web-links.ts`, and the Rust
+  `PRODUCTION_API_BASE_URL` all point at the www host.
 - **Never cache the presigned redirect** — videorc-web `/api/updates/*` uses
   `max-age=60`; a long / `immutable` cache serves an expired 403.
 - **Notarization is a network round-trip to Apple** — the build sits for minutes

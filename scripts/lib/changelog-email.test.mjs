@@ -86,7 +86,7 @@ describe('helpers', () => {
   })
 
   it('resolves the web base URL from the environment with a safe default', () => {
-    assert.equal(resolveWebBaseUrl({}), 'https://videorc-web.vercel.app')
+    assert.equal(resolveWebBaseUrl({}), 'https://www.videorc.com')
     assert.equal(
       resolveWebBaseUrl({ VIDEORC_WEB_BASE_URL: 'https://videorc.com/' }),
       'https://videorc.com'

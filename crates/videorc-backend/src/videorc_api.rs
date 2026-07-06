@@ -1,7 +1,7 @@
 //! HTTP client for the Videorc web API (videorc.com) — the desktop account auth
 //! bridge.
 //!
-//! Base URL: release/packaged builds are pinned to `https://videorc.com` so a
+//! Base URL: release/packaged builds are pinned to `https://www.videorc.com` so a
 //! stray environment variable can never redirect the user's Bearer token at
 //! another host. Dev/debug builds default to a local `videorc-web` at
 //! `http://localhost:3000` and may override via `VIDEORC_API_BASE_URL`, so local
@@ -20,7 +20,10 @@ use crate::protocol::{
     AiObjectUploadTicket, AiQuotaStatus,
 };
 
-const PRODUCTION_API_BASE_URL: &str = "https://videorc.com";
+// WWW is load-bearing: the apex 307-redirects every path to www.videorc.com,
+// and reqwest strips Authorization on cross-host redirects — Bearer calls to
+// the apex would arrive unauthenticated.
+const PRODUCTION_API_BASE_URL: &str = "https://www.videorc.com";
 const DEV_API_BASE_URL: &str = "http://localhost:3000";
 const API_BASE_URL_ENV: &str = "VIDEORC_API_BASE_URL";
 

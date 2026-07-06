@@ -99,11 +99,11 @@ no ESP is wired yet).
 
 ```sh
 # Feed serves the NEW version:
-curl -sL https://videorc-web.vercel.app/api/updates/latest-mac.yml | head
+curl -sL https://www.videorc.com/api/updates/latest-mac.yml | head
 #   -> version: 0.9.1 ...
 # The zip it references resolves (200, not 403/404):
 curl -s -o /dev/null -w '%{http_code}\n' -L \
-  https://videorc-web.vercel.app/api/updates/Videorc-0.9.1-mac-arm64.zip
+  https://www.videorc.com/api/updates/Videorc-0.9.1-mac-arm64.zip
 ```
 
 The download page follows automatically: the upload also publishes the
@@ -149,10 +149,13 @@ release candidate:
    install**, which is **blocked while a recording/stream is live**.
 
 The installed app checks whichever feed URL was baked at **build time**
-(`apps/desktop/electron-builder.yml` `publish.url`). The beta points at
-`videorc-web.vercel.app`. When the product moves to `videorc.com`, change
-`publish.url` **and** `apps/desktop/src/renderer/src/lib/videorc-web-links.ts`,
-then cut a build so the new URL ships.
+(`apps/desktop/electron-builder.yml` `publish.url`) — since 2026-07-07 that is
+`https://www.videorc.com` (launch flip; builds ≤0.9.14 still check the old
+Vercel host, so that host's `/api/updates/*` must KEEP working until those
+installs age out). WWW is load-bearing: the apex 307-redirects every path to
+www, and redirect hops drop Authorization headers in some clients. If the host
+ever changes again, update `publish.url`, `videorc-web-links.ts`, and the Rust
+`PRODUCTION_API_BASE_URL` together, then cut a build so the new URL ships.
 
 ## Gotchas (hard-won)
 
