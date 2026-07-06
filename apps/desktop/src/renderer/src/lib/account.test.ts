@@ -78,20 +78,23 @@ describe('accountFromSnapshot', () => {
       status: 'signed-in',
       username: 'orc_dev',
       displayName: null,
-      email: null
+      email: null,
+      avatarUrl: null
     })
     expect(
       accountFromSnapshot({
         status: 'signed-in',
         username: 'orc_dev',
         displayName: 'Orc Dev',
-        email: 'orc@videorc.com'
+        email: 'orc@videorc.com',
+        avatarUrl: 'https://abc.public.blob.vercel-storage.com/a.jpg'
       })
     ).toEqual({
       status: 'signed-in',
       username: 'orc_dev',
       displayName: 'Orc Dev',
-      email: 'orc@videorc.com'
+      email: 'orc@videorc.com',
+      avatarUrl: 'https://abc.public.blob.vercel-storage.com/a.jpg'
     })
   })
 })

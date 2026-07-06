@@ -89,15 +89,24 @@ async fn exchange_one_time_token(one_time_token: &str) -> Result<VideorcAccountS
 }
 
 fn signed_in_from_verified(verified: &VerifiedSession) -> VideorcAccountSnapshot {
-    snapshot_from_identity(verified.name.clone(), verified.email.clone())
+    snapshot_from_identity(
+        verified.name.clone(),
+        verified.email.clone(),
+        verified.image.clone(),
+    )
 }
 
-fn snapshot_from_identity(name: Option<String>, email: String) -> VideorcAccountSnapshot {
+fn snapshot_from_identity(
+    name: Option<String>,
+    email: String,
+    avatar_url: Option<String>,
+) -> VideorcAccountSnapshot {
     VideorcAccountSnapshot {
         status: AccountStatus::SignedIn,
         username: Some(name.clone().unwrap_or_else(|| email.clone())),
         display_name: name,
         email: Some(email),
+        avatar_url,
     }
 }
 
@@ -179,8 +188,8 @@ fn apply_session_refresh(current_token: String, refresh: SessionRefresh) -> Vide
             clear_persisted_account();
             signed_out_account()
         }
-        SessionStatus::Active { name, email } => {
-            let snapshot = snapshot_from_identity(name, email);
+        SessionStatus::Active { name, email, image } => {
+            let snapshot = snapshot_from_identity(name, email, image);
             let token = refresh.rotated_token.unwrap_or(current_token);
             let _ = persist_account(&token, &snapshot);
             snapshot
@@ -194,6 +203,7 @@ fn signed_in_mock(username: &str) -> VideorcAccountSnapshot {
         username: Some(username.to_string()),
         display_name: None,
         email: None,
+        avatar_url: None,
     }
 }
 
@@ -203,6 +213,7 @@ pub fn signed_out_account() -> VideorcAccountSnapshot {
         username: None,
         display_name: None,
         email: None,
+        avatar_url: None,
     }
 }
 
@@ -274,11 +285,23 @@ mod tests {
             username: Some("orc_dev".to_string()),
             display_name: Some("Orc Dev".to_string()),
             email: Some("orc@videorc.com".to_string()),
+            avatar_url: Some("https://example.public.blob.vercel-storage.com/a.png".to_string()),
         };
         let json = serde_json::to_string(&account).unwrap();
         assert!(json.contains("\"status\":\"signed-in\""));
         assert!(json.contains("\"displayName\":\"Orc Dev\""));
+        assert!(json.contains("\"avatarUrl\""));
         let restored: VideorcAccountSnapshot = serde_json::from_str(&json).unwrap();
         assert_eq!(restored, account);
+    }
+
+    // Snapshots persisted before avatars existed must keep restoring (the
+    // secrets file outlives releases) — a missing avatarUrl is simply None.
+    #[test]
+    fn pre_avatar_persisted_snapshots_still_restore() {
+        let old_json = r#"{"status":"signed-in","username":"orc_dev","displayName":"Orc Dev","email":"orc@videorc.com"}"#;
+        let restored: VideorcAccountSnapshot = serde_json::from_str(old_json).unwrap();
+        assert_eq!(restored.avatar_url, None);
+        assert_eq!(restored.display_name.as_deref(), Some("Orc Dev"));
     }
 }

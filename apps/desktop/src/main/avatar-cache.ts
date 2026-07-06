@@ -13,7 +13,10 @@ const AVATAR_ALLOWED_HOST_SUFFIXES = [
   'yt4.ggpht.com',
   'googleusercontent.com',
   // Twitch profile images
-  'static-cdn.jtvnw.net'
+  'static-cdn.jtvnw.net',
+  // Videorc account avatars uploaded on videorc.com (Vercel Blob storage);
+  // Google account photos are covered by googleusercontent.com above.
+  'public.blob.vercel-storage.com'
 ]
 
 /** Keep the cache bounded; oldest files (by mtime) are pruned past this. */

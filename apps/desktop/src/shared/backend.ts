@@ -96,6 +96,8 @@ export interface VideorcAccountSnapshot {
   username?: string
   displayName?: string
   email?: string
+  /** Account avatar (web-uploaded or Google) — load via the avatar cache. */
+  avatarUrl?: string
 }
 
 export type DeviceKind = 'screen' | 'window' | 'camera' | 'microphone' | 'system-audio'

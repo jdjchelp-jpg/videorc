@@ -10,6 +10,8 @@ export type VideorcAccount =
       username: string
       displayName?: string | null
       email?: string | null
+      /** Account avatar URL (web-uploaded or Google), when the user has one. */
+      avatarUrl?: string | null
     }
 
 export const SIGNED_OUT_ACCOUNT: VideorcAccount = { status: 'signed-out' }
@@ -32,7 +34,8 @@ export function accountFromSnapshot(
     status: 'signed-in',
     username: snapshot.username,
     displayName: snapshot.displayName ?? null,
-    email: snapshot.email ?? null
+    email: snapshot.email ?? null,
+    avatarUrl: snapshot.avatarUrl ?? null
   }
 }
 

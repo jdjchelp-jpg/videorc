@@ -179,6 +179,11 @@ pub struct VideorcAccountSnapshot {
     pub display_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
+    /// The account avatar URL (Better Auth `user.image`): the web-uploaded
+    /// photo or the Google one. The renderer loads it through main's
+    /// allowlisted avatar cache, never hot-linked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

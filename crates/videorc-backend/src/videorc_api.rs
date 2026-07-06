@@ -53,6 +53,9 @@ pub struct VerifiedSession {
     pub session_token: String,
     pub name: Option<String>,
     pub email: String,
+    /// Better Auth `user.image` — the account avatar (Google photo or the
+    /// web-uploaded one). Absent for accounts without an avatar.
+    pub image: Option<String>,
 }
 
 /// The outcome of validating the stored Bearer token via `/api/auth/get-session`.
@@ -64,7 +67,11 @@ pub struct SessionRefresh {
 }
 
 pub enum SessionStatus {
-    Active { name: Option<String>, email: String },
+    Active {
+        name: Option<String>,
+        email: String,
+        image: Option<String>,
+    },
     Unauthorized,
 }
 
@@ -195,6 +202,7 @@ impl VideorcApiClient {
             session_token: body.session.token,
             name: body.user.name,
             email: body.user.email,
+            image: body.user.image,
         })
     }
 
@@ -237,6 +245,7 @@ impl VideorcApiClient {
             Some(session) => SessionStatus::Active {
                 name: session.user.name,
                 email: session.user.email,
+                image: session.user.image,
             },
             None => SessionStatus::Unauthorized,
         };
@@ -595,6 +604,8 @@ struct VerifySession {
 struct VerifyUser {
     #[serde(default)]
     name: Option<String>,
+    #[serde(default)]
+    image: Option<String>,
     email: String,
 }
 
