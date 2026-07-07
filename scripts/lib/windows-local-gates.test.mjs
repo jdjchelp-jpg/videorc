@@ -25,7 +25,11 @@ describe('evaluateWindowsLocalGateHost', () => {
       /requires Windows 11 x64/
     )
     assert.match(
-      evaluateWindowsLocalGateHost({ platform: 'win32', arch: 'x64', release: '10.0.19045' }).failures.join('\n'),
+      evaluateWindowsLocalGateHost({
+        platform: 'win32',
+        arch: 'x64',
+        release: '10.0.19045'
+      }).failures.join('\n'),
       /requires Windows 11 build 22000/
     )
   })
@@ -51,6 +55,22 @@ describe('buildWindowsLocalGateSteps', () => {
       steps.at(-1).env.VIDEORC_PACKAGED_APP_EXECUTABLE,
       /C:\/repo\/apps\/desktop\/release\/win-unpacked\/Videorc\.exe$/
     )
+    assert.match(
+      steps.at(-1).env.VIDEORC_SMOKE_OUTPUT_DIR,
+      /C:\/repo\/docs\/acceptance\/artifacts\/windows\/\d{4}-\d{2}-\d{2}$/
+    )
+  })
+
+  it('allows the Windows acceptance artifact directory to be pinned', () => {
+    const steps = buildWindowsLocalGateSteps({
+      acceptanceDir: 'docs/acceptance/artifacts/windows/2026-07-08-lab-1',
+      repoRoot: 'C:/repo'
+    })
+
+    assert.match(
+      steps.at(-1).env.VIDEORC_SMOKE_OUTPUT_DIR,
+      /C:\/repo\/docs\/acceptance\/artifacts\/windows\/2026-07-08-lab-1$/
+    )
   })
 
   it('formats host blockers and commands for dry-run evidence', () => {
@@ -60,6 +80,8 @@ describe('buildWindowsLocalGateSteps', () => {
     })
 
     assert.match(report, /windows-local-gates: plan/)
+    assert.match(report, /evidence output:/)
+    assert.match(report, /windows-app-acceptance-template\.md/)
     assert.match(report, /\[blocked\] host: requires Windows 11 x64/)
     assert.match(report, /package:preflight:windows/)
     assert.match(report, /smoke:packaged:bundled/)

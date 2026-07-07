@@ -11,7 +11,10 @@ import {
 const repoRoot = resolve(import.meta.dirname, '..')
 const dryRun = process.argv.includes('--dry-run') || process.argv.includes('--print-only')
 const host = evaluateWindowsLocalGateHost({ release: release() })
-const steps = buildWindowsLocalGateSteps({ repoRoot })
+const steps = buildWindowsLocalGateSteps({
+  repoRoot,
+  acceptanceDir: process.env.VIDEORC_WINDOWS_ACCEPTANCE_DIR
+})
 
 console.log(formatWindowsLocalGatePlan({ host, steps }))
 

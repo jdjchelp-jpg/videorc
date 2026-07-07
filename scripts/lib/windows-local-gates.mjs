@@ -1,4 +1,4 @@
-import { resolve } from 'node:path'
+import { join, resolve } from 'node:path'
 
 export function evaluateWindowsLocalGateHost({
   platform = process.platform,
@@ -25,12 +25,19 @@ export function evaluateWindowsLocalGateHost({
   }
 }
 
-export function buildWindowsLocalGateSteps({ repoRoot, packagedAppExecutable } = {}) {
+export function buildWindowsLocalGateSteps({
+  repoRoot,
+  packagedAppExecutable,
+  acceptanceDir
+} = {}) {
   if (!repoRoot) {
     throw new Error('repoRoot is required.')
   }
   const executable =
     packagedAppExecutable ?? resolve(repoRoot, 'apps/desktop/release/win-unpacked/Videorc.exe')
+  const outputDir = acceptanceDir
+    ? resolve(repoRoot, acceptanceDir)
+    : defaultWindowsAcceptanceArtifactDir({ repoRoot })
 
   return [
     {
@@ -73,7 +80,8 @@ export function buildWindowsLocalGateSteps({ repoRoot, packagedAppExecutable } =
       command: 'pnpm',
       args: ['smoke:packaged:bundled'],
       env: {
-        VIDEORC_PACKAGED_APP_EXECUTABLE: executable
+        VIDEORC_PACKAGED_APP_EXECUTABLE: executable,
+        VIDEORC_SMOKE_OUTPUT_DIR: outputDir
       }
     }
   ]
@@ -81,6 +89,12 @@ export function buildWindowsLocalGateSteps({ repoRoot, packagedAppExecutable } =
 
 export function formatWindowsLocalGatePlan({ host, steps }) {
   const lines = ['windows-local-gates: plan']
+  const outputDir = steps.find((step) => step.env?.VIDEORC_SMOKE_OUTPUT_DIR)?.env
+    ?.VIDEORC_SMOKE_OUTPUT_DIR
+  if (outputDir) {
+    lines.push(`evidence output: ${outputDir}`)
+    lines.push('acceptance template: docs/acceptance/windows-app-acceptance-template.md')
+  }
   if (host.ok) {
     lines.push('[ok] host: Windows 11 x64 gate host')
   } else {
@@ -99,6 +113,11 @@ export function formatWindowsLocalGatePlan({ host, steps }) {
   }
 
   return lines.join('\n')
+}
+
+function defaultWindowsAcceptanceArtifactDir({ repoRoot }) {
+  const date = new Date().toISOString().slice(0, 10)
+  return join(repoRoot, 'docs', 'acceptance', 'artifacts', 'windows', date)
 }
 
 function windowsBuildNumber(release) {
