@@ -88,6 +88,16 @@ http://127.0.0.1:27995/oauth/callback
 http://127.0.0.1:37995/oauth/callback
 ```
 
+**Twitch registers the `localhost` forms instead** — its console rejects every
+non-HTTPS redirect except the literal `http://localhost` ("Redirect URIs must
+use HTTPS protocol"), and the backend sends `localhost` for Twitch to match:
+
+```text
+http://localhost:17995/oauth/callback
+http://localhost:27995/oauth/callback
+http://localhost:37995/oauth/callback
+```
+
 Exact-match providers (X, Twitch) reject unregistered ports; Google accepts any
 loopback port. If all three candidates are busy the backend logs a warning and falls
 back to its dynamic main port (Google keeps working, X/Twitch will not).

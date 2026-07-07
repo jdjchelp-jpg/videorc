@@ -1,7 +1,13 @@
 export const REQUIRED_OAUTH_CALLBACK_URLS = [
   'http://127.0.0.1:17995/oauth/callback',
   'http://127.0.0.1:27995/oauth/callback',
-  'http://127.0.0.1:37995/oauth/callback'
+  'http://127.0.0.1:37995/oauth/callback',
+  // Twitch's console rejects every non-HTTPS redirect except the literal
+  // http://localhost form — the backend sends these for Twitch; register
+  // them in the Twitch app (the 127.0.0.1 forms are for X/Google).
+  'http://localhost:17995/oauth/callback',
+  'http://localhost:27995/oauth/callback',
+  'http://localhost:37995/oauth/callback'
 ]
 
 export const PROVIDER_CALLBACKS_READY_ENV = 'VIDEORC_SMOKE_PROVIDER_CALLBACKS_READY'
