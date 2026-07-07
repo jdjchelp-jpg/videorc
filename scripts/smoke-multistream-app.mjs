@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { smokeAppEnv, stopProcess } from './lib/app-launcher.mjs'
+import { analyzeRecording } from './lib/recording-analyzer.mjs'
 import { connectBackend, request } from './smoke-recording-session.mjs'
 
 // End-to-end proof of the multi-platform `tee` fan-out. Stands up one local
@@ -144,7 +145,11 @@ try {
     const stopped = await request(ws, timeoutMs, 'session.stop')
     await sleep(2000) // let listeners flush + finalize their FLV after the publisher disconnects
 
-    verifyResults(stopped.outputPath ?? started.outputPath, targetSnapshots, diagnosticSamples)
+    await verifyResults(
+      stopped.outputPath ?? started.outputPath,
+      targetSnapshots,
+      diagnosticSamples
+    )
   } finally {
     ws.close()
   }
@@ -155,7 +160,7 @@ try {
   await stopApp()
 }
 
-function verifyResults(outputPath, targetSnapshots, diagnosticSamples) {
+async function verifyResults(outputPath, targetSnapshots, diagnosticSamples) {
   const failures = []
   for (const target of targets) {
     const size = existsSync(target.recvPath) ? statSync(target.recvPath).size : 0
@@ -170,6 +175,24 @@ function verifyResults(outputPath, targetSnapshots, diagnosticSamples) {
   const recordingSize = outputPath && existsSync(outputPath) ? statSync(outputPath).size : 0
   if (recordingSize > 0) {
     console.log(`  ✓ Local recording finalized: ${outputPath} (${recordingSize} bytes)`)
+    // Plan 023 L0: a record+stream artifact must pass the QUALITY gates, not
+    // just exist — the split-output wallclock path shipped 9fps duplicate-PTS
+    // recordings behind this smoke's bytes>0 check.
+    const quality = await analyzeRecording(outputPath, {
+      ffmpegPath,
+      ffprobePath: process.env.VIDEORC_SMOKE_FFPROBE_PATH ?? 'ffprobe',
+      intendedFps: 30,
+      expectAudio: false,
+      gates: { requireMotion: false }
+    })
+    if (quality.verdict.pass) {
+      console.log('  ✓ Local recording quality gates pass (pacing, PTS, duration)')
+    } else {
+      for (const failure of quality.verdict.failures) {
+        console.log(`  ✗ recording quality: ${failure}`)
+      }
+      failures.push(`Local recording failed quality gates: ${quality.verdict.failures.join('; ')}`)
+    }
   } else {
     console.log(`  ✗ Local recording missing/empty: ${outputPath ?? 'no path'}`)
     failures.push('Local recording did not finalize')

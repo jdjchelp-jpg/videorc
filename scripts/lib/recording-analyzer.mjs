@@ -34,10 +34,15 @@ export const DEFAULT_GATES = Object.freeze({
   avSyncTargetMs: 100, // A/V skew target (warn above)
   avSyncHardFailMs: 150, // A/V skew hard fail above
   frameCountTolerance: 0.02, // observed vs expected (duration × fps) frame count
+  // Duplicate container PTS = broken timestamping, full stop (plan 023: the
+  // split-output wallclock path wrote bursts of frames on IDENTICAL stamps —
+  // 353 of them in the owner's 52s file). Tolerate a lone rounding pair.
+  maxDuplicatePtsCount: 2, // total near-zero (<1ms) inter-frame deltas allowed
+  maxDuplicatePtsRun: 2, // consecutive frames sharing one stamp allowed
   maxDurationStretchRatio: 1.1, // container duration must not stretch far past decoded frames at intended FPS
   freezeNoiseDb: -60, // freezedetect near-identical noise floor (matches repair.rs)
   silenceDb: -50, // silencedetect dropout noise floor
-  minSilenceGapMs: 20, // silence run that counts as a candidate dropout
+  minSilenceGapMs: 20 // silence run that counts as a candidate dropout
 })
 
 // ---------------------------------------------------------------------------
@@ -104,7 +109,7 @@ export function parseSilencedetect(stderr) {
       segments.push({
         start: pendingStart,
         end: Number.isFinite(end) ? end : null,
-        duration: Number.isFinite(duration) ? duration : 0,
+        duration: Number.isFinite(duration) ? duration : 0
       })
       pendingStart = null
     }
@@ -201,8 +206,31 @@ export function pacingStats(ptsTimes) {
     meanIntervalMs: mean * 1000,
     maxGapMs: maxGap * 1000,
     jitterMs: Math.sqrt(variance) * 1000,
-    observedFps: span > 0 ? (count - 1) / span : null,
+    observedFps: span > 0 ? (count - 1) / span : null
   }
+}
+
+/**
+ * Duplicate-PTS statistics: container video packets stacked on (near-)identical
+ * presentation stamps. Healthy encoders never emit these; wallclock-stamped
+ * bursty inputs do (plan 023). `runLength` counts frames sharing one stamp.
+ * @returns {{duplicateCount:number, maxDuplicateRun:number}}
+ */
+export function duplicatePtsStats(ptsTimes, toleranceSeconds = 0.001) {
+  const sorted = [...ptsTimes].sort((a, b) => a - b)
+  let duplicateCount = 0
+  let maxDuplicateRun = 1
+  let run = 1
+  for (let i = 1; i < sorted.length; i += 1) {
+    if (sorted[i] - sorted[i - 1] <= toleranceSeconds) {
+      duplicateCount += 1
+      run += 1
+      if (run > maxDuplicateRun) maxDuplicateRun = run
+    } else {
+      run = 1
+    }
+  }
+  return { duplicateCount, maxDuplicateRun }
 }
 
 /**
@@ -295,7 +323,7 @@ export function normalizeProbe(ffprobeJson) {
         startTime: parseMaybeFloat(videoRaw.start_time),
         pixFmt: videoRaw.pix_fmt ?? null,
         encoderTag: videoRaw.tags?.encoder ?? null,
-        handler: videoRaw.tags?.handler_name ?? null,
+        handler: videoRaw.tags?.handler_name ?? null
       }
     : null
   const audio = streams
@@ -306,13 +334,13 @@ export function normalizeProbe(ffprobeJson) {
       channelLayout: s.channel_layout ?? null,
       sampleRate: parseMaybeInt(s.sample_rate),
       duration: parseMaybeFloat(s.duration),
-      startTime: parseMaybeFloat(s.start_time),
+      startTime: parseMaybeFloat(s.start_time)
     }))
   return {
     formatDuration: parseMaybeFloat(raw.format?.duration),
     video,
     audio,
-    encoderTag: raw.format?.tags?.encoder ?? video?.encoderTag ?? null,
+    encoderTag: raw.format?.tags?.encoder ?? video?.encoderTag ?? null
   }
 }
 
@@ -341,7 +369,9 @@ export function evaluateGates(metrics, gates = DEFAULT_GATES) {
       `freeze segment ${metrics.longestFreezeMs.toFixed(0)}ms exceeds ${gates.maxFreezeMs}ms ` +
       `(${metrics.freezeCount} segment(s))`
     if (gates.requireMotion === false) {
-      warnings.push(`${message} — motion not required for this run; inspect repeated-frame and pacing gates`)
+      warnings.push(
+        `${message} — motion not required for this run; inspect repeated-frame and pacing gates`
+      )
     } else {
       failures.push(message)
     }
@@ -349,19 +379,43 @@ export function evaluateGates(metrics, gates = DEFAULT_GATES) {
 
   // Repeated-frame bursts (exact decoded-frame duplicates). Like freezedetect,
   // this is only a hard artifact gate when visible motion is guaranteed.
-  if (metrics.maxRepeatedFrameRun != null && metrics.maxRepeatedFrameRun > gates.maxRepeatedFrameRun) {
+  if (
+    metrics.maxRepeatedFrameRun != null &&
+    metrics.maxRepeatedFrameRun > gates.maxRepeatedFrameRun
+  ) {
     const message =
       `repeated-frame burst of ${metrics.maxRepeatedFrameRun} consecutive identical frames ` +
       `exceeds ${gates.maxRepeatedFrameRun} (${metrics.repeatedBurstCount} burst(s))`
     if (gates.requireMotion === false) {
-      warnings.push(`${message} — motion not required for this run; inspect bridge repeat and pacing gates`)
+      warnings.push(
+        `${message} — motion not required for this run; inspect bridge repeat and pacing gates`
+      )
     } else {
       failures.push(message)
     }
   }
 
+  // Duplicate container PTS: broken timestamping is a hard fail regardless of
+  // motion expectations — stamps are wrong even when the pixels are static.
+  if (
+    metrics.duplicatePtsCount != null &&
+    (metrics.duplicatePtsCount > gates.maxDuplicatePtsCount ||
+      (metrics.maxDuplicatePtsRun ?? 1) > gates.maxDuplicatePtsRun)
+  ) {
+    failures.push(
+      `duplicate video PTS: ${metrics.duplicatePtsCount} near-zero inter-frame delta(s), ` +
+        `longest same-stamp run ${metrics.maxDuplicatePtsRun} ` +
+        `(allowed: ${gates.maxDuplicatePtsCount} total / run of ${gates.maxDuplicatePtsRun}) — ` +
+        `frames are being stamped at mux time, not capture time`
+    )
+  }
+
   // Frame count vs expected (dropped-frame evidence).
-  if (metrics.expectedFrames != null && metrics.observedFrames != null && metrics.expectedFrames > 0) {
+  if (
+    metrics.expectedFrames != null &&
+    metrics.observedFrames != null &&
+    metrics.expectedFrames > 0
+  ) {
     const diff = Math.abs(metrics.observedFrames - metrics.expectedFrames)
     const ratio = diff / metrics.expectedFrames
     if (ratio > gates.frameCountTolerance) {
@@ -451,7 +505,7 @@ export async function probeMedia(filePath, { ffprobePath = 'ffprobe' } = {}) {
     '-show_streams',
     '-of',
     'json',
-    filePath,
+    filePath
   ])
   if (status !== 0) {
     throw new Error(`ffprobe failed for ${filePath}: ${stderr.trim()}`)
@@ -461,7 +515,11 @@ export async function probeMedia(filePath, { ffprobePath = 'ffprobe' } = {}) {
 
 export async function runFreezedetect(
   filePath,
-  { ffmpegPath = 'ffmpeg', noiseDb = DEFAULT_GATES.freezeNoiseDb, minFreezeMs = DEFAULT_GATES.maxFreezeMs } = {}
+  {
+    ffmpegPath = 'ffmpeg',
+    noiseDb = DEFAULT_GATES.freezeNoiseDb,
+    minFreezeMs = DEFAULT_GATES.maxFreezeMs
+  } = {}
 ) {
   const seconds = (minFreezeMs / 1000).toFixed(3)
   const { stderr } = await run(ffmpegPath, [
@@ -475,14 +533,18 @@ export async function runFreezedetect(
     `freezedetect=n=${noiseDb}dB:d=${seconds}`,
     '-f',
     'null',
-    '-',
+    '-'
   ])
   return parseFreezedetect(stderr)
 }
 
 export async function runSilencedetect(
   filePath,
-  { ffmpegPath = 'ffmpeg', noiseDb = DEFAULT_GATES.silenceDb, minSilenceMs = DEFAULT_GATES.minSilenceGapMs } = {}
+  {
+    ffmpegPath = 'ffmpeg',
+    noiseDb = DEFAULT_GATES.silenceDb,
+    minSilenceMs = DEFAULT_GATES.minSilenceGapMs
+  } = {}
 ) {
   const seconds = (minSilenceMs / 1000).toFixed(3)
   const { stderr } = await run(ffmpegPath, [
@@ -496,7 +558,7 @@ export async function runSilencedetect(
     `silencedetect=noise=${noiseDb}dB:d=${seconds}`,
     '-f',
     'null',
-    '-',
+    '-'
   ])
   return parseSilencedetect(stderr)
 }
@@ -512,7 +574,7 @@ export async function runFramemd5(filePath, { ffmpegPath = 'ffmpeg' } = {}) {
     '0:v:0',
     '-f',
     'framemd5',
-    '-',
+    '-'
   ])
   if (status !== 0 && stdout === '') {
     throw new Error(`framemd5 failed for ${filePath}: ${stderr.trim()}`)
@@ -530,7 +592,7 @@ export async function runVideoPacing(filePath, { ffprobePath = 'ffprobe' } = {})
     'frame=pts_time',
     '-of',
     'csv=p=0',
-    filePath,
+    filePath
   ])
   return parseCsvFloatColumn(stdout, 0)
 }
@@ -545,7 +607,7 @@ export async function runAudioPackets(filePath, { ffprobePath = 'ffprobe' } = {}
     'packet=pts_time,duration_time',
     '-of',
     'csv=p=0',
-    filePath,
+    filePath
   ])
   const packets = []
   for (const rawLine of stdout.split(/\r?\n/)) {
@@ -592,22 +654,34 @@ export async function analyzeRecording(filePath, options = {}) {
   // (packet gaps, silence) concurrently. A frozen/black source can still produce a
   // technically valid file, so every pass observes the decoded artifact directly.
   const [freezes, frameHashes, ptsTimes, audioPackets, silences] = await Promise.all([
-    hasVideo ? runFreezedetect(filePath, { ffmpegPath, noiseDb: gates.freezeNoiseDb, minFreezeMs: gates.maxFreezeMs }) : [],
+    hasVideo
+      ? runFreezedetect(filePath, {
+          ffmpegPath,
+          noiseDb: gates.freezeNoiseDb,
+          minFreezeMs: gates.maxFreezeMs
+        })
+      : [],
     hasVideo ? runFramemd5(filePath, { ffmpegPath }) : [],
     hasVideo ? runVideoPacing(filePath, { ffprobePath }) : [],
     hasAudio ? runAudioPackets(filePath, { ffprobePath }) : [],
-    hasAudio ? runSilencedetect(filePath, { ffmpegPath, noiseDb: gates.silenceDb, minSilenceMs: gates.minSilenceGapMs }) : [],
+    hasAudio
+      ? runSilencedetect(filePath, {
+          ffmpegPath,
+          noiseDb: gates.silenceDb,
+          minSilenceMs: gates.minSilenceGapMs
+        })
+      : []
   ])
 
   const pacing = pacingStats(ptsTimes)
+  const duplicatePts = duplicatePtsStats(ptsTimes)
   const repeated = maxConsecutiveRun(frameHashes, gates.maxRepeatedFrameRun)
   const longestFreeze = freezes.reduce((max, f) => Math.max(max, f.duration), 0)
   const longestSilence = silences.reduce((max, s) => Math.max(max, s.duration), 0)
   const audioGaps = audioPtsGaps(audioPackets)
   const skew = avSkewMs(probe)
 
-  const intendedFps =
-    options.intendedFps ?? probe.video?.nominalFps ?? probe.video?.avgFps ?? null
+  const intendedFps = options.intendedFps ?? probe.video?.nominalFps ?? probe.video?.avgFps ?? null
   const durationForCount = probe.video?.duration ?? probe.formatDuration ?? null
   const observedFrames =
     probe.video?.nbFrames ?? (frameHashes.length > 0 ? frameHashes.length : pacing.count || null)
@@ -641,6 +715,8 @@ export async function analyzeRecording(filePath, options = {}) {
     avgFps: probe.video?.avgFps ?? null,
     nominalFps: probe.video?.nominalFps ?? null,
     observedFps: pacing.observedFps,
+    duplicatePtsCount: hasVideo ? duplicatePts.duplicateCount : null,
+    maxDuplicatePtsRun: hasVideo ? duplicatePts.maxDuplicateRun : null,
     meanIntervalMs: pacing.meanIntervalMs,
     maxFrameGapMs: pacing.maxGapMs,
     frameJitterMs: pacing.jitterMs,
@@ -656,7 +732,7 @@ export async function analyzeRecording(filePath, options = {}) {
     audioGapCount: audioGaps.gaps.length,
     silenceCount: silences.length,
     longestSilenceMs: hasAudio ? longestSilence * 1000 : null,
-    avSkewMs: skew,
+    avSkewMs: skew
   }
 
   const verdict = evaluateGates(metrics, gates)
@@ -672,8 +748,8 @@ export async function analyzeRecording(filePath, options = {}) {
       freezes,
       repeatedBursts: repeated.bursts,
       audioGaps: audioGaps.gaps,
-      silences,
-    },
+      silences
+    }
   }
 }
 
@@ -729,13 +805,17 @@ export function renderMarkdownReport(report) {
   }
   lines.push('## Metrics')
   lines.push('')
-  lines.push(`- Container: ${m.codec ?? 'n/a'} ${m.width ?? '?'}×${m.height ?? '?'} ${m.pixFmt ?? ''}`.trim())
+  lines.push(
+    `- Container: ${m.codec ?? 'n/a'} ${m.width ?? '?'}×${m.height ?? '?'} ${m.pixFmt ?? ''}`.trim()
+  )
   lines.push(`- Encoder tag: ${m.encoderTag ?? 'n/a'}`)
   lines.push(`- Size: ${fmtBytes(m.fileBytes)} | Duration: ${fmt(m.durationSeconds, 2)}s`)
   lines.push(
     `- FPS: intended ${fmt(m.intendedFps, 2)} | avg ${fmt(m.avgFps, 2)} | nominal ${fmt(m.nominalFps, 2)} | observed ${fmt(m.observedFps, 2)}`
   )
-  lines.push(`- Frames: observed ${m.observedFrames ?? 'n/a'} | expected ~${m.expectedFrames ?? 'n/a'}`)
+  lines.push(
+    `- Frames: observed ${m.observedFrames ?? 'n/a'} | expected ~${m.expectedFrames ?? 'n/a'}`
+  )
   lines.push(
     `- Duration stretch: frame-derived ${fmt(m.frameDerivedDurationSeconds, 2)}s | ratio ${fmt(m.durationStretchRatio, 2)}x`
   )
@@ -743,10 +823,14 @@ export function renderMarkdownReport(report) {
     `- Frame pacing: mean ${fmt(m.meanIntervalMs)}ms | max gap ${fmt(m.maxFrameGapMs)}ms | jitter ${fmt(m.frameJitterMs)}ms`
   )
   lines.push(`- Freeze: longest ${fmt(m.longestFreezeMs)}ms across ${m.freezeCount} segment(s)`)
-  lines.push(`- Repeated frames: max run ${m.maxRepeatedFrameRun ?? 'n/a'} across ${m.repeatedBurstCount} burst(s)`)
+  lines.push(
+    `- Repeated frames: max run ${m.maxRepeatedFrameRun ?? 'n/a'} across ${m.repeatedBurstCount} burst(s)`
+  )
   if (m.hasAudio) {
     lines.push(`- Audio gaps: max ${fmt(m.maxAudioGapMs)}ms across ${m.audioGapCount} gap(s)`)
-    lines.push(`- Silence: longest ${fmt(m.longestSilenceMs)}ms across ${m.silenceCount} segment(s)`)
+    lines.push(
+      `- Silence: longest ${fmt(m.longestSilenceMs)}ms across ${m.silenceCount} segment(s)`
+    )
   } else {
     lines.push(`- Audio: ${m.expectAudio ? 'EXPECTED BUT MISSING' : 'none (not expected)'}`)
   }
@@ -822,7 +906,10 @@ export function renderMarkdownReport(report) {
 export function writeReports(report, { outDir } = {}) {
   const dir = outDir ?? dirname(report.file)
   mkdirSync(dir, { recursive: true })
-  const base = report.file.split('/').pop().replace(/\.[^.]+$/, '')
+  const base = report.file
+    .split('/')
+    .pop()
+    .replace(/\.[^.]+$/, '')
   const jsonPath = join(dir, `${base}.quality.json`)
   const mdPath = join(dir, `${base}.quality.md`)
   writeFileSync(jsonPath, JSON.stringify(report, null, 2))

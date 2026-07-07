@@ -25,6 +25,7 @@ import { join } from 'node:path'
 import { after, before, describe, it } from 'node:test'
 
 import {
+  duplicatePtsStats,
   DEFAULT_GATES,
   analyzeRecording,
   audioPtsGaps,
@@ -37,7 +38,7 @@ import {
   parseFramemd5,
   parseFreezedetect,
   parseSilencedetect,
-  renderMarkdownReport,
+  renderMarkdownReport
 } from './recording-analyzer.mjs'
 import { ffmpegAvailable } from './ffmpeg-available.mjs'
 
@@ -53,7 +54,7 @@ describe('parseFreezedetect', () => {
     const stderr = [
       '[Parsed_freezedetect_0 @ 0x1] lavfi.freezedetect.freeze_start: 1',
       '[Parsed_freezedetect_0 @ 0x1] lavfi.freezedetect.freeze_duration: 0.5',
-      '[Parsed_freezedetect_0 @ 0x1] lavfi.freezedetect.freeze_end: 1.5',
+      '[Parsed_freezedetect_0 @ 0x1] lavfi.freezedetect.freeze_end: 1.5'
     ].join('\n')
     assert.deepEqual(parseFreezedetect(stderr), [{ start: 1, duration: 0.5 }])
   })
@@ -67,7 +68,7 @@ describe('parseSilencedetect', () => {
   it('parses the "silence_end | silence_duration" combined line', () => {
     const stderr = [
       '[silencedetect @ 0x1] silence_start: 1.002896',
-      '[silencedetect @ 0x1] silence_end: 1.408 | silence_duration: 0.405104',
+      '[silencedetect @ 0x1] silence_end: 1.408 | silence_duration: 0.405104'
     ].join('\n')
     const segments = parseSilencedetect(stderr)
     assert.equal(segments.length, 1)
@@ -84,7 +85,7 @@ describe('parseFramemd5', () => {
       '#stream#, dts, pts, duration, size, hash',
       '0, 0, 0, 1, 27648, aaa',
       '0, 1, 1, 1, 27648, aaa',
-      '0, 2, 2, 1, 27648, bbb',
+      '0, 2, 2, 1, 27648, bbb'
     ].join('\n')
     assert.deepEqual(parseFramemd5(stdout), ['aaa', 'aaa', 'bbb'])
   })
@@ -114,6 +115,34 @@ describe('parseCsvFloatColumn', () => {
   })
 })
 
+// Plan 023: the owner's split-output recording had 353 frames on identical
+// stamps in ~7-frame bursts separated by 0.73s gaps — the wallclock-stamped
+// Annex-B path. This metric is the sharp regression signal.
+describe('duplicatePtsStats', () => {
+  it('reports zero for healthy monotonically spaced stamps', () => {
+    const pts = Array.from({ length: 90 }, (_, i) => i / 30)
+    assert.deepEqual(duplicatePtsStats(pts), { duplicateCount: 0, maxDuplicateRun: 1 })
+  })
+
+  it('counts burst-stamped frames like the owner incident file', () => {
+    const pts = []
+    let t = 0
+    for (let burst = 0; burst < 10; burst += 1) {
+      for (let i = 0; i < 7; i += 1) pts.push(t) // 7 frames, one stamp
+      t += 0.73
+    }
+    const stats = duplicatePtsStats(pts)
+    assert.equal(stats.duplicateCount, 60)
+    assert.equal(stats.maxDuplicateRun, 7)
+  })
+
+  it('tolerates sub-millisecond jitter as duplicates but not real intervals', () => {
+    const stats = duplicatePtsStats([0, 0.0005, 0.034, 0.067])
+    assert.equal(stats.duplicateCount, 1)
+    assert.equal(stats.maxDuplicateRun, 2)
+  })
+})
+
 describe('pacingStats', () => {
   it('computes mean interval, max gap and observed fps for CFR input', () => {
     const pts = [0, 1 / 30, 2 / 30, 3 / 30, 4 / 30]
@@ -136,7 +165,7 @@ describe('audioPtsGaps', () => {
       { ptsTime: 0.0, durationTime: 0.021 },
       { ptsTime: 0.021, durationTime: 0.021 },
       { ptsTime: 0.3, durationTime: 0.021 }, // ~258ms jump after a 21ms packet
-      { ptsTime: 0.321, durationTime: 0.021 },
+      { ptsTime: 0.321, durationTime: 0.021 }
     ]
     const { maxGapMs, gaps } = audioPtsGaps(packets)
     assert.equal(gaps.length, 1)
@@ -144,14 +173,20 @@ describe('audioPtsGaps', () => {
   })
 
   it('reports no gap for continuous audio', () => {
-    const packets = Array.from({ length: 10 }, (_, i) => ({ ptsTime: i * 0.021, durationTime: 0.021 }))
+    const packets = Array.from({ length: 10 }, (_, i) => ({
+      ptsTime: i * 0.021,
+      durationTime: 0.021
+    }))
     assert.deepEqual(audioPtsGaps(packets).gaps, [])
   })
 })
 
 describe('avSkewMs', () => {
   it('reports the start-time offset', () => {
-    const probe = { video: { startTime: 0.0, duration: 3 }, audio: [{ startTime: 0.12, duration: 3 }] }
+    const probe = {
+      video: { startTime: 0.0, duration: 3 },
+      audio: [{ startTime: 0.12, duration: 3 }]
+    }
     assert.ok(Math.abs(avSkewMs(probe) - 120) < 1e-6)
   })
 
@@ -162,7 +197,10 @@ describe('avSkewMs', () => {
 
   it('catches a constant audio delay (equal start_times, shorter audio)', () => {
     // The real-recording case: both streams start at 0 but audio is 391ms shorter.
-    const probe = { video: { startTime: 0, duration: 14.3 }, audio: [{ startTime: 0, duration: 13.909 }] }
+    const probe = {
+      video: { startTime: 0, duration: 14.3 },
+      audio: [{ startTime: 0, duration: 13.909 }]
+    }
     assert.ok(Math.abs(avSkewMs(probe) - 391) < 0.5, `got ${avSkewMs(probe)}`)
   })
 })
@@ -182,10 +220,17 @@ describe('normalizeProbe', () => {
           nb_frames: '90',
           duration: '3.0',
           start_time: '0.0',
-          pix_fmt: 'yuv420p',
+          pix_fmt: 'yuv420p'
         },
-        { codec_type: 'audio', codec_name: 'aac', channels: 2, sample_rate: '48000', duration: '3.0', start_time: '0.0' },
-      ],
+        {
+          codec_type: 'audio',
+          codec_name: 'aac',
+          channels: 2,
+          sample_rate: '48000',
+          duration: '3.0',
+          start_time: '0.0'
+        }
+      ]
     })
     const probe = normalizeProbe(json)
     assert.equal(probe.video.codec, 'h264')
@@ -213,7 +258,7 @@ describe('evaluateGates', () => {
     avSkewMs: 10,
     durationSeconds: 3,
     frameDerivedDurationSeconds: 3,
-    durationStretchRatio: 1,
+    durationStretchRatio: 1
   }
 
   it('passes a clean metrics set', () => {
@@ -269,7 +314,7 @@ describe('evaluateGates', () => {
       expectedFrames: 1166,
       durationSeconds: 38.8,
       frameDerivedDurationSeconds,
-      durationStretchRatio: 38.8 / frameDerivedDurationSeconds,
+      durationStretchRatio: 38.8 / frameDerivedDurationSeconds
     })
     assert.equal(v.pass, false)
     assert.ok(v.failures.some((failure) => /timestamp\/duration stretch/.test(failure)))
@@ -335,14 +380,14 @@ describe('renderMarkdownReport', () => {
         audioGapCount: 0,
         longestSilenceMs: 0,
         silenceCount: 0,
-        avSkewMs: 8,
+        avSkewMs: 8
       },
       findings: {
         freezes: [{ start: 14, duration: 0.1 }],
         repeatedBursts: [{ startIndex: 420, run: 3 }],
         audioGaps: [],
-        silences: [],
-      },
+        silences: []
+      }
     })
 
     assert.match(markdown, /## Findings/)
@@ -368,84 +413,175 @@ function generate(args) {
   })
 }
 
-describe('analyzeRecording (integration)', { skip: ffmpegAvailable(ffmpegPath) ? false : 'ffmpeg not installed' }, () => {
-  let dir
-  let clean
-  let midfreeze
-  let silence
-  let screenonly
+describe(
+  'analyzeRecording (integration)',
+  { skip: ffmpegAvailable(ffmpegPath) ? false : 'ffmpeg not installed' },
+  () => {
+    let dir
+    let clean
+    let midfreeze
+    let silence
+    let screenonly
 
-  before(async () => {
-    dir = mkdtempSync(join(tmpdir(), 'vrc-analyzer-'))
-    clean = join(dir, 'clean.mp4')
-    midfreeze = join(dir, 'midfreeze.mp4')
-    silence = join(dir, 'silence.mp4')
-    screenonly = join(dir, 'screenonly.mp4')
+    before(async () => {
+      dir = mkdtempSync(join(tmpdir(), 'vrc-analyzer-'))
+      clean = join(dir, 'clean.mp4')
+      midfreeze = join(dir, 'midfreeze.mp4')
+      silence = join(dir, 'silence.mp4')
+      screenonly = join(dir, 'screenonly.mp4')
 
-    await generate([
-      '-f', 'lavfi', '-i', 'testsrc2=size=320x240:rate=30',
-      '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000',
-      '-t', '3', '-fps_mode', 'cfr', '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac',
-      clean,
-    ])
-    await generate([
-      '-f', 'lavfi', '-i', 'testsrc2=size=320x240:rate=30',
-      '-f', 'lavfi', '-i', 'color=c=blue:size=320x240:rate=30',
-      '-filter_complex',
-      '[0:v]split=2[m1][m2];[m1]trim=0:1,setpts=PTS-STARTPTS[a];[1:v]trim=0:0.5,setpts=PTS-STARTPTS[b];[m2]trim=1:2,setpts=PTS-STARTPTS[c];[a][b][c]concat=n=3:v=1:a=0,fps=30[v]',
-      '-map', '[v]', '-fps_mode', 'cfr', '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p',
-      midfreeze,
-    ])
-    await generate([
-      '-f', 'lavfi', '-i', 'testsrc2=size=320x240:rate=30',
-      '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000',
-      '-t', '3', '-af', "volume=enable='between(t,1,1.4)':volume=0",
-      '-fps_mode', 'cfr', '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac',
-      silence,
-    ])
-    await generate([
-      '-f', 'lavfi', '-i', 'testsrc2=size=320x240:rate=30',
-      '-t', '3', '-fps_mode', 'cfr', '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p',
-      screenonly,
-    ])
-  })
+      await generate([
+        '-f',
+        'lavfi',
+        '-i',
+        'testsrc2=size=320x240:rate=30',
+        '-f',
+        'lavfi',
+        '-i',
+        'sine=frequency=440:sample_rate=48000',
+        '-t',
+        '3',
+        '-fps_mode',
+        'cfr',
+        '-c:v',
+        'libx264',
+        '-preset',
+        'ultrafast',
+        '-pix_fmt',
+        'yuv420p',
+        '-c:a',
+        'aac',
+        clean
+      ])
+      await generate([
+        '-f',
+        'lavfi',
+        '-i',
+        'testsrc2=size=320x240:rate=30',
+        '-f',
+        'lavfi',
+        '-i',
+        'color=c=blue:size=320x240:rate=30',
+        '-filter_complex',
+        '[0:v]split=2[m1][m2];[m1]trim=0:1,setpts=PTS-STARTPTS[a];[1:v]trim=0:0.5,setpts=PTS-STARTPTS[b];[m2]trim=1:2,setpts=PTS-STARTPTS[c];[a][b][c]concat=n=3:v=1:a=0,fps=30[v]',
+        '-map',
+        '[v]',
+        '-fps_mode',
+        'cfr',
+        '-c:v',
+        'libx264',
+        '-preset',
+        'ultrafast',
+        '-pix_fmt',
+        'yuv420p',
+        midfreeze
+      ])
+      await generate([
+        '-f',
+        'lavfi',
+        '-i',
+        'testsrc2=size=320x240:rate=30',
+        '-f',
+        'lavfi',
+        '-i',
+        'sine=frequency=440:sample_rate=48000',
+        '-t',
+        '3',
+        '-af',
+        "volume=enable='between(t,1,1.4)':volume=0",
+        '-fps_mode',
+        'cfr',
+        '-c:v',
+        'libx264',
+        '-preset',
+        'ultrafast',
+        '-pix_fmt',
+        'yuv420p',
+        '-c:a',
+        'aac',
+        silence
+      ])
+      await generate([
+        '-f',
+        'lavfi',
+        '-i',
+        'testsrc2=size=320x240:rate=30',
+        '-t',
+        '3',
+        '-fps_mode',
+        'cfr',
+        '-c:v',
+        'libx264',
+        '-preset',
+        'ultrafast',
+        '-pix_fmt',
+        'yuv420p',
+        screenonly
+      ])
+    })
 
-  after(() => {
-    if (dir && existsSync(dir)) rmSync(dir, { recursive: true, force: true })
-  })
+    after(() => {
+      if (dir && existsSync(dir)) rmSync(dir, { recursive: true, force: true })
+    })
 
-  it('PASSES a clean CFR recording', async () => {
-    const report = await analyzeRecording(clean, { ffmpegPath, ffprobePath, intendedFps: 30 })
-    assert.equal(report.verdict.pass, true, `unexpected failures: ${report.verdict.failures.join('; ')}`)
-    assert.equal(report.metrics.maxRepeatedFrameRun, 1)
-    assert.equal(report.metrics.freezeCount, 0)
-  })
+    it('PASSES a clean CFR recording', async () => {
+      const report = await analyzeRecording(clean, { ffmpegPath, ffprobePath, intendedFps: 30 })
+      assert.equal(
+        report.verdict.pass,
+        true,
+        `unexpected failures: ${report.verdict.failures.join('; ')}`
+      )
+      assert.equal(report.metrics.maxRepeatedFrameRun, 1)
+      assert.equal(report.metrics.freezeCount, 0)
+    })
 
-  it('FAILS a recording with a mid-stream freeze (freeze + repeated-frame gates)', async () => {
-    const report = await analyzeRecording(midfreeze, { ffmpegPath, ffprobePath, intendedFps: 30 })
-    assert.equal(report.verdict.pass, false)
-    assert.ok(report.metrics.longestFreezeMs > 100, `freeze ${report.metrics.longestFreezeMs}ms`)
-    assert.ok(report.metrics.maxRepeatedFrameRun > 2, `run ${report.metrics.maxRepeatedFrameRun}`)
-    assert.ok(report.verdict.failures.some((f) => /freeze segment/.test(f)))
-    assert.ok(report.verdict.failures.some((f) => /repeated-frame burst/.test(f)))
-  })
+    it('FAILS a recording with a mid-stream freeze (freeze + repeated-frame gates)', async () => {
+      const report = await analyzeRecording(midfreeze, { ffmpegPath, ffprobePath, intendedFps: 30 })
+      assert.equal(report.verdict.pass, false)
+      assert.ok(report.metrics.longestFreezeMs > 100, `freeze ${report.metrics.longestFreezeMs}ms`)
+      assert.ok(report.metrics.maxRepeatedFrameRun > 2, `run ${report.metrics.maxRepeatedFrameRun}`)
+      assert.ok(report.verdict.failures.some((f) => /freeze segment/.test(f)))
+      assert.ok(report.verdict.failures.some((f) => /repeated-frame burst/.test(f)))
+    })
 
-  it('PASSES video but WARNS on an audible silence segment', async () => {
-    const report = await analyzeRecording(silence, { ffmpegPath, ffprobePath, intendedFps: 30 })
-    assert.equal(report.verdict.pass, true, `unexpected failures: ${report.verdict.failures.join('; ')}`)
-    assert.ok(report.metrics.longestSilenceMs > 100, `silence ${report.metrics.longestSilenceMs}ms`)
-    assert.ok(report.verdict.warnings.some((w) => /silence segment/.test(w)))
-  })
+    it('PASSES video but WARNS on an audible silence segment', async () => {
+      const report = await analyzeRecording(silence, { ffmpegPath, ffprobePath, intendedFps: 30 })
+      assert.equal(
+        report.verdict.pass,
+        true,
+        `unexpected failures: ${report.verdict.failures.join('; ')}`
+      )
+      assert.ok(
+        report.metrics.longestSilenceMs > 100,
+        `silence ${report.metrics.longestSilenceMs}ms`
+      )
+      assert.ok(report.verdict.warnings.some((w) => /silence segment/.test(w)))
+    })
 
-  it('PASSES a screen-only recording when audio is not expected', async () => {
-    const report = await analyzeRecording(screenonly, { ffmpegPath, ffprobePath, intendedFps: 30, expectAudio: false })
-    assert.equal(report.verdict.pass, true, `unexpected failures: ${report.verdict.failures.join('; ')}`)
-    assert.equal(report.metrics.hasAudio, false)
-  })
+    it('PASSES a screen-only recording when audio is not expected', async () => {
+      const report = await analyzeRecording(screenonly, {
+        ffmpegPath,
+        ffprobePath,
+        intendedFps: 30,
+        expectAudio: false
+      })
+      assert.equal(
+        report.verdict.pass,
+        true,
+        `unexpected failures: ${report.verdict.failures.join('; ')}`
+      )
+      assert.equal(report.metrics.hasAudio, false)
+    })
 
-  it('FAILS a screen-only recording when audio IS expected', async () => {
-    const report = await analyzeRecording(screenonly, { ffmpegPath, ffprobePath, intendedFps: 30, expectAudio: true })
-    assert.equal(report.verdict.pass, false)
-    assert.ok(report.verdict.failures.some((f) => /audio expected/.test(f)))
-  })
-})
+    it('FAILS a screen-only recording when audio IS expected', async () => {
+      const report = await analyzeRecording(screenonly, {
+        ffmpegPath,
+        ffprobePath,
+        intendedFps: 30,
+        expectAudio: true
+      })
+      assert.equal(report.verdict.pass, false)
+      assert.ok(report.verdict.failures.some((f) => /audio expected/.test(f)))
+    })
+  }
+)
