@@ -31,6 +31,8 @@ import {
   patchStreamTargetForEdit,
   persistableCaptureConfig,
   previewDeviceRefreshSignature,
+  preparedXActivationTargets,
+  preparedXCompletionTargets,
   preparedYouTubeActivationTargets,
   preparedYouTubeCompletionTargets,
   readyStreamTargetLabels,
@@ -105,6 +107,7 @@ import type {
   PreviewLiveStatus,
   PlatformAccount,
   PlatformAccountValidation,
+  PreparedXStreamSource,
   PreparedTwitchBroadcast,
   PreparedYouTubeBroadcast,
   OAuthCompleteParams,
@@ -137,6 +140,9 @@ import type {
   VideoSettings,
   VideorcAccountSnapshot,
   XNativeLiveCapability,
+  XEndResult,
+  XLiveChatStartParams,
+  XPublishResult,
   YouTubeBroadcastTransitionResult,
   YouTubeChannel,
   YouTubeStreamStatusResult,
@@ -4770,6 +4776,107 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     [client]
   )
 
+  const activatePreparedXBroadcasts = useCallback(
+    async (streamingForStart: StreamingSettings, runId: number, sessionId?: string) => {
+      if (!client) {
+        return
+      }
+
+      const xTargets = preparedXActivationTargets(streamingForStart)
+
+      for (const target of xTargets) {
+        const sourceId = target.platformStreamId
+        const region = target.platformBroadcastId
+        if (!sourceId || !region) {
+          continue
+        }
+        if (platformLifecycleRun.current !== runId) {
+          return
+        }
+
+        try {
+          setCaptureConfig((current) =>
+            bridgeStreamingToLegacy({
+              ...current,
+              streaming: patchPreparedStreamTarget(current.streaming, target.id, {
+                status: {
+                  state: 'connecting',
+                  message: 'Waiting for X ingest.'
+                }
+              })
+            })
+          )
+
+          const result = await client.request<XPublishResult>('streamTargets.x.publish', {
+            accountId: target.accountId,
+            sourceId,
+            region,
+            isLowLatency: true,
+            shouldNotTweet: false,
+            locale: 'en',
+            chatOption: 2
+          })
+
+          if (platformLifecycleRun.current !== runId) {
+            return
+          }
+
+          setCaptureConfig((current) =>
+            bridgeStreamingToLegacy({
+              ...current,
+              streaming: patchPreparedStreamTarget(current.streaming, target.id, {
+                accountId: result.accountId,
+                platformBroadcastId: result.broadcastId,
+                platformStreamId: result.mediaKey,
+                status: {
+                  state: result.tweetError ? 'warning' : 'live',
+                  message: result.tweetError
+                    ? `X broadcast is live, but the announcement post failed: ${result.tweetError}`
+                    : `X broadcast is live: ${result.shareUrl}`,
+                  redactedUrl: result.shareUrl
+                }
+              })
+            })
+          )
+
+          if (sessionId) {
+            try {
+              const params: XLiveChatStartParams = {
+                sessionId,
+                broadcastId: result.broadcastId,
+                mediaKey: result.mediaKey,
+                targetId: target.id
+              }
+              await client.request<LiveChatSnapshot>('liveChat.x.start', params)
+            } catch (chatError) {
+              const chatMessage = chatError instanceof Error ? chatError.message : String(chatError)
+              toast.warning(`X comments need review for ${target.label}.`, {
+                description: chatMessage
+              })
+            }
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          setCaptureConfig((current) =>
+            bridgeStreamingToLegacy({
+              ...current,
+              streaming: patchPreparedStreamTarget(current.streaming, target.id, {
+                status: {
+                  state: 'warning',
+                  message: `X go-live needs review: ${message}`
+                }
+              })
+            })
+          )
+          toast.warning(`Could not publish ${target.label} on X.`, {
+            description: message
+          })
+        }
+      }
+    },
+    [client]
+  )
+
   const completePreparedPlatformBroadcasts = useCallback(
     async (streamingForCleanup: StreamingSettings = captureConfig.streaming) => {
       if (!client) {
@@ -4832,6 +4939,58 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
           })
         }
       }
+
+      const xTargets = preparedXCompletionTargets(streamingForCleanup)
+      for (const target of xTargets) {
+        const broadcastId = target.platformBroadcastId
+        if (!broadcastId) {
+          continue
+        }
+        try {
+          setCaptureConfig((current) =>
+            bridgeStreamingToLegacy({
+              ...current,
+              streaming: patchPreparedStreamTarget(current.streaming, target.id, {
+                status: {
+                  state: 'connecting',
+                  message: 'Ending X broadcast.'
+                }
+              })
+            })
+          )
+          const result = await client.request<XEndResult>('streamTargets.x.end', {
+            accountId: target.accountId,
+            broadcastId
+          })
+          setCaptureConfig((current) =>
+            bridgeStreamingToLegacy({
+              ...current,
+              streaming: patchPreparedStreamTarget(current.streaming, target.id, {
+                status: {
+                  state: 'stopped',
+                  message: result.message
+                }
+              })
+            })
+          )
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          setCaptureConfig((current) =>
+            bridgeStreamingToLegacy({
+              ...current,
+              streaming: patchPreparedStreamTarget(current.streaming, target.id, {
+                status: {
+                  state: 'warning',
+                  message: `X cleanup needs review: ${message}`
+                }
+              })
+            })
+          )
+          toast.warning(`Could not end ${target.label} on X.`, {
+            description: message
+          })
+        }
+      }
     },
     [captureConfig.streaming, client]
   )
@@ -4859,12 +5018,35 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
         )
         if (enabledOauthTargets.length) {
           const validations = await validatePlatformAccountsForClient(client)
-          const unhealthy = enabledOauthTargets.find((target) => {
+          let unhealthy: StreamTargetSettings | null = null
+          let unhealthyMessage: string | null = null
+          for (const target of enabledOauthTargets) {
+            if (target.platform === 'x') {
+              const capability = await client.request<XNativeLiveCapability>(
+                'streamTargets.x.capability',
+                {
+                  accountId: target.accountId
+                }
+              )
+              if (!capability.nativeAvailable) {
+                unhealthy = target
+                unhealthyMessage = capability.message
+                break
+              }
+              continue
+            }
             const validation = validations.find((item) => item.platform === target.platform)
-            return !validation || !['valid', 'refreshed'].includes(validation.state)
-          })
+            if (!validation || !['valid', 'refreshed'].includes(validation.state)) {
+              unhealthy = target
+              unhealthyMessage = `Reconnect ${target.label} before starting an OAuth livestream.`
+              break
+            }
+          }
           if (unhealthy) {
-            throw new Error(`Reconnect ${unhealthy.label} before starting an OAuth livestream.`)
+            throw new Error(
+              unhealthyMessage ??
+                `Reconnect ${unhealthy.label} before starting an OAuth livestream.`
+            )
           }
         }
         const optimisticRecording = isActiveRecordingState(recordingRef.current.state)
@@ -4885,6 +5067,11 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
         applyRecordingStatus(status)
         await refreshSessions(client)
         await activatePreparedYouTubeBroadcasts(streamingForStart, lifecycleRunId)
+        await activatePreparedXBroadcasts(
+          streamingForStart,
+          lifecycleRunId,
+          status.sessionId ?? recordingRef.current.sessionId
+        )
       } catch (error) {
         if (streamingOverride && streamingForStart) {
           await completePreparedPlatformBroadcasts(streamingForStart)
@@ -4899,6 +5086,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     },
     [
       activatePreparedYouTubeBroadcasts,
+      activatePreparedXBroadcasts,
       applyRecordingStatus,
       captureConfig.streaming,
       client,
@@ -4965,7 +5153,24 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
             }
           })
         } else if (target.platform === 'x') {
-          await client.request('streamTargets.x.prepare', { accountId: target.accountId })
+          const prepared = await client.request<PreparedXStreamSource>('streamTargets.x.prepare', {
+            accountId: target.accountId
+          })
+          nextStreaming = patchPreparedStreamTarget(nextStreaming, target.id, {
+            accountId: prepared.accountId,
+            accountLabel: prepared.accountLabel,
+            serverUrl: prepared.serverUrl,
+            streamKeySecretRef: prepared.streamKeySecretRef,
+            streamKeyPresent: true,
+            platformBroadcastId: prepared.region,
+            platformStreamId: prepared.sourceId,
+            status: {
+              state: 'ready',
+              message: prepared.isStreamActive
+                ? 'X source prepared; ingest is already active.'
+                : 'X source prepared.'
+            }
+          })
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)

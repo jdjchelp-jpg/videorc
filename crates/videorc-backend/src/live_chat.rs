@@ -8,6 +8,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
+use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use tokio::task::JoinHandle;
 use tokio::time::{Duration, sleep};
@@ -241,15 +242,26 @@ pub fn chat_capability(
             "Reconnect Twitch to enable live comments.",
             "Connect Twitch to read live comments.",
         ),
-        StreamPlatform::X => ChatCapability {
-            platform,
-            state: ChatCapabilityState::Unsupported,
-            chat_read_available: false,
-            required_scope: None,
-            account_id: account.map(|account| account.account_id.clone()),
-            account_label: account.map(|account| account.account_label.clone()),
-            message: crate::x_chat::x_chat_message(account.is_some()).to_string(),
-        },
+        StreamPlatform::X => {
+            let x_live_ready = account.is_some()
+                && crate::x_live::x_livestream_credentials_from_env()
+                    .ok()
+                    .flatten()
+                    .is_some();
+            ChatCapability {
+                platform,
+                state: if x_live_ready {
+                    ChatCapabilityState::Available
+                } else {
+                    ChatCapabilityState::NotConnected
+                },
+                chat_read_available: x_live_ready,
+                required_scope: None,
+                account_id: account.map(|account| account.account_id.clone()),
+                account_label: account.map(|account| account.account_label.clone()),
+                message: crate::x_chat::x_chat_message(x_live_ready).to_string(),
+            }
+        }
         StreamPlatform::Custom => ChatCapability {
             platform,
             state: ChatCapabilityState::Unsupported,
@@ -458,6 +470,22 @@ impl LiveChatCoordinator {
         self.providers.iter().find(|p| p.platform == platform)
     }
 
+    pub fn ensure_provider(&mut self, provider: LiveChatProviderState) {
+        match self
+            .providers
+            .iter_mut()
+            .find(|existing| existing.platform == provider.platform)
+        {
+            Some(existing) => {
+                existing.target_id = provider.target_id;
+                existing.account_id = provider.account_id;
+                existing.account_label = provider.account_label;
+                existing.capabilities = provider.capabilities;
+            }
+            None => self.providers.push(provider),
+        }
+    }
+
     /// True once a session has been started (or left a transcript) — drives whether
     /// `current_status` returns the live view versus the setup-time capability snapshot.
     pub fn has_session_view(&self) -> bool {
@@ -623,6 +651,22 @@ pub struct LiveChatStartParams {
     pub youtube: Option<crate::youtube_chat::YouTubeChatConfig>,
     #[serde(default)]
     pub twitch: Option<crate::twitch_chat::TwitchChatConfig>,
+    #[serde(default)]
+    pub x: Option<crate::x_chat::XChatConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartXLiveChatParams {
+    pub session_id: String,
+    pub broadcast_id: String,
+    pub media_key: String,
+    #[serde(default)]
+    pub target_id: Option<String>,
+    #[serde(default)]
+    pub status_base_url: Option<String>,
+    #[serde(default)]
+    pub access_url: Option<String>,
 }
 
 /// A deterministic, bounded fake chat source for tests / `smoke:live-chat-fake-providers`.
@@ -741,9 +785,77 @@ pub async fn start_live_chat(state: &AppState, params: LiveChatStartParams) -> L
             }),
         );
     }
+    if let Some(x) = params.x.clone() {
+        let handle = tokio::spawn(crate::x_chat::run_x_chat_connector(
+            state.clone(),
+            params.session_id.clone(),
+            x,
+        ));
+        let mut coordinator = state.live_chat.lock().await;
+        coordinator.attach_task(handle);
+    }
     let snapshot = current_status(state).await;
     state.emit_event("liveChat.snapshot", snapshot.clone());
     snapshot
+}
+
+pub async fn start_x_live_chat(
+    state: &AppState,
+    params: StartXLiveChatParams,
+) -> Result<LiveChatSnapshot> {
+    let accounts = state.database.list_platform_accounts().unwrap_or_default();
+    let mut provider = session_provider_rows(&accounts, &[StreamPlatform::X])
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| LiveChatProviderState {
+            platform: StreamPlatform::X,
+            target_id: None,
+            account_id: None,
+            account_label: None,
+            state: LiveChatProviderConnectionState::Disabled,
+            message: crate::x_chat::x_chat_message(false).to_string(),
+            last_connected_at: None,
+            last_message_at: None,
+            last_error: None,
+            capabilities: vec![capability_state_tag(ChatCapabilityState::NotConnected).to_string()],
+        });
+    provider.target_id = params.target_id.clone();
+
+    {
+        let mut coordinator = state.live_chat.lock().await;
+        if let Some(active_session_id) = coordinator.session_id.as_deref() {
+            if active_session_id != params.session_id {
+                return Err(anyhow!(
+                    "Live chat session {active_session_id} is active; cannot attach X chat for {}.",
+                    params.session_id
+                ));
+            }
+            coordinator.ensure_provider(provider);
+        } else {
+            coordinator.start_session(params.session_id.clone(), vec![provider]);
+        }
+    }
+
+    let config = crate::x_chat::XChatConfig {
+        broadcast_id: params.broadcast_id,
+        media_key: params.media_key,
+        target_id: params.target_id,
+        status_base_url: params.status_base_url,
+        access_url: params.access_url,
+    };
+    let handle = tokio::spawn(crate::x_chat::run_x_chat_connector(
+        state.clone(),
+        params.session_id,
+        config,
+    ));
+    {
+        let mut coordinator = state.live_chat.lock().await;
+        coordinator.attach_task(handle);
+    }
+
+    let snapshot = current_status(state).await;
+    state.emit_event("liveChat.snapshot", snapshot.clone());
+    Ok(snapshot)
 }
 
 /// The YouTube connector resolves the live chat id from the broadcast id after
@@ -1085,6 +1197,35 @@ mod tests {
     }
 
     #[test]
+    fn ensure_provider_adds_late_x_without_resetting_existing_rows() {
+        let mut coordinator = LiveChatCoordinator::new(10);
+        coordinator.start_session(
+            "s1".to_string(),
+            vec![provider_row(StreamPlatform::Youtube)],
+        );
+
+        coordinator.ensure_provider(LiveChatProviderState {
+            platform: StreamPlatform::X,
+            target_id: Some("x-target".to_string()),
+            account_id: Some("123".to_string()),
+            account_label: Some("OrcDev".to_string()),
+            state: LiveChatProviderConnectionState::Disabled,
+            message: "X comments ready.".to_string(),
+            last_connected_at: None,
+            last_message_at: None,
+            last_error: None,
+            capabilities: vec!["available".to_string()],
+        });
+
+        let snapshot = coordinator.snapshot("now".to_string());
+        assert_eq!(snapshot.session_id.as_deref(), Some("s1"));
+        assert_eq!(snapshot.providers.len(), 2);
+        assert_eq!(snapshot.providers[0].platform, StreamPlatform::Youtube);
+        assert_eq!(snapshot.providers[1].platform, StreamPlatform::X);
+        assert_eq!(snapshot.providers[1].target_id.as_deref(), Some("x-target"));
+    }
+
+    #[test]
     fn sender_registry_is_session_scoped() {
         let mut coordinator = LiveChatCoordinator::new(10);
         coordinator.start_session("s1".to_string(), Vec::new());
@@ -1173,10 +1314,10 @@ mod tests {
     }
 
     #[test]
-    fn x_is_unsupported_and_custom_has_no_comments() {
+    fn x_without_account_is_not_connected_and_custom_has_no_comments() {
         assert_eq!(
             chat_capability(StreamPlatform::X, None).state,
-            ChatCapabilityState::Unsupported
+            ChatCapabilityState::NotConnected
         );
         assert_eq!(
             chat_capability(StreamPlatform::Custom, None).state,
@@ -1202,7 +1343,7 @@ mod tests {
         assert_eq!(capabilities[1].platform, StreamPlatform::Twitch);
         assert_eq!(capabilities[1].state, ChatCapabilityState::NotConnected);
         assert_eq!(capabilities[2].platform, StreamPlatform::X);
-        assert_eq!(capabilities[2].state, ChatCapabilityState::Unsupported);
+        assert_eq!(capabilities[2].state, ChatCapabilityState::NotConnected);
     }
 
     #[test]
@@ -1258,7 +1399,7 @@ mod tests {
         );
         assert_eq!(
             snapshot.providers[2].state,
-            LiveChatProviderConnectionState::Unsupported
+            LiveChatProviderConnectionState::Disabled
         );
     }
 }

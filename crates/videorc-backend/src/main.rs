@@ -123,7 +123,11 @@ use crate::twitch::{
     PreparedTwitchBroadcast, TwitchCategorySearchParams, TwitchCategorySearchRequest,
     TwitchCategorySearchResult, TwitchPrepareParams, TwitchPrepareRequest,
 };
-use crate::x_live::{XNativeLiveCapability, XNativeLiveCapabilityParams, XPrepareParams};
+use crate::x_live::{
+    PreparedXStreamSource, XEndParams, XEndRequest, XEndResult, XNativeLiveCapability,
+    XNativeLiveCapabilityParams, XPrepareParams, XPrepareSourceRequest, XPublishParams,
+    XPublishRequest, XPublishResult,
+};
 use crate::youtube::{PreparedYouTubeBroadcast, YouTubePrepareParams, YouTubePrepareRequest};
 use crate::youtube::{
     YouTubeBroadcastTransitionParams, YouTubeBroadcastTransitionRequest,
@@ -1289,6 +1293,7 @@ async fn spawn_session_live_chat(
         fake: None,
         youtube: None,
         twitch: None,
+        x: None,
     };
     for target in &streaming.targets {
         if !enabled.contains(target.id.as_str()) {
@@ -1519,17 +1524,122 @@ fn x_native_live_capability(
 ) -> anyhow::Result<XNativeLiveCapability> {
     let accounts = state.database.list_platform_accounts()?;
     let account = x_live::select_x_account(&accounts, params.account_id.as_deref())?;
-    Ok(x_live::x_native_live_capability(account))
+    x_live::x_native_live_capability(account)
 }
 
-fn prepare_x_native_live(state: &AppState, params: XPrepareParams) -> anyhow::Result<()> {
+async fn prepare_x_native_live(
+    state: &AppState,
+    params: XPrepareParams,
+) -> anyhow::Result<PreparedXStreamSource> {
+    let accounts = state.database.list_platform_accounts()?;
+    let account = x_live::select_x_account(&accounts, params.account_id.as_deref())?;
     let capability = x_native_live_capability(
         state,
         XNativeLiveCapabilityParams {
             account_id: params.account_id,
         },
     )?;
-    x_live::ensure_x_native_live_available(&capability)
+    x_live::ensure_x_native_live_available(&capability)?;
+    let credentials = x_live::x_livestream_credentials_from_env()?
+        .context("X Livestream OAuth 1.0a credentials are not configured.")?;
+    let prepared = x_live::prepare_x_stream_source(
+        XPrepareSourceRequest {
+            credentials: credentials.clone(),
+            account: account.cloned(),
+            source_name: x_live::default_source_name(),
+            api_base_url: None,
+        },
+        &reqwest::Client::new(),
+        secrets::put_secret,
+    )
+    .await?;
+
+    let existing = state
+        .database
+        .list_platform_account_credentials()?
+        .into_iter()
+        .find(|credential| credential.account.platform == StreamPlatform::X);
+    state
+        .database
+        .upsert_platform_account(UpsertPlatformAccount {
+            platform: StreamPlatform::X,
+            account_id: prepared.account_id.clone(),
+            account_label: prepared.account_label.clone(),
+            account_handle: existing
+                .as_ref()
+                .and_then(|credential| credential.account.account_handle.clone()),
+            avatar_url: existing
+                .as_ref()
+                .and_then(|credential| credential.account.avatar_url.clone()),
+            scopes: existing
+                .as_ref()
+                .map(|credential| credential.account.scopes.clone())
+                .unwrap_or_else(|| vec!["x-livestream-api".to_string()]),
+            token_secret_ref: existing
+                .as_ref()
+                .and_then(|credential| credential.token_secret_ref.clone()),
+            refresh_token_secret_ref: existing
+                .as_ref()
+                .and_then(|credential| credential.refresh_token_secret_ref.clone()),
+            stream_key_secret_ref: Some(prepared.stream_key_secret_ref.clone()),
+            expires_at: existing
+                .as_ref()
+                .and_then(|credential| credential.account.expires_at.clone()),
+            status: PlatformAccountStatus::Connected,
+        })?;
+    if let Ok(accounts) = state.database.list_platform_accounts() {
+        state.emit_event("platformAccounts.changed", accounts);
+    }
+
+    Ok(prepared)
+}
+
+async fn publish_x_native_live(
+    state: &AppState,
+    params: XPublishParams,
+) -> anyhow::Result<XPublishResult> {
+    let accounts = state.database.list_platform_accounts()?;
+    let account = x_live::select_x_account(&accounts, params.account_id.as_deref())?;
+    let capability = x_live::x_native_live_capability(account)?;
+    x_live::ensure_x_native_live_available(&capability)?;
+    let metadata = state.database.stream_metadata_draft()?;
+    let credentials = x_live::x_livestream_credentials_from_env()?
+        .context("X Livestream OAuth 1.0a credentials are not configured.")?;
+    x_live::publish_x_broadcast(
+        XPublishRequest {
+            credentials,
+            source_id: params.source_id,
+            region: params.region,
+            metadata,
+            is_low_latency: params.is_low_latency,
+            should_not_tweet: params.should_not_tweet,
+            locale: x_live::default_publish_locale(params.locale),
+            chat_option: x_live::default_chat_option(params.chat_option),
+            api_base_url: None,
+            poll_attempts: 10,
+            poll_interval_ms: 2_000,
+        },
+        &reqwest::Client::new(),
+    )
+    .await
+}
+
+async fn end_x_native_live(state: &AppState, params: XEndParams) -> anyhow::Result<XEndResult> {
+    let accounts = state.database.list_platform_accounts()?;
+    let account = x_live::select_x_account(&accounts, params.account_id.as_deref())?;
+    let capability = x_live::x_native_live_capability(account)?;
+    x_live::ensure_x_native_live_available(&capability)?;
+    let credentials = x_live::x_livestream_credentials_from_env()?
+        .context("X Livestream OAuth 1.0a credentials are not configured.")?;
+    x_live::end_x_broadcast(
+        XEndRequest {
+            credentials,
+            broadcast_id: params.broadcast_id,
+            api_base_url: None,
+        },
+        &reqwest::Client::new(),
+    )
+    .await
 }
 
 fn upsert_validated_account(
@@ -2549,6 +2659,21 @@ async fn handle_text_message(state: &AppState, text: &str) -> ServerResponse {
                 }
             }
         }
+        "liveChat.x.start" => {
+            match serde_json::from_value::<live_chat::StartXLiveChatParams>(command.params) {
+                Ok(params) => match live_chat::start_x_live_chat(state, params).await {
+                    Ok(snapshot) => ServerResponse::ok(command.id, snapshot),
+                    Err(error) => ServerResponse::error(
+                        command.id,
+                        "live-chat-x-start-failed",
+                        error.to_string(),
+                    ),
+                },
+                Err(error) => {
+                    ServerResponse::error(command.id, "invalid-params", error.to_string())
+                }
+            }
+        }
         "liveChat.stop" => ServerResponse::ok(command.id, live_chat::stop_live_chat(state).await),
         "liveChat.diagnostics" => {
             ServerResponse::ok(command.id, live_chat::current_diagnostics(state).await)
@@ -2886,15 +3011,38 @@ async fn handle_text_message(state: &AppState, text: &str) -> ServerResponse {
                 }
             }
         }
-        "streamTargets.x.prepare" => match serde_json::from_value::<XPrepareParams>(command.params)
-        {
-            Ok(params) => match prepare_x_native_live(state, params) {
-                Ok(()) => ServerResponse::ok(command.id, serde_json::json!({})),
-                Err(error) => ServerResponse::error(
-                    command.id,
-                    "x-native-live-unavailable",
-                    error.to_string(),
-                ),
+        "streamTargets.x.prepare" => {
+            match serde_json::from_value::<XPrepareParams>(command.params) {
+                Ok(params) => match prepare_x_native_live(state, params).await {
+                    Ok(prepared) => ServerResponse::ok(command.id, prepared),
+                    Err(error) => ServerResponse::error(
+                        command.id,
+                        "x-native-live-unavailable",
+                        error.to_string(),
+                    ),
+                },
+                Err(error) => {
+                    ServerResponse::error(command.id, "invalid-params", error.to_string())
+                }
+            }
+        }
+        "streamTargets.x.publish" => {
+            match serde_json::from_value::<XPublishParams>(command.params) {
+                Ok(params) => match publish_x_native_live(state, params).await {
+                    Ok(result) => ServerResponse::ok(command.id, result),
+                    Err(error) => {
+                        ServerResponse::error(command.id, "x-publish-failed", error.to_string())
+                    }
+                },
+                Err(error) => {
+                    ServerResponse::error(command.id, "invalid-params", error.to_string())
+                }
+            }
+        }
+        "streamTargets.x.end" => match serde_json::from_value::<XEndParams>(command.params) {
+            Ok(params) => match end_x_native_live(state, params).await {
+                Ok(result) => ServerResponse::ok(command.id, result),
+                Err(error) => ServerResponse::error(command.id, "x-end-failed", error.to_string()),
             },
             Err(error) => ServerResponse::error(command.id, "invalid-params", error.to_string()),
         },

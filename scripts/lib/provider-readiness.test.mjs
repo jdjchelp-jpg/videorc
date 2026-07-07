@@ -17,6 +17,7 @@ function completeEnv(overrides = {}) {
     VIDEORC_TWITCH_CLIENT_SECRET: 'twitch-secret-value',
     VIDEORC_SMOKE_TWITCH_ACCOUNT_READY: '1',
     VIDEORC_BUNDLED_X_CLIENT_ID: 'x-bundled-client-value',
+    VIDEORC_SMOKE_X_LIVESTREAM_OAUTH1_READY: '1',
     VIDEORC_SMOKE_X_NATIVE_LIVE_ACCESS: '1',
     [PROVIDER_CALLBACKS_READY_ENV]: '1',
     ...overrides
@@ -80,6 +81,7 @@ describe('provider readiness evidence', () => {
     assert.match(markdown, /http:\/\/127\.0\.0\.1:17995\/oauth\/callback/)
     assert.match(markdown, /Client ID source/)
     assert.match(markdown, /bundled/)
+    assert.match(markdown, /VIDEORC_SMOKE_X_LIVESTREAM_OAUTH1_READY=1/)
     assert.match(markdown, /VIDEORC_SMOKE_X_NATIVE_LIVE_ACCESS=1/)
   })
 })

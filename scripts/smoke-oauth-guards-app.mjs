@@ -172,9 +172,9 @@ function assertPreflight(preflight) {
   if (!x || x.ready || x.authMode !== 'oauth') {
     throw new Error(`OAuth X preflight should be blocked: ${JSON.stringify(preflight)}`)
   }
-  if (!x.message.includes('connected account')) {
+  if (!x.message.includes('OAuth 1.0a')) {
     throw new Error(
-      `OAuth X preflight should explain missing connected account: ${JSON.stringify(x)}`
+      `OAuth X preflight should explain missing OAuth 1.0a live credentials: ${JSON.stringify(x)}`
     )
   }
 
@@ -265,20 +265,22 @@ function assertSecretRefPreflight(preflight) {
 function assertXCapability(capability) {
   if (
     capability?.platform !== 'x' ||
-    capability.state !== 'partner-api-required' ||
+    capability.state !== 'missing-credentials' ||
     capability.nativeAvailable !== false ||
     capability.manualRtmpAvailable !== true ||
     capability.oauthConnected !== false
   ) {
     throw new Error(`X native capability guard mismatch: ${JSON.stringify(capability)}`)
   }
-  if (!String(capability.message).includes('partner/API path')) {
+  if (!String(capability.message).includes('OAuth 1.0a')) {
     throw new Error(
-      `X capability message should explain the partner/API path: ${JSON.stringify(capability)}`
+      `X capability message should explain the OAuth 1.0a credential requirement: ${JSON.stringify(capability)}`
     )
   }
-  if (!String(capability.docsUrl).startsWith('https://help.x.com/')) {
-    throw new Error(`X capability should include Producer docs URL: ${JSON.stringify(capability)}`)
+  if (!String(capability.docsUrl).startsWith('https://github.com/xdevplatform/')) {
+    throw new Error(
+      `X capability should include Livestream API sample docs URL: ${JSON.stringify(capability)}`
+    )
   }
   if (!String(capability.apiOverviewUrl).startsWith('https://docs.x.com/')) {
     throw new Error(`X capability should include X API overview URL: ${JSON.stringify(capability)}`)

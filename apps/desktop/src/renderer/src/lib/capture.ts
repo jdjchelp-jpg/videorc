@@ -1166,6 +1166,29 @@ export function preparedYouTubeCompletionTargets(
   )
 }
 
+export function preparedXActivationTargets(streaming: StreamingSettings): StreamTargetSettings[] {
+  return streaming.targets.filter(
+    (target) =>
+      target.enabled &&
+      target.authMode === 'oauth' &&
+      target.platform === 'x' &&
+      Boolean(target.platformStreamId) &&
+      Boolean(target.platformBroadcastId) &&
+      target.status?.state === 'ready'
+  )
+}
+
+export function preparedXCompletionTargets(streaming: StreamingSettings): StreamTargetSettings[] {
+  return streaming.targets.filter(
+    (target) =>
+      target.enabled &&
+      target.authMode === 'oauth' &&
+      target.platform === 'x' &&
+      target.status?.state === 'live' &&
+      Boolean(target.platformBroadcastId)
+  )
+}
+
 function findRememberedSource(
   sourceId: string | undefined,
   sourceName: string | undefined,

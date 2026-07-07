@@ -46,7 +46,12 @@ export const PROVIDERS = [
     secretRequired: false,
     accountChecks: [
       {
-        label: 'native live partner/API access available',
+        label: 'OAuth 1.0a Livestream credentials configured',
+        env: 'VIDEORC_SMOKE_X_LIVESTREAM_OAUTH1_READY',
+        statusLabel: 'X OAuth 1.0a live credentials'
+      },
+      {
+        label: 'allow-listed Livestream API access validated',
         env: 'VIDEORC_SMOKE_X_NATIVE_LIVE_ACCESS',
         statusLabel: 'X native live access'
       }
@@ -167,8 +172,16 @@ export function formatProviderReadinessMarkdown(result) {
     lines.push(
       `- Status: ${
         nativeLive?.ready
-          ? 'ready - partner/API live source or broadcast path validated'
-          : `blocked - set ${nativeLive?.env ?? 'VIDEORC_SMOKE_X_NATIVE_LIVE_ACCESS'}=1 only after partner/API validation`
+          ? 'ready - allow-listed source and broadcast path validated'
+          : `blocked - set ${nativeLive?.env ?? 'VIDEORC_SMOKE_X_NATIVE_LIVE_ACCESS'}=1 only after live API validation`
+      }`
+    )
+    const oauth1 = x.accountChecks.find((check) => check.statusLabel === 'X OAuth 1.0a live credentials')
+    lines.push(
+      `- OAuth 1.0a credentials: ${
+        oauth1?.ready
+          ? 'ready - backend live credential set configured'
+          : `missing - set ${oauth1?.env ?? 'VIDEORC_SMOKE_X_LIVESTREAM_OAUTH1_READY'}=1 only after the redacted VIDEORC_X_OAUTH1_* values are configured`
       }`
     )
     lines.push('')

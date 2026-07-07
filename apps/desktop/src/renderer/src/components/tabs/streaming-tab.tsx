@@ -1208,7 +1208,13 @@ function OAuthAccountPanel({
               className="w-fit"
               variant={xNativeCapability?.nativeAvailable ? 'success' : 'warning'}
             >
-              {xNativeCapability?.nativeAvailable ? 'Native ready' : 'Partner API required'}
+              {xNativeCapability?.nativeAvailable
+                ? 'X API ready'
+                : xNativeCapability?.state === 'missing-credentials'
+                  ? 'Credentials needed'
+                  : xNativeCapability?.state === 'account-mismatch'
+                    ? 'Account mismatch'
+                    : 'X API check needed'}
             </Badge>
             <Button
               disabled={disabled || xNativeCapabilityLoading}
@@ -1257,8 +1263,8 @@ function OAuthAccountPanel({
                 Switch to Manual RTMP
               </Button>
               <span className="text-xs text-muted-foreground">
-                Going live on X works today via Media Studio Producer: create an RTMP source at
-                studio.x.com, then paste its RTMP URL and stream key here in Manual RTMP mode.
+                Manual RTMP is still available as an explicit fallback: create an RTMP source in X
+                Producer, then paste its URL and stream key here in Manual RTMP mode.
               </span>
             </div>
           ) : null}

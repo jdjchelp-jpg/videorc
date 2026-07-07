@@ -344,6 +344,22 @@ VIDEORC_TWITCH_CLIENT_SECRET=...
 VIDEORC_X_CLIENT_SECRET=...
 ```
 
+Native X Livestream source/broadcast management is not covered by the X OAuth2
+PKCE token. Release and smoke environments that enable first-class X live must
+also provide the backend-only OAuth 1.0a values:
+
+```sh
+VIDEORC_X_OAUTH1_CONSUMER_KEY=...
+VIDEORC_X_OAUTH1_CONSUMER_SECRET=...
+VIDEORC_X_OAUTH1_ACCESS_TOKEN=...
+VIDEORC_X_OAUTH1_ACCESS_TOKEN_SECRET=...
+VIDEORC_X_OAUTH1_USER_ID=...
+```
+
+These values are secrets except the numeric user id. They must remain runtime
+configuration, must not be bundled into the renderer, and must not appear in
+support bundles or logs.
+
 OAuth callback URLs (all providers):
 
 - The backend binds a dedicated loopback listener for OAuth callbacks on the first free
@@ -378,7 +394,10 @@ pnpm smoke:provider-readiness
 pnpm smoke:provider-readiness:strict
 ```
 
-The strict run requires OAuth client IDs, Twitch's runtime client secret, eligible YouTube/Twitch test accounts, and validated X native live partner/API access. See [OAuth Live Smoke Runbook](oauth-live-smoke.md) for the full external acceptance workflow.
+The strict run requires OAuth client IDs, Twitch's optional runtime client secret
+when using a confidential Twitch app, eligible YouTube/Twitch test accounts, and
+validated X Livestream OAuth1/API access. See [OAuth Live Smoke Runbook](oauth-live-smoke.md)
+for the full external acceptance workflow.
 
 ## Credential Storage
 
@@ -527,7 +546,7 @@ The release process must make source for the exact FFmpeg archive available besi
 - Confirm the packaged native preview smoke reports `previewTransport = native-surface`
   and `previewSurfaceBacking = cametal-layer`
 - Confirm Streaming tab OAuth credential source badges show bundled defaults or intended overrides
-- Complete the OAuth live smoke runbook for YouTube, Twitch, and X, or record X native access as release-blocking if partner/API access is not available
+- Complete the OAuth live smoke runbook for YouTube, Twitch, and X, or record X native live as release-blocking if OAuth1 credentials or allow-listed API access are not available
 - Confirm FFmpeg unavailable states are visible and non-crashing
 - Record a short MKV using the bundled FFmpeg path
 - Stop recording and confirm the session appears in Library
