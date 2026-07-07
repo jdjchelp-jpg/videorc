@@ -8,6 +8,7 @@ import {
   applyLiveChatProviderStatus,
   emptyLiveChatSnapshot,
   filterMessagesByPlatform,
+  liveChatEmptyMessage,
   nextUnreadCount,
   shouldAutoscroll,
   sortMessagesChronological,
@@ -115,5 +116,47 @@ describe('live-chat-view', () => {
     )
     expect(visibleMessages(messages, 2).map((m) => m.id)).toEqual(['m3', 'm4'])
     expect(visibleMessages(messages, 10)).toHaveLength(5)
+  })
+
+  it('uses actionable provider messages for the empty state', () => {
+    expect(liveChatEmptyMessage({ providers: [] })).toBe(
+      'Connect YouTube or Twitch to read live comments.'
+    )
+    expect(
+      liveChatEmptyMessage({
+        providers: [
+          {
+            platform: 'twitch',
+            state: 'disabled',
+            message: 'Connect Twitch to read live comments.',
+            capabilities: ['not-connected']
+          }
+        ]
+      })
+    ).toBe('Connect Twitch to read live comments.')
+    expect(
+      liveChatEmptyMessage({
+        providers: [
+          {
+            platform: 'twitch',
+            state: 'disabled',
+            message: 'Reconnect Twitch to enable live comments.',
+            capabilities: ['needs-reconnect']
+          }
+        ]
+      })
+    ).toBe('Reconnect Twitch to enable live comments.')
+    expect(
+      liveChatEmptyMessage({
+        providers: [
+          {
+            platform: 'twitch',
+            state: 'connected',
+            message: 'Twitch live chat connected.',
+            capabilities: ['available']
+          }
+        ]
+      })
+    ).toBe('No comments yet. Comments appear here once you go live.')
   })
 })

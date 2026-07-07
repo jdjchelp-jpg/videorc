@@ -13,7 +13,7 @@ import type {
 } from '@/lib/backend'
 import { AvatarCircle } from '@/lib/chat-avatar'
 import { CHAT_SEND_MAX_CHARS, validateChatDraft, type ChatSendFailure } from '@/lib/chat-send'
-import { sortMessagesChronological } from '@/lib/live-chat-view'
+import { liveChatEmptyMessage, sortMessagesChronological } from '@/lib/live-chat-view'
 import { viewerChipDetail, viewerChipLabel, viewerSampleStale } from '@/lib/viewer-count-view'
 import { cn } from '@/lib/utils'
 
@@ -276,7 +276,9 @@ function OffAir({ providers }: { providers: LiveChatProviderState[] }): ReactEle
               <ProviderPill key={provider.platform} provider={provider} />
             ))}
           </div>
-          <p className="text-sm text-subtle">Waiting for comments…</p>
+          <p className="text-sm text-subtle">
+            {liveChatEmptyMessage({ providers }, 'Start a livestream to see comments here.')}
+          </p>
         </>
       ) : (
         <p className="text-sm text-subtle">Start a livestream to see comments here.</p>

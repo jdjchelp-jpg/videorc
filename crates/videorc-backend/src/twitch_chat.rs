@@ -710,6 +710,19 @@ pub async fn run_twitch_chat_connector(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
+    use axum::extract::State;
+    use axum::extract::ws::{Message as AxumMessage, WebSocketUpgrade};
+    use axum::response::IntoResponse;
+    use axum::routing::{get, post};
+    use axum::{Json, Router};
+    use tokio::sync::{Mutex, broadcast, oneshot};
+
+    use crate::live_chat::{
+        LiveChatProviderConnectionState, LiveChatProviderState, current_status,
+    };
+    use crate::storage::Database;
 
     fn chat_message_frame() -> String {
         json!({
@@ -741,6 +754,176 @@ mod tests {
             }
         })
         .to_string()
+    }
+
+    #[derive(Clone)]
+    struct MockTwitchServerState {
+        subscriptions: Arc<Mutex<Vec<Value>>>,
+    }
+
+    async fn mock_eventsub_ws(ws: WebSocketUpgrade) -> impl IntoResponse {
+        ws.on_upgrade(|mut socket| async move {
+            let welcome = json!({
+                "metadata": { "message_type": "session_welcome" },
+                "payload": { "session": { "id": "socket-session-1" } }
+            })
+            .to_string();
+            let _ = socket.send(AxumMessage::Text(welcome.into())).await;
+            sleep(Duration::from_millis(100)).await;
+            let _ = socket
+                .send(AxumMessage::Text(chat_message_frame().into()))
+                .await;
+            sleep(Duration::from_millis(100)).await;
+        })
+    }
+
+    async fn mock_subscriptions(
+        State(state): State<MockTwitchServerState>,
+        Json(body): Json<Value>,
+    ) -> Json<Value> {
+        state.subscriptions.lock().await.push(body);
+        Json(json!({ "data": [] }))
+    }
+
+    async fn mock_users() -> Json<Value> {
+        Json(json!({
+            "data": [
+                { "id": "987", "profile_image_url": "https://static-cdn.jtvnw.net/viewer.png" }
+            ]
+        }))
+    }
+
+    async fn spawn_mock_twitch_server()
+    -> (String, String, Arc<Mutex<Vec<Value>>>, oneshot::Sender<()>) {
+        let subscriptions = Arc::new(Mutex::new(Vec::new()));
+        let state = MockTwitchServerState {
+            subscriptions: subscriptions.clone(),
+        };
+        let app = Router::new()
+            .route("/eventsub", get(mock_eventsub_ws))
+            .route("/helix/eventsub/subscriptions", post(mock_subscriptions))
+            .route("/helix/users", get(mock_users))
+            .with_state(state);
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("mock twitch listener");
+        let addr = listener.local_addr().expect("mock twitch addr");
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    let _ = shutdown_rx.await;
+                })
+                .await;
+        });
+        (
+            format!("http://{addr}"),
+            format!("ws://{addr}/eventsub"),
+            subscriptions,
+            shutdown_tx,
+        )
+    }
+
+    fn test_state() -> AppState {
+        let (events, _) = broadcast::channel(16);
+        AppState::new(
+            "test-token".to_string(),
+            1234,
+            events,
+            Database::open_in_memory_for_tests(),
+        )
+    }
+
+    fn twitch_provider_row() -> LiveChatProviderState {
+        LiveChatProviderState {
+            platform: StreamPlatform::Twitch,
+            target_id: Some("twitch".to_string()),
+            account_id: Some("broadcaster-1".to_string()),
+            account_label: Some("Twitch Channel".to_string()),
+            state: LiveChatProviderConnectionState::Connecting,
+            message: "Connecting to Twitch live chat…".to_string(),
+            last_connected_at: None,
+            last_message_at: None,
+            last_error: None,
+            capabilities: vec!["available".to_string()],
+        }
+    }
+
+    async fn wait_for_twitch_message(state: &AppState) -> crate::live_chat::LiveChatSnapshot {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let snapshot = current_status(state).await;
+            if snapshot
+                .messages
+                .iter()
+                .any(|message| message.id == "twitch:chat-1")
+            {
+                return snapshot;
+            }
+            if std::time::Instant::now() > deadline {
+                panic!("timed out waiting for mocked Twitch chat message: {snapshot:?}");
+            }
+            sleep(Duration::from_millis(25)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn eventsub_session_subscribes_and_delivers_chat_message() {
+        let (api_base_url, eventsub_ws_url, subscriptions, shutdown) =
+            spawn_mock_twitch_server().await;
+        let state = test_state();
+        {
+            let mut coordinator = state.live_chat.lock().await;
+            coordinator.start_session("session-1".to_string(), vec![twitch_provider_row()]);
+        }
+
+        let connector = tokio::spawn(run_twitch_chat_connector(
+            state.clone(),
+            "session-1".to_string(),
+            TwitchChatConfig {
+                access_token: "token-1".to_string(),
+                client_id: "client-1".to_string(),
+                broadcaster_user_id: "broadcaster-1".to_string(),
+                user_id: "user-1".to_string(),
+                target_id: Some("twitch".to_string()),
+                eventsub_ws_url: Some(eventsub_ws_url),
+                api_base_url: Some(api_base_url),
+            },
+        ));
+
+        let snapshot = wait_for_twitch_message(&state).await;
+        connector.abort();
+        let _ = shutdown.send(());
+
+        let twitch = snapshot
+            .providers
+            .iter()
+            .find(|provider| provider.platform == StreamPlatform::Twitch)
+            .expect("twitch provider");
+        assert_eq!(twitch.state, LiveChatProviderConnectionState::Connected);
+        assert_eq!(snapshot.messages.len(), 1);
+        let message = &snapshot.messages[0];
+        assert_eq!(message.id, "twitch:chat-1");
+        assert_eq!(message.message_text, "hi Kappa");
+        assert_eq!(
+            message.author_avatar_url.as_deref(),
+            Some("https://static-cdn.jtvnw.net/viewer.png")
+        );
+
+        let subscription_types = subscriptions
+            .lock()
+            .await
+            .iter()
+            .filter_map(|body| body["type"].as_str().map(ToOwned::to_owned))
+            .collect::<Vec<_>>();
+        for subscription_type in CHAT_SUBSCRIPTION_TYPES {
+            assert!(
+                subscription_types
+                    .iter()
+                    .any(|submitted| submitted == subscription_type),
+                "missing mocked subscription type {subscription_type}: {subscription_types:?}"
+            );
+        }
     }
 
     #[test]

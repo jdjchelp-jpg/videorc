@@ -16,6 +16,7 @@ import {
   LIVE_CHAT_PLATFORMS,
   MAX_RENDERED_LIVE_CHAT_MESSAGES,
   filterMessagesByPlatform,
+  liveChatEmptyMessage,
   nextUnreadCount,
   shouldAutoscroll,
   visibleMessages
@@ -255,9 +256,7 @@ export function LiveChatPanel({
             ))
           ) : (
             <div className="flex h-full items-center justify-center px-4 text-center text-xs text-muted-foreground">
-              {hasProviders
-                ? 'No comments yet. Comments appear here once you go live.'
-                : 'Connect a YouTube or Twitch account to read live comments.'}
+              {liveChatEmptyMessage(snapshot)}
             </div>
           )}
         </div>

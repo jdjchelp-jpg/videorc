@@ -1244,6 +1244,14 @@ fn twitch_chat_config(
     target: &crate::streaming::StreamTargetSettings,
 ) -> Result<twitch_chat::TwitchChatConfig> {
     let credential = twitch_account_credentials(state, target.account_id.as_deref())?;
+    if !credential
+        .account
+        .scopes
+        .iter()
+        .any(|scope| scope == live_chat::TWITCH_CHAT_SCOPE)
+    {
+        anyhow::bail!("Reconnect Twitch to enable live comments.");
+    }
     let access_ref = credential
         .token_secret_ref
         .as_deref()
@@ -1277,33 +1285,53 @@ async fn spawn_session_live_chat(
         .collect();
     let mut params = live_chat::LiveChatStartParams {
         session_id: session_id.to_string(),
+        platforms: Vec::new(),
         fake: None,
         youtube: None,
         twitch: None,
     };
     for target in &streaming.targets {
-        if !enabled.contains(target.id.as_str())
-            || target.auth_mode != crate::streaming::StreamAuthMode::Oauth
-        {
+        if !enabled.contains(target.id.as_str()) {
             continue;
         }
         match target.platform {
-            StreamPlatform::Youtube => match youtube_chat_config(state, target).await {
-                Ok(config) => params.youtube = Some(config),
-                Err(error) => {
-                    state.emit_log("warn", format!("YouTube live chat unavailable: {error}"))
+            StreamPlatform::Youtube => {
+                if target.auth_mode != crate::streaming::StreamAuthMode::Oauth {
+                    continue;
                 }
-            },
+                if !params.platforms.contains(&StreamPlatform::Youtube) {
+                    params.platforms.push(StreamPlatform::Youtube);
+                }
+                match youtube_chat_config(state, target).await {
+                    Ok(config) => params.youtube = Some(config),
+                    Err(error) => {
+                        state.emit_log("warn", format!("YouTube live chat unavailable: {error}"))
+                    }
+                }
+            }
             StreamPlatform::Twitch => match twitch_chat_config(state, target) {
-                Ok(config) => params.twitch = Some(config),
+                Ok(config) => {
+                    if !params.platforms.contains(&StreamPlatform::Twitch) {
+                        params.platforms.push(StreamPlatform::Twitch);
+                    }
+                    params.twitch = Some(config);
+                }
                 Err(error) => {
+                    if !params.platforms.contains(&StreamPlatform::Twitch) {
+                        params.platforms.push(StreamPlatform::Twitch);
+                    }
                     state.emit_log("warn", format!("Twitch live chat unavailable: {error}"))
                 }
             },
-            _ => {}
+            StreamPlatform::X => {
+                if !params.platforms.contains(&StreamPlatform::X) {
+                    params.platforms.push(StreamPlatform::X);
+                }
+            }
+            StreamPlatform::Custom => {}
         }
     }
-    if params.youtube.is_some() || params.twitch.is_some() {
+    if !params.platforms.is_empty() {
         live_chat::start_live_chat(state, params).await;
     }
 }
@@ -3463,6 +3491,117 @@ mod tests {
             updated_at: "2026-06-23T10:00:00Z".to_string(),
             status,
         }
+    }
+
+    fn streaming_with_enabled_target(
+        platform: StreamPlatform,
+        auth_mode: crate::streaming::StreamAuthMode,
+    ) -> crate::streaming::StreamingSettings {
+        let mut targets = crate::streaming::default_stream_targets();
+        for target in &mut targets {
+            target.enabled = target.platform == platform;
+            if target.platform == platform {
+                target.auth_mode = auth_mode;
+                target.stream_key_present = true;
+                target.stream_key_secret_ref = Some(format!(
+                    "stream-target:{}:manual-stream-key",
+                    crate::streaming::stream_platform_id(platform)
+                ));
+            }
+        }
+        let enabled_target_ids = targets
+            .iter()
+            .filter(|target| target.enabled)
+            .map(|target| target.id.clone())
+            .collect::<Vec<_>>();
+        crate::streaming::StreamingSettings {
+            enabled: true,
+            mode: crate::streaming::StreamMode::Single,
+            targets,
+            selected_target_id: Some(crate::streaming::stream_platform_id(platform).to_string()),
+            default_output_preset: protocol::VideoPreset::StreamSafe1080p30,
+            default_bitrate_kbps: 6_000,
+            enabled_target_ids,
+        }
+    }
+
+    fn upsert_twitch_account(state: &AppState, scopes: Vec<String>) {
+        state
+            .database
+            .upsert_platform_account(UpsertPlatformAccount {
+                platform: StreamPlatform::Twitch,
+                account_id: "twitch-channel-1".to_string(),
+                account_label: "Twitch Channel".to_string(),
+                account_handle: Some("twitch_channel".to_string()),
+                avatar_url: None,
+                scopes,
+                token_secret_ref: None,
+                refresh_token_secret_ref: None,
+                stream_key_secret_ref: None,
+                expires_at: None,
+                status: PlatformAccountStatus::Connected,
+            })
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn manual_twitch_stream_starts_status_only_chat_session_without_oauth_account() {
+        let state = test_state();
+        let streaming = streaming_with_enabled_target(
+            StreamPlatform::Twitch,
+            crate::streaming::StreamAuthMode::ManualRtmp,
+        );
+
+        spawn_session_live_chat(&state, "manual-twitch-session", &streaming).await;
+
+        let snapshot = live_chat::current_status(&state).await;
+        assert_eq!(
+            snapshot.session_id.as_deref(),
+            Some("manual-twitch-session")
+        );
+        assert_eq!(snapshot.providers.len(), 1);
+        let twitch = snapshot
+            .providers
+            .iter()
+            .find(|provider| provider.platform == StreamPlatform::Twitch)
+            .expect("twitch provider row");
+        assert_eq!(
+            twitch.state,
+            live_chat::LiveChatProviderConnectionState::Disabled
+        );
+        assert!(twitch.message.contains("Connect Twitch"));
+    }
+
+    #[tokio::test]
+    async fn manual_twitch_stream_surfaces_reconnect_when_account_lacks_chat_scope() {
+        let state = test_state();
+        upsert_twitch_account(
+            &state,
+            vec![
+                "channel:manage:broadcast".to_string(),
+                "channel:read:stream_key".to_string(),
+            ],
+        );
+        let streaming = streaming_with_enabled_target(
+            StreamPlatform::Twitch,
+            crate::streaming::StreamAuthMode::ManualRtmp,
+        );
+
+        spawn_session_live_chat(&state, "stale-twitch-session", &streaming).await;
+
+        let snapshot = live_chat::current_status(&state).await;
+        assert_eq!(snapshot.session_id.as_deref(), Some("stale-twitch-session"));
+        assert_eq!(snapshot.providers.len(), 1);
+        let twitch = snapshot
+            .providers
+            .iter()
+            .find(|provider| provider.platform == StreamPlatform::Twitch)
+            .expect("twitch provider row");
+        assert_eq!(
+            twitch.state,
+            live_chat::LiveChatProviderConnectionState::Disabled
+        );
+        assert!(twitch.message.contains("Reconnect Twitch"));
     }
 
     #[test]

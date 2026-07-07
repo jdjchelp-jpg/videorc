@@ -239,7 +239,7 @@ pub fn chat_capability(
             TWITCH_CHAT_SCOPE,
             "Twitch live comments are ready.",
             "Reconnect Twitch to enable live comments.",
-            "Connect a Twitch account to read live comments.",
+            "Connect Twitch to read live comments.",
         ),
         StreamPlatform::X => ChatCapability {
             platform,
@@ -596,9 +596,14 @@ impl LiveChatCoordinator {
 /// Provider rows for a starting session, derived from current chat capabilities. The
 /// connectors (slices 4-5) drive each row to connecting → connected/failed; platforms with
 /// no native path stay `unsupported`.
-fn session_provider_rows(accounts: &[PlatformAccount]) -> Vec<LiveChatProviderState> {
+fn session_provider_rows(
+    accounts: &[PlatformAccount],
+    platforms: &[StreamPlatform],
+) -> Vec<LiveChatProviderState> {
+    let requested: HashSet<StreamPlatform> = platforms.iter().copied().collect();
     chat_capabilities(accounts)
         .into_iter()
+        .filter(|capability| requested.is_empty() || requested.contains(&capability.platform))
         .map(provider_state_from_capability)
         .collect()
 }
@@ -609,6 +614,9 @@ fn session_provider_rows(accounts: &[PlatformAccount]) -> Vec<LiveChatProviderSt
 #[serde(rename_all = "camelCase")]
 pub struct LiveChatStartParams {
     pub session_id: String,
+    /// Platforms this session should show. Empty preserves the legacy full readiness surface.
+    #[serde(default)]
+    pub platforms: Vec<StreamPlatform>,
     #[serde(default)]
     pub fake: Option<FakeChatConfig>,
     #[serde(default)]
@@ -648,7 +656,7 @@ fn default_fake_interval_ms() -> u64 {
 /// emit the initial snapshot. Returns the snapshot for the command response.
 pub async fn start_live_chat(state: &AppState, params: LiveChatStartParams) -> LiveChatSnapshot {
     let accounts = state.database.list_platform_accounts().unwrap_or_default();
-    let providers = session_provider_rows(&accounts);
+    let providers = session_provider_rows(&accounts, &params.platforms);
     {
         let mut coordinator = state.live_chat.lock().await;
         coordinator.start_session(params.session_id.clone(), providers);

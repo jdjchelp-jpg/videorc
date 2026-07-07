@@ -5,6 +5,7 @@
 
 import type {
   LiveChatMessage,
+  LiveChatProviderConnectionState,
   LiveChatProviderState,
   LiveChatSnapshot,
   StreamPlatform
@@ -109,6 +110,38 @@ export function shouldAutoscroll(paused: boolean): boolean {
 
 /** Max rows rendered in the feed at once (windowed/virtualized tail). */
 export const MAX_RENDERED_LIVE_CHAT_MESSAGES = 200
+
+function providerStatePriority(
+  state: LiveChatProviderConnectionState,
+  capabilities: string[]
+): number {
+  if (state === 'failed') return 0
+  if (capabilities.includes('needs-reconnect')) return 1
+  if (capabilities.includes('not-connected')) return 2
+  if (state === 'unsupported' || capabilities.includes('unsupported')) return 3
+  return 4
+}
+
+function providerNeedsAction(provider: LiveChatProviderState): boolean {
+  return providerStatePriority(provider.state, provider.capabilities) < 4
+}
+
+export function liveChatEmptyMessage(
+  snapshot: Pick<LiveChatSnapshot, 'providers'>,
+  noProviderMessage = 'Connect YouTube or Twitch to read live comments.'
+): string {
+  if (snapshot.providers.length === 0) {
+    return noProviderMessage
+  }
+  const provider = snapshot.providers
+    .filter(providerNeedsAction)
+    .sort(
+      (left, right) =>
+        providerStatePriority(left.state, left.capabilities) -
+        providerStatePriority(right.state, right.capabilities)
+    )[0]
+  return provider?.message ?? 'No comments yet. Comments appear here once you go live.'
+}
 
 /**
  * Apply a batch of incoming messages in a single pass (event batching): dedupe against the
