@@ -82,6 +82,8 @@
     "smoke:session-ops": "node scripts/smoke-session-ops.mjs",
     "smoke:start-labels": "node scripts/smoke-start-labels.mjs",
     "smoke:layout-source-loop": "node scripts/smoke-layout-source-loop-app.mjs",
+    "smoke:live-layout-switch-recording": "node scripts/smoke-live-layout-switch-recording-app.mjs",
+    "smoke:live-layout-switch-recording:devices": "VIDEORC_LIVE_LAYOUT_REAL_SCREEN=1 node scripts/smoke-live-layout-switch-recording-app.mjs",
     "smoke:preview-real-launch": "node scripts/smoke-preview-real-launch-app.mjs",
     "smoke:preview-scene-commit": "node scripts/smoke-preview-scene-commit-app.mjs",
     "smoke:preview-pump-diagnostics": "node scripts/smoke-preview-pump-diagnostics-app.mjs",

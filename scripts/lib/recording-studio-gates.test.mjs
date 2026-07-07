@@ -22,6 +22,7 @@ describe('buildRecordingStudioGateSteps', () => {
       'imported screen image recording smoke',
       'real-user launch first-frame contract smoke',
       'layout/source preview liveness smoke',
+      'active-session live layout switch recording smoke',
       'backend-owned preview scene commit smoke',
       'preview main pump diagnostics smoke',
       'preview click/focus continuity smoke',
@@ -44,10 +45,11 @@ describe('buildRecordingStudioGateSteps', () => {
       'backend-isolation.test.ts'
     ])
     assert.deepEqual(steps[1].args, ['test:scripts'])
-    assert.deepEqual(steps.at(-12).args, ['smoke:dev'])
-    assert.deepEqual(steps.at(-11).args, ['smoke:screens'])
-    assert.deepEqual(steps.at(-10).args, ['smoke:preview-real-launch'])
-    assert.deepEqual(steps.at(-9).args, ['smoke:layout-source-loop'])
+    assert.deepEqual(steps.at(-13).args, ['smoke:dev'])
+    assert.deepEqual(steps.at(-12).args, ['smoke:screens'])
+    assert.deepEqual(steps.at(-11).args, ['smoke:preview-real-launch'])
+    assert.deepEqual(steps.at(-10).args, ['smoke:layout-source-loop'])
+    assert.deepEqual(steps.at(-9).args, ['smoke:live-layout-switch-recording'])
     assert.deepEqual(steps.at(-8).args, ['smoke:preview-scene-commit'])
     assert.deepEqual(steps.at(-7).args, ['smoke:preview-pump-diagnostics'])
     assert.deepEqual(steps.at(-6).args, ['smoke:preview-click-focus'])
@@ -65,8 +67,14 @@ describe('buildRecordingStudioGateSteps', () => {
 
   it('can include the heavier native preview layout-stress smoke', () => {
     const steps = buildRecordingStudioGateSteps({ includeDeviceSmoke: true })
+    const liveLayoutDeviceSmoke = steps.at(-2)
     const deviceSmoke = steps.at(-1)
 
+    assert.equal(
+      liveLayoutDeviceSmoke.label,
+      'real ScreenCaptureKit live layout switch recording smoke'
+    )
+    assert.deepEqual(liveLayoutDeviceSmoke.args, ['smoke:live-layout-switch-recording:devices'])
     assert.equal(deviceSmoke.label, 'native preview source-complete layout stress recording smoke')
     assert.deepEqual(deviceSmoke.args, ['smoke:recording-native-preview'])
     assert.equal(deviceSmoke.env.VIDEORC_NATIVE_PREVIEW_SOURCE_COMPLETE_SCENE, '1')
@@ -85,6 +93,7 @@ describe('buildRecordingStudioGateSteps', () => {
     assert.match(report, /smoke:dev/)
     assert.match(report, /smoke:screens/)
     assert.match(report, /smoke:layout-source-loop/)
+    assert.match(report, /smoke:live-layout-switch-recording/)
     assert.match(report, /smoke:preview-scene-commit/)
     assert.match(report, /smoke:preview-pump-diagnostics/)
     assert.match(report, /smoke:preview-click-focus/)
@@ -97,6 +106,7 @@ describe('buildRecordingStudioGateSteps', () => {
     assert.match(report, /VIDEORC_PREVIEW_SURFACE_MAX_INPUT_TO_PRESENT_P95_MS=100/)
     assert.match(report, /VIDEORC_NATIVE_PREVIEW_SOURCE_COMPLETE_SCENE=1/)
     assert.match(report, /VIDEORC_NATIVE_PREVIEW_LAYOUT_STRESS_UPDATES=4/)
+    assert.match(report, /pnpm smoke:live-layout-switch-recording:devices/)
     assert.match(report, /pnpm smoke:recording-native-preview/)
   })
 })

@@ -143,7 +143,7 @@ pub fn camera_status_is_live(status: &PreviewCameraStatus) -> bool {
 
 #[cfg(test)]
 pub fn screen_status_is_live(status: &PreviewScreenStatus) -> bool {
-    status.state == PreviewScreenState::Live && fresh_frame_age(status.frame_age_ms)
+    status.state == PreviewScreenState::Live && screen_has_frame_evidence(status, None)
 }
 
 fn fresh_frame_age(frame_age_ms: Option<u64>) -> bool {
@@ -154,8 +154,11 @@ fn camera_frame_info_is_live(frame_info: Option<PreviewCameraFrameInfo>) -> bool
     frame_info.is_some_and(|frame| frame.frame_age_ms <= SOURCE_FRESH_FRAME_MAX_AGE_MS)
 }
 
-fn screen_frame_info_is_live(frame_info: Option<PreviewScreenFrameInfo>) -> bool {
-    frame_info.is_some_and(|frame| frame.frame_age_ms <= SOURCE_FRESH_FRAME_MAX_AGE_MS)
+fn screen_has_frame_evidence(
+    status: &PreviewScreenStatus,
+    frame_info: Option<PreviewScreenFrameInfo>,
+) -> bool {
+    frame_info.is_some() || status.sequence.is_some() || status.frames_captured > 0
 }
 
 #[cfg(test)]
@@ -202,9 +205,7 @@ fn target_screen_is_live(
     frame_info: Option<PreviewScreenFrameInfo>,
     target_sources: Option<&SourceSelection>,
 ) -> bool {
-    if status.state != PreviewScreenState::Live
-        || !(fresh_frame_age(status.frame_age_ms) || screen_frame_info_is_live(frame_info))
-    {
+    if status.state != PreviewScreenState::Live || !screen_has_frame_evidence(status, frame_info) {
         return false;
     }
     match target_sources.and_then(selected_screen_source_id) {
@@ -258,13 +259,36 @@ async fn source_liveness(
     state: &AppState,
     target_sources: Option<&SourceSelection>,
 ) -> SourceLiveness {
+    source_readiness(state, target_sources).await.live
+}
+
+#[derive(Debug, Clone)]
+struct SourceReadiness {
+    live: SourceLiveness,
+    camera_status: PreviewCameraStatus,
+    screen_status: PreviewScreenStatus,
+    camera_frame: Option<PreviewCameraFrameInfo>,
+    screen_frame: Option<PreviewScreenFrameInfo>,
+}
+
+async fn source_readiness(
+    state: &AppState,
+    target_sources: Option<&SourceSelection>,
+) -> SourceReadiness {
     let camera = preview_camera_status(state).await;
     let screen = preview_screen_status(state).await;
     let camera_frame = preview_camera_latest_frame_info(state).await;
     let screen_frame = preview_screen_latest_frame_info(state).await;
-    SourceLiveness {
+    let live = SourceLiveness {
         camera: target_camera_is_live(&camera, camera_frame, target_sources),
         screen: target_screen_is_live(&screen, screen_frame, target_sources),
+    };
+    SourceReadiness {
+        live,
+        camera_status: camera,
+        screen_status: screen,
+        camera_frame,
+        screen_frame,
     }
 }
 
@@ -452,19 +476,127 @@ async fn wait_for_sources_ready(
 ) -> Result<()> {
     let started = Instant::now();
     loop {
-        let live = source_liveness(state, target_sources).await;
-        if missing_sources(needs, live).is_empty() {
+        let readiness = source_readiness(state, target_sources).await;
+        if missing_sources(needs, readiness.live).is_empty() {
             return Ok(());
         }
         if started.elapsed() >= WARM_SOURCE_START_TIMEOUT {
-            let still_missing = missing_sources(needs, live).join(" + ");
+            let still_missing =
+                missing_readiness_messages(needs, &readiness, target_sources).join("; ");
             bail!(
-                "Live {action_label} blocked: {still_missing} produced no fresh frames within {}s. The previous layout is still live.",
+                "Live {action_label} blocked: {still_missing} within {}s. The previous layout is still live.",
                 WARM_SOURCE_START_TIMEOUT.as_secs()
             );
         }
         sleep(WARM_SOURCE_POLL).await;
     }
+}
+
+fn missing_readiness_messages(
+    needs: SceneSourceNeeds,
+    readiness: &SourceReadiness,
+    target_sources: Option<&SourceSelection>,
+) -> Vec<String> {
+    let mut messages = Vec::new();
+    if needs.camera && !readiness.live.camera {
+        messages.push(format!(
+            "camera produced no fresh frames ({})",
+            camera_readiness_detail(readiness, target_sources)
+        ));
+    }
+    if needs.screen && !readiness.live.screen {
+        messages.push(format!(
+            "screen/window produced no initial frame for the selected source ({})",
+            screen_readiness_detail(readiness, target_sources)
+        ));
+    }
+    messages
+}
+
+fn camera_readiness_detail(
+    readiness: &SourceReadiness,
+    target_sources: Option<&SourceSelection>,
+) -> String {
+    let status = &readiness.camera_status;
+    let frame_age_ms = readiness
+        .camera_frame
+        .map(|frame| frame.frame_age_ms)
+        .or(status.frame_age_ms);
+    format!(
+        "state: {}, target: {}, current: {}, frames captured: {}, latest sequence: {}, latest frame age: {}",
+        camera_state_label(&status.state),
+        target_sources
+            .and_then(|sources| sources.camera_id.as_deref())
+            .unwrap_or("none"),
+        status.camera_id.as_deref().unwrap_or("none"),
+        status.frames_captured,
+        format_optional_u64(
+            readiness
+                .camera_frame
+                .map(|frame| frame.sequence)
+                .or(status.sequence)
+        ),
+        format_age_ms(frame_age_ms)
+    )
+}
+
+fn screen_readiness_detail(
+    readiness: &SourceReadiness,
+    target_sources: Option<&SourceSelection>,
+) -> String {
+    let status = &readiness.screen_status;
+    let frame_age_ms = readiness
+        .screen_frame
+        .map(|frame| frame.frame_age_ms)
+        .or(status.frame_age_ms);
+    format!(
+        "state: {}, target: {}, current: {}, frames captured: {}, latest sequence: {}, latest frame age: {}",
+        screen_state_label(&status.state),
+        target_sources
+            .and_then(selected_screen_source_id)
+            .unwrap_or("none"),
+        status.source_id.as_deref().unwrap_or("none"),
+        status.frames_captured,
+        format_optional_u64(
+            readiness
+                .screen_frame
+                .map(|frame| frame.sequence)
+                .or(status.sequence)
+        ),
+        format_age_ms(frame_age_ms)
+    )
+}
+
+fn camera_state_label(state: &PreviewCameraState) -> &'static str {
+    match state {
+        PreviewCameraState::DeviceMissing => "device-missing",
+        PreviewCameraState::PermissionNeeded => "permission-needed",
+        PreviewCameraState::Starting => "starting",
+        PreviewCameraState::Live => "live",
+        PreviewCameraState::Failed => "failed",
+    }
+}
+
+fn screen_state_label(state: &PreviewScreenState) -> &'static str {
+    match state {
+        PreviewScreenState::SourceMissing => "source-missing",
+        PreviewScreenState::PermissionNeeded => "permission-needed",
+        PreviewScreenState::Starting => "starting",
+        PreviewScreenState::Live => "live",
+        PreviewScreenState::Failed => "failed",
+    }
+}
+
+fn format_optional_u64(value: Option<u64>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "none".to_string())
+}
+
+fn format_age_ms(value: Option<u64>) -> String {
+    value
+        .map(|value| format!("{value}ms"))
+        .unwrap_or_else(|| "none".to_string())
 }
 
 pub async fn commit_scene_with_current_layout(
@@ -584,6 +716,69 @@ mod tests {
             video: Some(fallback_video_settings()),
             background: None,
             protected_overlay_window_ids: Vec::new(),
+        }
+    }
+
+    fn live_camera_status(
+        camera_id: &str,
+        frame_age_ms: Option<u64>,
+        frames_captured: u64,
+        sequence: Option<u64>,
+    ) -> PreviewCameraStatus {
+        PreviewCameraStatus {
+            state: PreviewCameraState::Live,
+            camera_id: Some(camera_id.to_string()),
+            device_unique_id: None,
+            target_fps: 30,
+            width: None,
+            height: None,
+            requested_width: None,
+            requested_height: None,
+            actual_width: None,
+            actual_height: None,
+            selected_format_width: None,
+            selected_format_height: None,
+            selected_format_min_fps: None,
+            selected_format_max_fps: None,
+            source_fps: None,
+            frame_age_ms,
+            frames_captured,
+            dropped_frames: 0,
+            sequence,
+            updated_at: "t".to_string(),
+            message: None,
+        }
+    }
+
+    fn live_screen_status(
+        source_id: &str,
+        frame_age_ms: Option<u64>,
+        frames_captured: u64,
+        sequence: Option<u64>,
+    ) -> PreviewScreenStatus {
+        PreviewScreenStatus {
+            state: PreviewScreenState::Live,
+            source_id: Some(source_id.to_string()),
+            source_kind: Some(PreviewScreenSourceKind::Screen),
+            target_fps: 30,
+            width: None,
+            height: None,
+            native_width: None,
+            native_height: None,
+            requested_width: None,
+            requested_height: None,
+            actual_width: None,
+            actual_height: None,
+            iosurface_available: Some(true),
+            source_fps: None,
+            frame_age_ms,
+            frames_captured,
+            dropped_frames: 0,
+            sequence,
+            include_cursor: true,
+            exclude_current_process_windows: true,
+            updated_at: "t".to_string(),
+            message: None,
         }
     }
 
@@ -749,7 +944,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_or_missing_frames_do_not_count_as_live() {
+    fn camera_freshness_and_screen_presence_are_source_specific() {
         let mut camera = PreviewCameraStatus {
             state: PreviewCameraState::Live,
             camera_id: None,
@@ -767,7 +962,7 @@ mod tests {
             selected_format_max_fps: None,
             source_fps: None,
             frame_age_ms: Some(120),
-            frames_captured: 10,
+            frames_captured: 0,
             dropped_frames: 0,
             sequence: None,
             updated_at: "t".to_string(),
@@ -808,6 +1003,9 @@ mod tests {
         };
         assert!(screen_status_is_live(&screen));
         screen.frame_age_ms = Some(SOURCE_FRESH_FRAME_MAX_AGE_MS + 1);
+        assert!(screen_status_is_live(&screen));
+        screen.frame_age_ms = None;
+        screen.frames_captured = 0;
         assert!(!screen_status_is_live(&screen));
     }
 
@@ -932,7 +1130,7 @@ mod tests {
             iosurface_available: Some(true),
             source_fps: None,
             frame_age_ms: None,
-            frames_captured: 10,
+            frames_captured: 0,
             dropped_frames: 0,
             sequence: None,
             include_cursor: true,
@@ -946,10 +1144,72 @@ mod tests {
             sequence: 10,
             width: 3840,
             height: 2160,
-            frame_age_ms: 120,
+            frame_age_ms: SOURCE_FRESH_FRAME_MAX_AGE_MS + 1,
         };
 
         assert!(target_screen_is_live(&screen, Some(frame), Some(&target)));
         assert!(!target_screen_status_is_live(&screen, Some(&target)));
+    }
+
+    #[test]
+    fn target_screen_liveness_accepts_static_screen_frame_presence() {
+        let screen = live_screen_status(
+            "screen:a",
+            Some(SOURCE_FRESH_FRAME_MAX_AGE_MS + 1),
+            24,
+            Some(24),
+        );
+        let mut target = sources(false, true);
+        target.screen_id = Some("screen:a".to_string());
+
+        assert!(target_screen_status_is_live(&screen, Some(&target)));
+    }
+
+    #[test]
+    fn target_screen_liveness_rejects_source_without_initial_frame() {
+        let screen = live_screen_status("screen:a", None, 0, None);
+        let mut target = sources(false, true);
+        target.screen_id = Some("screen:a".to_string());
+
+        assert!(!target_screen_status_is_live(&screen, Some(&target)));
+    }
+
+    #[test]
+    fn missing_readiness_messages_name_camera_freshness_and_screen_initial_frame() {
+        let camera = live_camera_status(
+            "camera:a",
+            Some(SOURCE_FRESH_FRAME_MAX_AGE_MS + 1),
+            42,
+            Some(42),
+        );
+        let screen = live_screen_status("screen:a", None, 0, None);
+        let mut target = sources(true, true);
+        target.camera_id = Some("camera:a".to_string());
+        target.screen_id = Some("screen:a".to_string());
+        let readiness = SourceReadiness {
+            live: SourceLiveness {
+                camera: false,
+                screen: false,
+            },
+            camera_status: camera,
+            screen_status: screen,
+            camera_frame: None,
+            screen_frame: None,
+        };
+
+        let messages = missing_readiness_messages(
+            SceneSourceNeeds {
+                camera: true,
+                screen: true,
+            },
+            &readiness,
+            Some(&target),
+        );
+
+        assert_eq!(messages.len(), 2);
+        assert!(messages[0].contains("camera produced no fresh frames"));
+        assert!(messages[0].contains("latest frame age: 1501ms"));
+        assert!(messages[1].contains("screen/window produced no initial frame"));
+        assert!(messages[1].contains("frames captured: 0"));
     }
 }

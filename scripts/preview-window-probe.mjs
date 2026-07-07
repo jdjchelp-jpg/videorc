@@ -38,7 +38,7 @@ let lastWindowDump = []
 const surfaceSizingLines = []
 function recordSurfaceSizing(line) {
   const match = line.match(
-    /\[videorc-native-preview-sizing\] \w+ bounds_pts=(\d+)x(\d+) scale=([\d.]+) drawable_px=(\d+)x(\d+)/
+    /\[videorc-native-preview-sizing\] \w+ bounds_pts=(\d+)x(\d+) scale=([\d.]+)(?: contentsScale=[\d.]+)? drawable_px=(\d+)x(\d+)/
   )
   if (match) {
     surfaceSizingLines.push({

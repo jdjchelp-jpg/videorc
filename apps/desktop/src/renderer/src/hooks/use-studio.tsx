@@ -263,6 +263,8 @@ const NATIVE_PREVIEW_COMPOSITOR_POLL_INTERVAL_MS = 1000 / 60
 const NATIVE_PREVIEW_COMPOSITOR_TIMING_SAMPLE_LIMIT = 900
 const NATIVE_PREVIEW_SCENE_FRAME_WAIT_TIMEOUT_MS = 750
 const NATIVE_PREVIEW_SCENE_FRAME_WAIT_INTERVAL_MS = 33
+const LIVE_LAYOUT_PROOF_WAIT_TIMEOUT_MS = 5000
+const LIVE_LAYOUT_PROOF_WAIT_INTERVAL_MS = 100
 
 function recordNativePreviewTimingSample(samples: number[], value: number): void {
   if (!Number.isFinite(value)) {
@@ -317,6 +319,53 @@ async function waitForRenderedCompositorSceneRevision(
   }
 
   return initialStatus
+}
+
+async function waitForLiveLayoutProof(
+  activeClient: BackendClient,
+  status: LiveLayoutApplyStatus
+): Promise<CompositorStatus> {
+  const deadline = Date.now() + LIVE_LAYOUT_PROOF_WAIT_TIMEOUT_MS
+  let lastCompositorStatus: CompositorStatus | null = null
+  let lastDiagnostics: DiagnosticStats | null = null
+  let lastError: unknown = null
+
+  while (Date.now() < deadline) {
+    try {
+      const [compositorStatus, diagnostics] = await Promise.all([
+        activeClient.request<CompositorStatus>('compositor.status'),
+        activeClient.request<DiagnosticStats>('diagnostics.stats')
+      ])
+      lastCompositorStatus = compositorStatus
+      lastDiagnostics = diagnostics
+      if (
+        compositorStatusHasRenderedSceneRevision(compositorStatus, status.sceneRevision) &&
+        typeof diagnostics.activeSceneRevision === 'number' &&
+        diagnostics.activeSceneRevision >= status.sceneRevision
+      ) {
+        return compositorStatus
+      }
+    } catch (error) {
+      lastError = error
+    }
+    await sleep(LIVE_LAYOUT_PROOF_WAIT_INTERVAL_MS)
+  }
+
+  const renderedRevision =
+    lastCompositorStatus?.frameSceneRevision == null
+      ? 'none'
+      : lastCompositorStatus.frameSceneRevision.toString()
+  const activeRevision =
+    lastDiagnostics?.activeSceneRevision == null
+      ? 'none'
+      : lastDiagnostics.activeSceneRevision.toString()
+  const errorDetail =
+    lastError instanceof Error && lastError.message ? ` Last error: ${lastError.message}` : ''
+  throw new Error(
+    `Live layout switch did not reach the active recording/streaming output within ${Math.round(
+      LIVE_LAYOUT_PROOF_WAIT_TIMEOUT_MS / 1000
+    )}s (target revision ${status.sceneRevision}, rendered revision ${renderedRevision}, active revision ${activeRevision}).${errorDetail}`
+  )
 }
 
 export type StudioContextValue = {
@@ -2907,13 +2956,8 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
         return
       }
 
-      const compositorStatus = await client
-        .request<CompositorStatus>('compositor.status')
-        .catch(() => null)
-      if (
-        typeof compositorStatus?.sceneRevision === 'number' &&
-        compositorStatus.sceneRevision >= status.sceneRevision
-      ) {
+      const compositorStatus = await waitForLiveLayoutProof(client, status)
+      if (typeof compositorStatus.sceneRevision === 'number') {
         nativePreviewCommittedSceneRef.current = {
           sceneId: status.scene.id,
           sceneRevision: compositorStatus.sceneRevision,

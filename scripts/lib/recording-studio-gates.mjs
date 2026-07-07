@@ -73,6 +73,11 @@ export function buildRecordingStudioGateSteps({
         args: ['smoke:layout-source-loop']
       },
       {
+        label: 'active-session live layout switch recording smoke',
+        command: 'pnpm',
+        args: ['smoke:live-layout-switch-recording']
+      },
+      {
         label: 'backend-owned preview scene commit smoke',
         command: 'pnpm',
         args: ['smoke:preview-scene-commit']
@@ -130,15 +135,22 @@ export function buildRecordingStudioGateSteps({
   }
 
   if (includeDeviceSmoke) {
-    steps.push({
-      label: 'native preview source-complete layout stress recording smoke',
-      command: 'pnpm',
-      args: ['smoke:recording-native-preview'],
-      env: {
-        VIDEORC_NATIVE_PREVIEW_SOURCE_COMPLETE_SCENE: '1',
-        VIDEORC_NATIVE_PREVIEW_LAYOUT_STRESS_UPDATES: '4'
+    steps.push(
+      {
+        label: 'real ScreenCaptureKit live layout switch recording smoke',
+        command: 'pnpm',
+        args: ['smoke:live-layout-switch-recording:devices']
+      },
+      {
+        label: 'native preview source-complete layout stress recording smoke',
+        command: 'pnpm',
+        args: ['smoke:recording-native-preview'],
+        env: {
+          VIDEORC_NATIVE_PREVIEW_SOURCE_COMPLETE_SCENE: '1',
+          VIDEORC_NATIVE_PREVIEW_LAYOUT_STRESS_UPDATES: '4'
+        }
       }
-    })
+    )
   }
 
   return steps
