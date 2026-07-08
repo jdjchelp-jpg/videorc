@@ -3,7 +3,9 @@ import test from 'node:test'
 import { resolve } from 'node:path'
 
 import {
+  devAppFailureMessage,
   devAppSpawnOptions,
+  devAppSpawnSpec,
   resolveSmokeAppDirs,
   smokeAppEnv,
   stopProcess
@@ -65,10 +67,28 @@ test('smokeAppEnv preserves explicit app dirs and reaper policy', () => {
   })
 })
 
-test('dev app launch uses a shell on Windows so Corepack pnpm shims resolve', () => {
-  assert.equal(devAppSpawnOptions({ platform: 'win32' }).shell, true)
+test('dev app launch targets the desktop package and uses a shell on Windows', () => {
+  const windowsSpec = devAppSpawnSpec({ platform: 'win32' })
+
+  assert.equal(windowsSpec.command, 'pnpm')
+  assert.deepEqual(windowsSpec.args, ['--filter', '@videorc/desktop', 'dev'])
+  assert.equal(windowsSpec.options.shell, true)
   assert.equal(devAppSpawnOptions({ platform: 'darwin' }).shell, false)
   assert.equal(devAppSpawnOptions({ platform: 'linux' }).shell, false)
+})
+
+test('dev app launch failures include the latest child output', () => {
+  const message = devAppFailureMessage('Dev app exited before handshake completed', [
+    '',
+    'vite failed to bind port 5173',
+    'electron-vite exited with code 1'
+  ])
+
+  assert.match(message, /Dev app exited before handshake completed/)
+  assert.match(message, /Last dev app output:/)
+  assert.match(message, /vite failed to bind port 5173/)
+  assert.match(message, /electron-vite exited with code 1/)
+  assert.equal(devAppFailureMessage('plain failure', []), 'plain failure')
 })
 
 test('stopProcess reports a graceful process-group stop', async () => {
