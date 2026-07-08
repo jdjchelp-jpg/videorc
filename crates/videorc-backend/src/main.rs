@@ -30,6 +30,7 @@ mod preflight;
 mod preview_camera;
 mod preview_screen;
 mod preview_surface;
+mod process_job;
 mod protocol;
 mod recording;
 mod repair;

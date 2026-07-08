@@ -53,8 +53,14 @@ The completed work is packaging and platform-seam preparation:
   smoke output to the ignored acceptance artifact directory so on-box runs can
   be copied into the dated acceptance note instead of disappearing into a temp
   folder.
-- **Windows release is not done.** Signing is undecided
-  (internal unsigned vs Azure Trusted Signing vs Authenticode), and no
+- **Windows child-process ownership has a backend slice.** `process_job.rs`
+  wraps capture-related FFmpeg spawns and, on Windows, assigns those child
+  processes to a backend-owned Job Object with `KILL_ON_JOB_CLOSE`. This is
+  compile-checked by `pnpm check:windows`; it still needs on-box process-tree
+  proof from a packaged app run.
+- **Windows release is not done.** Windows builds stay unsigned for internal
+  testing until capture/package acceptance passes. Public distribution is blocked
+  on a later Azure Trusted Signing vs OV/EV Authenticode decision, and no
   clean-machine Windows acceptance note exists.
 - **Mac media stabilization still constrains this track.** Plan 006 remains
   blocked locally by source/hardware and ScreenCaptureKit start evidence, so
@@ -166,7 +172,7 @@ Backend:
 - Gate: `cargo check --target x86_64-pc-windows-msvc` (cross-check runs on
   the Mac — catches type errors without the Windows box). **Green.**
 
-Electron: **DONE 2026-06-12 (slice 4), except the Job Object.**
+Electron: **DONE 2026-06-12 (slice 4).**
 
 - `.exe` suffixes in backend/ffmpeg resolution were ALREADY present
   (`resolveCargoBinary`/`resolvePackagedBackendBinary`/
@@ -190,12 +196,15 @@ Electron: **DONE 2026-06-12 (slice 4), except the Job Object.**
   now (Phase 5).
 - Runtime Windows 11 guard: `enforceWindowsVersionFloor()` quits with a
   dialog when `os.release()` build < 22000.
-- **Deferred to a Windows-box slice: the Job Object.** `backendProcess.kill`
-  maps to TerminateProcess on Windows, which kills the backend but orphans
-  its ffmpeg children, and `OwnedProcessRegistry.reapStale` already
-  early-returns on win32. The kill-on-job-close guarantee needs a native
-  addon and on-Windows testing — graceful quit still stops the backend; only
-  force-kill/crash leaks ffmpeg until then.
+- **Backend Job Object slice DONE 2026-07-08, on-box proof pending.**
+  `process_job.rs` creates a backend-owned Windows Job Object with
+  `KILL_ON_JOB_CLOSE` and routes capture-related FFmpeg spawns through wrappers
+  that assign children to that job. This moves the kill-on-backend-death
+  guarantee into Rust, where the FFmpeg children are spawned, instead of needing
+  an Electron native addon. `OwnedProcessRegistry.reapStale` still
+  early-returns on win32; the remaining proof is a packaged Windows run showing
+  the backend and its FFmpeg children exit cleanly after stop, quit, and forced
+  backend termination.
 - Gate: `pnpm typecheck` + `pnpm build` + `smoke:dev` green on macOS
   (proves the chrome refactor is behavior-neutral). `pnpm package` on
   Windows is the on-box gate when hardware lands.
@@ -303,8 +312,10 @@ app in exile.
 - NSIS installer + portable dir; ffmpeg + backend.exe in `resources`;
   LGPL compliance is already satisfied by shipping ffmpeg as a separate
   spawned binary (same as macOS).
-- Code signing: Azure Trusted Signing (cheapest route past SmartScreen) or
-  an OV/EV Authenticode cert; unsigned is fine for internal testing only.
+- Code signing status: unsigned Windows builds are the internal-testing path for
+  this PR. Do not buy or wire signing until Windows capture/package acceptance
+  passes. Public distribution remains blocked on choosing Azure Trusted Signing
+  (likely cheapest route past SmartScreen) vs an OV/EV Authenticode cert.
 - Port the smoke harness tier by tier: the ~30 portable smokes first
   (`smoke:dev`, `smoke:oauth*`, `smoke:sources`, lifecycle, multistream),
   then baselines (`real-source-baseline-app.mjs` needs the Windows device

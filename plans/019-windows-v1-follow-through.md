@@ -23,8 +23,11 @@
   builders, selected-source ID parsing, DXGI display discovery, MediaFoundation
   camera/microphone discovery, Windows device-list exposure, and recording
   primary-input layout tests now cover display, camera, and microphone variants.
-  Preview capture pipelines, on-box package/recording evidence, and signing
-  acceptance remain pending.
+  A backend Job Object wrapper now owns capture-related FFmpeg children on
+  Windows, and signing status is documented as unsigned internal builds until
+  Windows acceptance passes. Preview capture pipelines, on-box package/recording
+  evidence, process-tree cleanup proof, and signing implementation remain
+  pending.
 
 ## Why this matters
 
@@ -207,6 +210,10 @@ Document whether Windows distribution stays internal unsigned or moves to:
 
 Do not implement paid signing in this plan unless credentials are available.
 
+**2026-07-08 decision**: keep Windows builds unsigned for internal testing until
+the Windows 11 package/capture acceptance run passes. Public distribution stays
+blocked on a later Azure Trusted Signing vs OV/EV Authenticode decision.
+
 **Verify**: docs state exact release blocker/status.
 
 ## Test plan
@@ -225,7 +232,7 @@ Do not implement paid signing in this plan unless credentials are available.
 - [ ] Packaged Windows app records test pattern and at least one real source
       scenario.
 - [ ] Child processes are owned and cleaned without broad process scans.
-- [ ] Signing status is documented.
+- [x] Signing status is documented.
 - [x] `plans/README.md` status row updated.
 
 ## STOP conditions

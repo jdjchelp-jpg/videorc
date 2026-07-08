@@ -58,6 +58,7 @@ use crate::preview_camera::{
     preview_camera_latest_frame_info, reset_preview_camera_capture_timings,
 };
 use crate::preview_screen::preview_screen_latest_frame_info;
+use crate::process_job::spawn_owned_tokio;
 use crate::protocol::{
     AudioSettings, AudioTrack, AudioTrackSource, BackgroundFit, CameraAspect, CameraCorner,
     CameraFit, CameraShape, CameraSize, CameraTransformMode, CompositorBackend,
@@ -916,7 +917,8 @@ pub async fn start_session(
         },
     );
 
-    let mut child = ffmpeg_command(&ffmpeg_path)
+    let mut command = ffmpeg_command(&ffmpeg_path);
+    command
         .args(&args)
         .stdin(if use_encoder_bridge {
             Stdio::null()
@@ -924,8 +926,8 @@ pub async fn start_session(
             Stdio::piped()
         })
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
+        .stderr(Stdio::piped());
+    let mut child = spawn_owned_tokio(&mut command)
         .with_context(|| format!("Could not start {ffmpeg_path}"))?;
 
     let stderr = child.stderr.take();
@@ -1556,11 +1558,12 @@ async fn run_preview_command_with_timeout(
     args: &[String],
     preview_timeout: Duration,
 ) -> Result<PreviewCommandOutput> {
-    let mut child = ffmpeg_command(ffmpeg_path)
+    let mut command = ffmpeg_command(ffmpeg_path);
+    command
         .args(args)
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
+        .stderr(Stdio::piped());
+    let mut child = spawn_owned_tokio(&mut command)
         .with_context(|| format!("Could not start {ffmpeg_path} for preview"))?;
 
     let stderr = child.stderr.take();
@@ -1731,7 +1734,7 @@ async fn start_idle_live_preview(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = match command.spawn() {
+    let mut child = match spawn_owned_tokio(&mut command) {
         Ok(child) => child,
         Err(error) => {
             let status = unavailable_live_preview_status(Some(format!(
