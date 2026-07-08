@@ -4107,7 +4107,8 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
         // identifies the shipped build. Absent → backend degrades to crate.
         appVersion: runtimeInfo?.version,
         rendererDiagnostics: {
-          automaticSourceFallbacks: automaticSourceFallbacks.current
+          automaticSourceFallbacks: automaticSourceFallbacks.current,
+          runtimeInfo: runtimeInfo ?? undefined
         }
       }
       const result = await client.request<SupportBundleExportResult>(
@@ -4129,7 +4130,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     } finally {
       setSupportBundleExportPending(false)
     }
-  }, [client, reportError, runtimeInfo?.version, settings.ffmpegPath, supportBundleExportPending])
+  }, [client, reportError, runtimeInfo, settings.ffmpegPath, supportBundleExportPending])
 
   const sampleAudioMeter = useCallback(async () => {
     if (!client) {

@@ -6,6 +6,7 @@ import {
   createWindowsLocalGateManifest,
   evaluateWindowsLocalGateHost,
   formatWindowsLocalGatePlan,
+  windowsSupportBundleVerifierCommand,
   windowsLocalGateManifestPath,
   windowsLocalGateOutputDir
 } from './windows-local-gates.mjs'
@@ -90,6 +91,8 @@ describe('buildWindowsLocalGateSteps', () => {
     assert.match(report, /windows-local-gates: plan/)
     assert.match(report, /evidence output:/)
     assert.match(report, /windows-local-gates\.manifest\.json/)
+    assert.match(report, /support-bundle:verify/)
+    assert.match(report, /--windows-acceptance/)
     assert.match(report, /windows-app-acceptance-template\.md/)
     assert.match(report, /\[blocked\] host: requires Windows 11 x64/)
     assert.match(report, /smoke:process-lifecycle/)
@@ -123,6 +126,13 @@ describe('buildWindowsLocalGateSteps', () => {
     assert.equal(manifest.host.ok, true)
     assert.equal(manifest.host.build, 22631)
     assert.equal(manifest.evidence.runManifest, windowsLocalGateManifestPath({ outputDir }))
+    assert.deepEqual(manifest.evidence.supportBundleVerifierCommand, [
+      'pnpm',
+      'support-bundle:verify',
+      '--',
+      `${outputDir}/support-bundle.json`,
+      '--windows-acceptance'
+    ])
     assert.match(manifest.evidence.acceptanceTemplate, /windows-app-acceptance-template\.md$/)
     assert.equal(manifest.steps.length, steps.length)
     const processSmoke = manifest.steps.find(
@@ -162,5 +172,15 @@ describe('buildWindowsLocalGateSteps', () => {
       /C:\/repo\/apps\/desktop\/release\/win-unpacked\/Videorc\.exe$/
     )
     assert.equal(packagedSmoke.env.VIDEORC_SMOKE_OUTPUT_DIR, outputDir)
+  })
+
+  it('formats the support bundle acceptance verifier command', () => {
+    assert.deepEqual(windowsSupportBundleVerifierCommand(), [
+      'pnpm',
+      'support-bundle:verify',
+      '--',
+      '<support-bundle.json>',
+      '--windows-acceptance'
+    ])
   })
 })

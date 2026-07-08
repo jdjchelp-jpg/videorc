@@ -28,8 +28,9 @@
   unsigned internal builds until Windows acceptance passes. Windows FFmpeg
   preview runners now publish raw BGRA frames into the existing preview frame
   stores; the Windows local gate now writes a JSON run manifest into the
-  acceptance artifact directory. On-box package/recording evidence,
-  first-frame/smoothness proof, process-tree cleanup proof, and signing
+  acceptance artifact directory and records the strict support-bundle verifier
+  command. On-box package/recording evidence, first-frame/smoothness proof,
+  process-tree cleanup proof, support-bundle verification, and signing
   implementation remain pending.
 
 ## Why this matters
@@ -147,7 +148,10 @@ Keep it separate from macOS `smoke:local-gates`.
 **Verify**: script exits 0 on the Windows box, or records exact missing hardware
 blockers. The script also writes `windows-local-gates.manifest.json` beside the
 acceptance artifacts so a failed run still has host, command, error, and evidence
-path context.
+path context. The manifest includes
+`pnpm support-bundle:verify -- <support-bundle.json> --windows-acceptance` so the
+Windows support bundle is checked for schema v2, Windows 11 runtime/GPU/package
+metadata, device backend proof, encoder diagnostics, and redaction.
 
 ### Step 3: Implement Windows source capture MVP
 

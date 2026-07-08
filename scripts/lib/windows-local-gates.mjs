@@ -103,6 +103,11 @@ export function formatWindowsLocalGatePlan({ host, steps }) {
   if (outputDir) {
     lines.push(`evidence output: ${outputDir}`)
     lines.push(`run manifest: ${windowsLocalGateManifestPath({ outputDir })}`)
+    lines.push(
+      `support bundle verifier: ${windowsSupportBundleVerifierCommand({
+        bundlePath: join(outputDir, 'support-bundle.json')
+      }).join(' ')}`
+    )
     lines.push('acceptance template: docs/acceptance/windows-app-acceptance-template.md')
   }
   if (host.ok) {
@@ -183,6 +188,9 @@ export function createWindowsLocalGateManifest({
     evidence: {
       outputDir,
       runManifest: windowsLocalGateManifestPath({ outputDir }),
+      supportBundleVerifierCommand: windowsSupportBundleVerifierCommand({
+        bundlePath: join(outputDir, 'support-bundle.json')
+      }),
       acceptanceTemplate: join(
         repoRoot,
         'docs',
@@ -204,6 +212,10 @@ export function createWindowsLocalGateManifest({
       error: null
     }))
   }
+}
+
+export function windowsSupportBundleVerifierCommand({ bundlePath = '<support-bundle.json>' } = {}) {
+  return ['pnpm', 'support-bundle:verify', '--', bundlePath, '--windows-acceptance']
 }
 
 function defaultWindowsAcceptanceArtifactDir({ repoRoot }) {

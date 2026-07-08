@@ -159,6 +159,7 @@ export interface AutomaticSourceFallbackEvent {
 
 export interface RendererDiagnosticsSnapshot {
   automaticSourceFallbacks: AutomaticSourceFallbackEvent[]
+  runtimeInfo?: RuntimeInfo
 }
 
 export type AudioTrackSource = 'microphone' | 'test-tone'
@@ -2107,6 +2108,10 @@ export interface ReorderScreensParams {
 export interface RuntimeInfo {
   /** The running app version (`app.getVersion()`), shown in Settings → About. */
   version: string
+  platform: string
+  arch: string
+  osRelease: string
+  gpuDevices: RuntimeGpuDevice[]
   isPackaged: boolean
   permissionTargetName: string
   permissionTargetPath: string
@@ -2120,6 +2125,14 @@ export interface RuntimeInfo {
   previewSmokeMode?: boolean
   disableAutoPreview?: boolean
   nativePreviewSurfaceStageSuspended?: boolean
+}
+
+export interface RuntimeGpuDevice {
+  vendorId?: string | number
+  deviceId?: string | number
+  active?: boolean
+  vendor?: string
+  description?: string
 }
 
 // Floating: the user drags/resizes the preview window freely (default).

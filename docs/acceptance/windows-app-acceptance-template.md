@@ -130,14 +130,15 @@ File-size-only evidence is not enough.
 ## Support Bundle
 
 - Support bundle path:
-- Verifier command:
+- Verifier command: `pnpm support-bundle:verify -- <support-bundle.json> --windows-acceptance`
 - Verifier verdict: PASS / FAIL / BLOCKED
-- Windows OS build included: PASS / FAIL / BLOCKED
-- GPU adapter(s) included: PASS / FAIL / BLOCKED
+- Windows OS build included: PASS / FAIL / BLOCKED (`rendererDiagnostics.runtimeInfo.osRelease`)
+- GPU adapter(s) included: PASS / FAIL / BLOCKED (`rendererDiagnostics.runtimeInfo.gpuDevices`)
 - Selected encoder included: PASS / FAIL / BLOCKED
 - Capture backend/fallback reason included: PASS / FAIL / BLOCKED
 - Device IDs redacted: PASS / FAIL / BLOCKED
-- Package/signing status included: PASS / FAIL / BLOCKED
+- Packaged runtime included: PASS / FAIL / BLOCKED
+- Authenticode signing status checked outside bundle: PASS / FAIL / BLOCKED
 - No secrets/tokens/recordings/stream keys included: PASS / FAIL / BLOCKED
 
 ## Failures And Follow-Up

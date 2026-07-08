@@ -58,7 +58,8 @@ The completed work is packaging and platform-seam preparation:
   packaged test-pattern
   smoke output to the ignored acceptance artifact directory so on-box runs can
   be copied into the dated acceptance note instead of disappearing into a temp
-  folder.
+  folder. Its manifest also prints the strict support-bundle verifier command:
+  `pnpm support-bundle:verify -- <support-bundle.json> --windows-acceptance`.
 - **Windows child-process ownership has a backend slice.** `process_job.rs`
   wraps backend FFmpeg/FFprobe children used for capture, media maintenance,
   imports, health checks, and AI/audio extraction. On Windows, those children
@@ -130,7 +131,11 @@ Decisions to make before any code; each unblocks a later phase.
   `VIDEORC_WINDOWS_ACCEPTANCE_DIR=docs/acceptance/artifacts/windows/<date>`
   before `pnpm smoke:local-gates:windows` when the output folder should match a
   specific acceptance note. Do not commit generated media or local support
-  bundles.
+  bundles. Verify the copied support bundle with
+  `pnpm support-bundle:verify -- <support-bundle.json> --windows-acceptance`;
+  this checks schema v2, Windows 11 host/runtime info, GPU adapter metadata,
+  packaged runtime context, Windows device backend proof, encoder diagnostics,
+  and redaction. Authenticode signing still needs a separate manual check.
 - **CI reality.** GitHub Actions budget is exhausted (memory) — plan around
   local gates on the Windows box, mirroring `smoke:local-gates`. Optional
   later: self-hosted runner on that box.

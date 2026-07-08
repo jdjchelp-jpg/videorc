@@ -185,7 +185,9 @@ Run after macOS v1 stabilization unless business priority changes.
      acceptance.
    - Step 2 is done: `smoke:local-gates:windows` exists and drives the
      Windows-box unit/seam/package/preflight/packaged-recording gate. On-box
-     execution is still pending.
+     execution is still pending. The gate manifest also records
+     `pnpm support-bundle:verify -- <support-bundle.json> --windows-acceptance`
+     for the Windows support-bundle evidence check.
    - W0 evidence convention is done: copy
      `docs/acceptance/windows-app-acceptance-template.md`; keep recordings,
      analyzer JSON, screenshots, process logs, and support bundles under
@@ -373,7 +375,9 @@ Windows."
 - **P7-S2 Windows gate script - DONE**: Plan 019 Step 2. A Windows-local gate
   exists separately from macOS gates and includes package preflight, packaging,
   owned-process lifecycle cleanup, packaged recording smoke, and a JSON run
-  manifest under the ignored Windows acceptance artifact directory.
+  manifest under the ignored Windows acceptance artifact directory. The manifest
+  includes the strict support-bundle verifier command for Windows runtime/GPU,
+  packaged context, device backend, encoder, and redaction evidence.
 - **P7-S2.5 Windows evidence base - DONE**: Parent W0 evidence template and
   ignored artifact path are defined. On-box runs should fill
   `docs/acceptance/windows-app-acceptance-template.md` into a dated acceptance
