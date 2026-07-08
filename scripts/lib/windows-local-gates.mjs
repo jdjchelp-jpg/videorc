@@ -1,5 +1,7 @@
 import { join, resolve } from 'node:path'
 
+export const WINDOWS_LOCAL_GATE_MANIFEST_NAME = 'windows-local-gates.manifest.json'
+
 export function evaluateWindowsLocalGateHost({
   platform = process.platform,
   arch = process.arch,
@@ -89,10 +91,10 @@ export function buildWindowsLocalGateSteps({
 
 export function formatWindowsLocalGatePlan({ host, steps }) {
   const lines = ['windows-local-gates: plan']
-  const outputDir = steps.find((step) => step.env?.VIDEORC_SMOKE_OUTPUT_DIR)?.env
-    ?.VIDEORC_SMOKE_OUTPUT_DIR
+  const outputDir = windowsLocalGateOutputDir(steps)
   if (outputDir) {
     lines.push(`evidence output: ${outputDir}`)
+    lines.push(`run manifest: ${windowsLocalGateManifestPath({ outputDir })}`)
     lines.push('acceptance template: docs/acceptance/windows-app-acceptance-template.md')
   }
   if (host.ok) {
@@ -115,6 +117,81 @@ export function formatWindowsLocalGatePlan({ host, steps }) {
   return lines.join('\n')
 }
 
+export function windowsLocalGateOutputDir(steps) {
+  return steps.find((step) => step.env?.VIDEORC_SMOKE_OUTPUT_DIR)?.env?.VIDEORC_SMOKE_OUTPUT_DIR
+}
+
+export function windowsLocalGateManifestPath({ outputDir }) {
+  if (!outputDir) {
+    throw new Error('outputDir is required.')
+  }
+  return join(outputDir, WINDOWS_LOCAL_GATE_MANIFEST_NAME)
+}
+
+export function createWindowsLocalGateManifest({
+  host,
+  steps,
+  repoRoot,
+  outputDir = windowsLocalGateOutputDir(steps),
+  platform = process.platform,
+  arch = process.arch,
+  release = '',
+  startedAt = new Date()
+} = {}) {
+  if (!host) {
+    throw new Error('host is required.')
+  }
+  if (!Array.isArray(steps)) {
+    throw new Error('steps are required.')
+  }
+  if (!repoRoot) {
+    throw new Error('repoRoot is required.')
+  }
+  if (!outputDir) {
+    throw new Error('outputDir is required.')
+  }
+
+  return {
+    schemaVersion: 1,
+    kind: 'windows-local-gates',
+    status: host.ok ? 'pending' : 'blocked',
+    startedAt: toIsoString(startedAt),
+    finishedAt: null,
+    repoRoot,
+    host: {
+      ok: host.ok,
+      platform,
+      arch,
+      release,
+      build: host.build,
+      failures: [...host.failures]
+    },
+    evidence: {
+      outputDir,
+      runManifest: windowsLocalGateManifestPath({ outputDir }),
+      acceptanceTemplate: join(
+        repoRoot,
+        'docs',
+        'acceptance',
+        'windows-app-acceptance-template.md'
+      ),
+      generatedArtifactsRoot: join(repoRoot, 'docs', 'acceptance', 'artifacts', 'windows')
+    },
+    steps: steps.map((step, index) => ({
+      index: index + 1,
+      label: step.label,
+      command: step.command,
+      args: [...step.args],
+      env: step.env ? { ...step.env } : {},
+      status: 'pending',
+      startedAt: null,
+      finishedAt: null,
+      durationMs: null,
+      error: null
+    }))
+  }
+}
+
 function defaultWindowsAcceptanceArtifactDir({ repoRoot }) {
   const date = new Date().toISOString().slice(0, 10)
   return join(repoRoot, 'docs', 'acceptance', 'artifacts', 'windows', date)
@@ -126,4 +203,11 @@ function windowsBuildNumber(release) {
   }
   const build = Number(release.split('.')[2])
   return Number.isFinite(build) ? build : null
+}
+
+function toIsoString(value) {
+  if (value instanceof Date) {
+    return value.toISOString()
+  }
+  return new Date(value).toISOString()
 }

@@ -3,8 +3,11 @@ import { describe, it } from 'node:test'
 
 import {
   buildWindowsLocalGateSteps,
+  createWindowsLocalGateManifest,
   evaluateWindowsLocalGateHost,
-  formatWindowsLocalGatePlan
+  formatWindowsLocalGatePlan,
+  windowsLocalGateManifestPath,
+  windowsLocalGateOutputDir
 } from './windows-local-gates.mjs'
 
 describe('evaluateWindowsLocalGateHost', () => {
@@ -59,6 +62,10 @@ describe('buildWindowsLocalGateSteps', () => {
       steps.at(-1).env.VIDEORC_SMOKE_OUTPUT_DIR,
       /C:\/repo\/docs\/acceptance\/artifacts\/windows\/\d{4}-\d{2}-\d{2}$/
     )
+    assert.match(
+      windowsLocalGateOutputDir(steps),
+      /C:\/repo\/docs\/acceptance\/artifacts\/windows\/\d{4}-\d{2}-\d{2}$/
+    )
   })
 
   it('allows the Windows acceptance artifact directory to be pinned', () => {
@@ -81,9 +88,70 @@ describe('buildWindowsLocalGateSteps', () => {
 
     assert.match(report, /windows-local-gates: plan/)
     assert.match(report, /evidence output:/)
+    assert.match(report, /windows-local-gates\.manifest\.json/)
     assert.match(report, /windows-app-acceptance-template\.md/)
     assert.match(report, /\[blocked\] host: requires Windows 11 x64/)
     assert.match(report, /package:preflight:windows/)
     assert.match(report, /smoke:packaged:bundled/)
+  })
+
+  it('builds an acceptance manifest with host, evidence, and command state', () => {
+    const steps = buildWindowsLocalGateSteps({
+      acceptanceDir: 'docs/acceptance/artifacts/windows/2026-07-08-lab-1',
+      repoRoot: 'C:/repo'
+    })
+    const outputDir = windowsLocalGateOutputDir(steps)
+    const manifest = createWindowsLocalGateManifest({
+      host: evaluateWindowsLocalGateHost({
+        platform: 'win32',
+        arch: 'x64',
+        release: '10.0.22631'
+      }),
+      steps,
+      repoRoot: 'C:/repo',
+      outputDir,
+      platform: 'win32',
+      arch: 'x64',
+      release: '10.0.22631',
+      startedAt: new Date('2026-07-08T12:00:00.000Z')
+    })
+
+    assert.equal(manifest.status, 'pending')
+    assert.equal(manifest.startedAt, '2026-07-08T12:00:00.000Z')
+    assert.equal(manifest.host.ok, true)
+    assert.equal(manifest.host.build, 22631)
+    assert.equal(manifest.evidence.runManifest, windowsLocalGateManifestPath({ outputDir }))
+    assert.match(manifest.evidence.acceptanceTemplate, /windows-app-acceptance-template\.md$/)
+    assert.equal(manifest.steps.length, steps.length)
+    const packagedSmoke = manifest.steps.at(-1)
+    assert.deepEqual(
+      {
+        ...packagedSmoke,
+        env: {
+          VIDEORC_PACKAGED_APP_EXECUTABLE: '<packaged-app>',
+          VIDEORC_SMOKE_OUTPUT_DIR: '<output-dir>'
+        }
+      },
+      {
+        index: steps.length,
+        label: 'packaged boot plus test-pattern recording smoke',
+        command: 'pnpm',
+        args: ['smoke:packaged:bundled'],
+        env: {
+          VIDEORC_PACKAGED_APP_EXECUTABLE: '<packaged-app>',
+          VIDEORC_SMOKE_OUTPUT_DIR: '<output-dir>'
+        },
+        status: 'pending',
+        startedAt: null,
+        finishedAt: null,
+        durationMs: null,
+        error: null
+      }
+    )
+    assert.match(
+      packagedSmoke.env.VIDEORC_PACKAGED_APP_EXECUTABLE,
+      /C:\/repo\/apps\/desktop\/release\/win-unpacked\/Videorc\.exe$/
+    )
+    assert.equal(packagedSmoke.env.VIDEORC_SMOKE_OUTPUT_DIR, outputDir)
   })
 })

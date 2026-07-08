@@ -44,6 +44,7 @@ directory and reference paths here.
 - `pnpm package:preflight:windows`: PASS / FAIL / BLOCKED
 - `pnpm package:desktop:windows`: PASS / FAIL / BLOCKED
 - `pnpm smoke:local-gates:windows`: PASS / FAIL / BLOCKED
+- Windows local-gates manifest:
 - Gate logs:
 
 ## Packaged App
