@@ -2022,9 +2022,30 @@ export interface AiWorkflowResult {
   artifacts: AiArtifact[]
 }
 
+/** A clip-worthy time range, ranked locally from chat activity + captions. */
+export interface ClipMoment {
+  startMs: number
+  endMs: number
+  reason: string
+  excerpt: string
+}
+
+export interface ClipSuggestResult {
+  sessionId: string
+  moments: ClipMoment[]
+  chatMessageCount: number
+}
+
+export interface ClipExportResult {
+  sessionId: string
+  path: string
+}
+
 export interface ExportPublishPackResult {
   sessionId: string
   markdownPath: string
+  /** Every file the export wrote (markdown + per-field paste-ready files). */
+  files?: string[]
 }
 
 export interface AiCapabilities {
@@ -2112,6 +2133,13 @@ export interface AiCapabilities {
     }>
     kind: string
     outputs: string[]
+    // Per-kind generation contract (videorc-web PR #1); absent on older servers.
+    supportsOutputsFilter?: boolean
+    supportsTone?: boolean
+    supportsTitleVariants?: boolean
+    supportsChatContext?: boolean
+    supportsSocialPosts?: boolean
+    supportsHighlightTimestamps?: boolean
   }
 }
 
@@ -2181,6 +2209,7 @@ export type AiArtifactKind =
   | 'summary'
   | 'chapters'
   | 'highlights'
+  | 'social-posts'
   | 'smart-zoom'
   | 'noise-cleanup'
   | 'silence-removal'
