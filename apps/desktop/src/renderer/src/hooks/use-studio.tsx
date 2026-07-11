@@ -25,6 +25,7 @@ import { rendererCompositorUpdateWasAccepted } from '../../../shared/native-prev
 import { cloudAiReadiness } from '@/lib/ai-readiness'
 import {
   applyStoredManualStreamKeyResult,
+  auxiliaryStreamOutputVideoSettings,
   bridgeStreamingToLegacy,
   buildCameraSources,
   areEnabledStreamTargetsStartReady,
@@ -50,6 +51,7 @@ import {
   smokePreviewCompositorCaptureConfig,
   sourceSelectionChangeEvents,
   STORAGE_KEYS,
+  streamOutputVideosForTargets,
   streamOutputVideoSettings,
   videoProfileCompatibility,
   videoPresets,
@@ -96,6 +98,7 @@ import type {
   AiWorkflowResult,
   AutomaticSourceFallbackEvent,
   AudioMeterResult,
+  AudioProcessingUpdateResult,
   BackendConnection,
   BackendHealth,
   BackendLogEvent,
@@ -123,6 +126,7 @@ import type {
   CaptionsStatus,
   CaptionsUpdate,
   CaptionsWindowState,
+  CaptionStyleId,
   LiveChatSnapshot,
   NativePreviewHostCommand,
   NotesWindowState,
@@ -186,11 +190,26 @@ import { renderCaptionCueFramePng, renderCaptionOverlayPng } from '@/lib/caption
 import { renderCommentHighlightPng } from '@/lib/caption-overlay'
 import {
   appendCaptionLine,
+  captionDwellMs,
   captionLineAboveFloor,
+  captionLineIdentity,
+  captionOverlayKey,
+  captionOverlayTargetPlan,
   captionSessionFloor,
+  CaptionCueRenderGuard,
+  captionsStatusIsActive,
+  decideCaptionsRuntimeIntent,
   decideOverlayPush,
+  LatestWinsScheduler,
+  shouldCancelCaptionCueRender,
   type CaptionSessionFloor
 } from '@/lib/captions-ui'
+import {
+  captionRuntimeStartBlocked,
+  captionSessionOutputReadiness,
+  decideGoLiveCaptionsReadiness,
+  type GoLiveCaptionsReadiness
+} from '@/lib/captions-preflight'
 import { goLiveEntitlementGate, videoProfileEntitlementGate } from '@/lib/entitlement-ui'
 import { entitlementDisabledReason } from '@/lib/entitlements'
 import {
@@ -232,6 +251,11 @@ import { useBackgroundAssets } from '@/hooks/use-background-assets'
 import { buildStartSessionParams } from '@/lib/session-params'
 import { findDevice, isActiveRecordingState, mergeStreamHealth } from '@/lib/format'
 import {
+  activeAudioProcessingUpdateParams,
+  rejectedLiveAudioProcessingUpdate,
+  type LiveAudioProcessingValues
+} from '@/lib/live-audio-processing'
+import {
   loadValidatedPlatformAccountsOnIsolatedClient,
   StudioBootstrapGuard
 } from '@/lib/studio-bootstrap'
@@ -241,6 +265,22 @@ import {
 } from '@/lib/protected-overlay-windows'
 
 export type { GoLivePartialSetup, GoLiveSetupFailure } from '@/lib/go-live-flow'
+
+type CaptionOverlayWork = {
+  client: BackendClient
+  epoch: number
+  key: string
+  text: string
+  outputs: Array<{
+    target: 'primary' | 'auxiliary'
+    canvasWidth: number
+    canvasHeight: number
+  }>
+  styleId: CaptionStyleId
+  styleRevision: number
+  textSize: 's' | 'm' | 'l'
+  position: 'top' | 'bottom'
+}
 
 function openPremiumUpgradePage(): void {
   const opener = window.videorc?.openOAuthUrl
@@ -539,7 +579,8 @@ export type StudioContextValue = {
   /** Live captions (premium cloud AI): status + transcript lines from captions.* events. */
   captionsStatus: CaptionsStatus
   captionLines: CaptionsUpdate[]
-  startCaptions: () => Promise<void>
+  captionsCommandPending: boolean
+  startCaptions: (language?: string) => Promise<void>
   stopCaptions: () => Promise<void>
   captionsWindow: CaptionsWindowState
   openCaptionsWindow: () => Promise<void>
@@ -562,6 +603,8 @@ export type StudioContextValue = {
   goLiveConfirmationOpen: boolean
   goLiveConfirmationPending: boolean
   goLivePartialSetup: GoLivePartialSetup | null
+  goLiveCaptionsReadiness: GoLiveCaptionsReadiness
+  continueGoLiveWithoutCaptions: () => void
   // preview + audio
   previewUrl: string | null
   previewLoading: boolean
@@ -787,6 +830,7 @@ interface StudioShellContextValue {
   openCommentsWindow: () => Promise<void>
   closeCommentsWindow: () => Promise<void>
   toggleCommentsWindow: () => Promise<void>
+  toggleCaptionsWindow: () => Promise<void>
 }
 
 const StudioShellContext = createContext<StudioShellContextValue | null>(null)
@@ -1403,9 +1447,15 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       })
     }
   }, [liveChatSnapshot])
+  const [captureConfig, setCaptureConfig] = useState<CaptureConfig>(loadCaptureConfig)
   // Live captions: status + transcript driven by captions.* events; the mic
   // audio itself never reaches the renderer (the Rust backend uploads chunks).
   const [captionsStatus, setCaptionsStatus] = useState<CaptionsStatus>({ state: 'idle' })
+  const captionsStatusRevisionRef = useRef(0)
+  const commitCaptionsStatus = useCallback((status: CaptionsStatus): void => {
+    captionsStatusRevisionRef.current += 1
+    setCaptionsStatus(status)
+  }, [])
   const [captionLines, setCaptionLines] = useState<CaptionsUpdate[]>([])
   const captionLinesRef = useRef(captionLines)
   captionLinesRef.current = captionLines
@@ -1415,25 +1465,53 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
   // responses can land seconds after the next recording began, and the
   // capture-epoch filter only guards the .srt/burn chunks, not these events.
   const captionSessionFloorRef = useRef<CaptionSessionFloor | null>(null)
-  const startCaptions = useCallback(async () => {
-    // F-022: both failure shapes must THROW so the toggle's error handler can
-    // toast — a missing client and a non-live status used to revert the switch
-    // silently.
-    if (!client) {
-      throw new Error('Backend is not connected — try again in a moment.')
-    }
-    setCaptionLines([])
-    const status = await client.request<CaptionsStatus>('captions.start')
-    setCaptionsStatus(status)
-    if (status.state !== 'live' && status.state !== 'degraded') {
-      throw new Error(status.message ?? `Live captions did not start (status: ${status.state}).`)
-    }
-  }, [client])
+  const [captionsCommandPending, setCaptionsCommandPending] = useState(false)
+  const captionsCommandTailRef = useRef<Promise<void>>(Promise.resolve())
+  const captionsCommandCountRef = useRef(0)
+  const runCaptionsCommand = useCallback(
+    (command: () => Promise<CaptionsStatus>): Promise<CaptionsStatus> => {
+      captionsCommandCountRef.current += 1
+      setCaptionsCommandPending(true)
+      const result = captionsCommandTailRef.current.catch(() => undefined).then(command)
+      captionsCommandTailRef.current = result.then(
+        () => undefined,
+        () => undefined
+      )
+      const finish = (): void => {
+        captionsCommandCountRef.current = Math.max(0, captionsCommandCountRef.current - 1)
+        if (captionsCommandCountRef.current === 0) setCaptionsCommandPending(false)
+      }
+      void result.then(finish, finish)
+      return result
+    },
+    []
+  )
+  const startCaptions = useCallback(
+    async (language = 'auto') => {
+      // F-022: both failure shapes must THROW so the toggle's error handler can
+      // toast — a missing client and a non-live status used to revert the switch
+      // silently.
+      if (!client) {
+        throw new Error('Backend is not connected — try again in a moment.')
+      }
+      setCaptionLines([])
+      const status = await runCaptionsCommand(() =>
+        client.request<CaptionsStatus>('captions.start', {
+          language: language === 'auto' ? undefined : language
+        })
+      )
+      commitCaptionsStatus(status)
+      if (!captionsStatusIsActive(status) && status.state !== 'ready') {
+        throw new Error(status.message ?? `Live captions did not start (status: ${status.state}).`)
+      }
+    },
+    [client, commitCaptionsStatus, runCaptionsCommand]
+  )
   const stopCaptions = useCallback(async () => {
     if (!client) return
-    const status = await client.request<CaptionsStatus>('captions.stop')
-    setCaptionsStatus(status)
-  }, [client])
+    const status = await runCaptionsCommand(() => client.request<CaptionsStatus>('captions.stop'))
+    commitCaptionsStatus(status)
+  }, [client, commitCaptionsStatus, runCaptionsCommand])
   // Detached captions window: same relay-via-main pattern as Comments — the
   // caption-line buffer is pushed to main, which caches + forwards it.
   const [captionsWindow, setCaptionsWindow] = useState<CaptionsWindowState>(idleCaptionsWindowState)
@@ -1456,12 +1534,26 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     }
   }, [])
   useEffect(() => {
-    void window.videorc?.pushCaptionLines?.(captionLines)
-  }, [captionLines])
+    void window.videorc?.pushCaptionSnapshot?.({
+      lines: captionLines,
+      status: captionsStatus,
+      styleId: captureConfig.captions.styleId,
+      position: captureConfig.captions.position,
+      textSize: captureConfig.captions.textSize
+    })
+  }, [captionLines, captionsStatus, captureConfig.captions])
   const openCaptionsWindow = useCallback(async () => {
-    await window.videorc?.pushCaptionLines?.(captionLines).catch(() => {})
+    await window.videorc
+      ?.pushCaptionSnapshot?.({
+        lines: captionLines,
+        status: captionsStatus,
+        styleId: captureConfig.captions.styleId,
+        position: captureConfig.captions.position,
+        textSize: captureConfig.captions.textSize
+      })
+      .catch(() => {})
     await window.videorc?.openCaptionsWindow?.()
-  }, [captionLines])
+  }, [captionLines, captionsStatus, captureConfig.captions])
   const closeCaptionsWindow = useCallback(async () => {
     await window.videorc?.closeCaptionsWindow?.()
   }, [])
@@ -1515,8 +1607,6 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       offClear?.()
     }
   }, [client])
-  const [captureConfig, setCaptureConfig] = useState<CaptureConfig>(loadCaptureConfig)
-
   // Backend-authoritative comment highlight. The renderer owns only the
   // temporary rasterization phase; `On stream` comes from the backend state.
   const [commentHighlightState, setCommentHighlightState] = useState<CommentHighlightState>({
@@ -1823,6 +1913,36 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
   const [goLiveConfirmationOpen, setGoLiveConfirmationOpen] = useState(false)
   const [goLiveConfirmationPending, setGoLiveConfirmationPending] = useState(false)
   const [goLivePartialSetup, setGoLivePartialSetup] = useState<GoLivePartialSetup | null>(null)
+  const [suppressCaptionsForSession, setSuppressCaptionsForSession] = useState(false)
+  const captionOutputReadiness = useMemo(() => {
+    const streamVideos = streamOutputVideosForTargets(
+      captureConfig.video,
+      captureConfig.streamEnabled ? captureConfig.streaming : undefined
+    ).map(({ video }) => video)
+    return captionSessionOutputReadiness({
+      burnTarget: captureConfig.captions.burnTarget,
+      recordEnabled: captureConfig.recordEnabled,
+      streamEnabled: captureConfig.streamEnabled,
+      recordingVideo: captureConfig.video,
+      streamVideos
+    })
+  }, [captureConfig])
+  const goLiveCaptionsReadiness = useMemo(
+    () =>
+      decideGoLiveCaptionsReadiness({
+        persistedEnabled: captureConfig.captions.enabled,
+        suppressForSession: suppressCaptionsForSession,
+        capabilities: aiCapabilities,
+        outputReadiness: captionOutputReadiness
+      }),
+    [
+      aiCapabilities,
+      captionOutputReadiness,
+      captureConfig.captions.enabled,
+      suppressCaptionsForSession
+    ]
+  )
+  const continueGoLiveWithoutCaptions = useCallback(() => setSuppressCaptionsForSession(true), [])
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const [previewLoading, setPreviewLoading] = useState(false)
   const [previewLiveStatus, setPreviewLiveStatus] = useState<PreviewLiveStatus>({
@@ -1876,6 +1996,12 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
   // the same session (fast assessment, then post-repair); one toast is enough.
   const qualityToastSessionsRef = useRef<Set<string>>(new Set())
   const captureConfigRef = useRef(captureConfig)
+  const liveAudioProcessingSyncRef = useRef<{
+    sessionId: string
+    lastApplied: LiveAudioProcessingValues
+    disabled: boolean
+    requestRevision: number
+  } | null>(null)
   const layoutIntentIdRef = useRef(Date.now())
   const layoutIntentAwaitingProofRef = useRef<number | null>(null)
   const latestLayoutTransactionCommitRef = useRef<LayoutTransactionSnapshot | null>(null)
@@ -2046,9 +2172,10 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
         captureConfig,
         scene: sceneWithBackground,
         sceneEditMode,
-        settings
+        settings,
+        suppressCaptionsForSession
       }),
-    [captureConfig, sceneWithBackground, sceneEditMode, settings]
+    [captureConfig, sceneWithBackground, sceneEditMode, settings, suppressCaptionsForSession]
   )
 
   const reportError = useCallback((error: unknown) => {
@@ -2214,6 +2341,27 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     setRecording(status)
     syncFramePollingSuppressionRef.current?.()
   }, [])
+
+  // Smoke-only state hydration for harnesses that start a capture through a
+  // second backend client. It uses the same authoritative status query and
+  // reducer as normal bootstrap, without reloading the renderer mid-session.
+  useEffect(() => {
+    const smokeWindow = window as Window & {
+      __videorcSmokeHydrateRecordingStatus?: () => Promise<RecordingStatus>
+    }
+    if (!runtimeInfo?.previewSmokeMode || !client) {
+      delete smokeWindow.__videorcSmokeHydrateRecordingStatus
+      return
+    }
+    smokeWindow.__videorcSmokeHydrateRecordingStatus = async () => {
+      const status = await client.request<RecordingStatus>('recording.status')
+      applyRecordingStatus(status)
+      return status
+    }
+    return () => {
+      delete smokeWindow.__videorcSmokeHydrateRecordingStatus
+    }
+  }, [applyRecordingStatus, client, runtimeInfo?.previewSmokeMode])
 
   const queueNativePreviewSurfacePresentReport = useCallback(
     (activeClient: BackendClient, params: PreviewSurfacePresentParams) => {
@@ -3110,6 +3258,86 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     let liveChatRecovery: Promise<void> | null = null
     let liveChatRecoveryRetryTimer: number | null = null
     let commentHighlightRevision = 0
+    type CaptionCueRenderRequest = {
+      requestId: string
+      canvasWidth: number
+      canvasHeight: number
+      position: 'top' | 'bottom'
+      textSize: 's' | 'm' | 'l'
+      styleId?: import('@/lib/backend').CaptionStyleId
+      styleRevision?: number
+      blankSeq: number
+      cues: { seq: number; text: string }[]
+    }
+    const captionCueRenderGuard = new CaptionCueRenderGuard()
+    let captionCueRenderGeneration = captionCueRenderGuard.begin()
+    const captionCueRenderQueue: CaptionCueRenderRequest[] = []
+    let captionCueRenderWorkerActive = false
+    let captionCueRenderAbort: AbortController | null = null
+    const cancelCaptionCueRender = (): void => {
+      captionCueRenderGuard.cancel()
+      captionCueRenderGeneration = captionCueRenderGuard.begin()
+      captionCueRenderQueue.splice(0)
+      captionCueRenderAbort?.abort()
+      captionCueRenderAbort = null
+    }
+    const drainCaptionCueRenderQueue = async (): Promise<void> => {
+      if (captionCueRenderWorkerActive) return
+      captionCueRenderWorkerActive = true
+      try {
+        while (captionCueRenderQueue.length > 0) {
+          const request = captionCueRenderQueue.shift()
+          if (!request) continue
+          const cueRenderGeneration = captionCueRenderGeneration
+          const cueRenderAbort = new AbortController()
+          captionCueRenderAbort = cueRenderAbort
+          const jobs = [{ seq: request.blankSeq, text: '' }, ...request.cues]
+          for (const cue of jobs) {
+            if (
+              !generationIsCurrent() ||
+              cueRenderAbort.signal.aborted ||
+              !captionCueRenderGuard.isCurrent(cueRenderGeneration)
+            ) {
+              break
+            }
+            const pngBase64 = await renderCaptionCueFramePng({
+              text: cue.text,
+              canvasWidth: request.canvasWidth,
+              canvasHeight: request.canvasHeight,
+              position: request.position,
+              textSize: request.textSize,
+              styleId: request.styleId ?? 'glass'
+            })
+            if (
+              !pngBase64 ||
+              !generationIsCurrent() ||
+              cueRenderAbort.signal.aborted ||
+              !captionCueRenderGuard.isCurrent(cueRenderGeneration)
+            ) {
+              continue
+            }
+            try {
+              await nextClient.request(
+                'captions.cues.submit',
+                {
+                  requestId: request.requestId,
+                  seq: cue.seq,
+                  pngBase64
+                },
+                { signal: cueRenderAbort.signal }
+              )
+            } catch {
+              // Skip this cue; the backend watchdog handles incompleteness.
+            }
+          }
+          if (captionCueRenderAbort === cueRenderAbort) {
+            captionCueRenderAbort = null
+          }
+        }
+      } finally {
+        captionCueRenderWorkerActive = false
+      }
+    }
     type LiveChatRecoveryResult =
       | { kind: 'disposed' | 'superseded' }
       | {
@@ -3509,7 +3737,16 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
           if (!disposed) reportError(error)
         })
       }),
-      nextClient.on('captions.status', (payload) => setCaptionsStatus(payload as CaptionsStatus)),
+      nextClient.on('captions.status', (payload) =>
+        commitCaptionsStatus(payload as CaptionsStatus)
+      ),
+      nextClient.on('captions.cleared', (payload) => {
+        if (shouldCancelCaptionCueRender((payload as { reason?: string }).reason)) {
+          cancelCaptionCueRender()
+        }
+        captionSessionFloorRef.current = null
+        setCaptionLines([])
+      }),
       nextClient.on('captions.update', (payload) =>
         setCaptionLines((current) =>
           captionLineAboveFloor(payload as CaptionsUpdate, captionSessionFloorRef.current)
@@ -3521,39 +3758,8 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       // per cue at finalize; render + submit sequentially, best-effort (the
       // backend watchdog degrades to SRT-only if we never finish).
       nextClient.on('captions.cues.render-request', (payload) => {
-        const request = payload as {
-          requestId: string
-          canvasWidth: number
-          canvasHeight: number
-          position: 'top' | 'bottom'
-          textSize: 's' | 'm' | 'l'
-          blankSeq: number
-          cues: { seq: number; text: string }[]
-        }
-        void (async () => {
-          const jobs = [{ seq: request.blankSeq, text: '' }, ...request.cues]
-          for (const cue of jobs) {
-            try {
-              const pngBase64 = await renderCaptionCueFramePng({
-                text: cue.text,
-                canvasWidth: request.canvasWidth,
-                canvasHeight: request.canvasHeight,
-                position: request.position,
-                textSize: request.textSize
-              })
-              if (!pngBase64) {
-                continue
-              }
-              await nextClient.request('captions.cues.submit', {
-                requestId: request.requestId,
-                seq: cue.seq,
-                pngBase64
-              })
-            } catch {
-              // Skip this cue; the backend watchdog handles incompleteness.
-            }
-          }
-        })()
+        captionCueRenderQueue.push(payload as CaptionCueRenderRequest)
+        void drainCaptionCueRenderQueue()
       }),
       nextClient.on('streamTargets.metadata.changed', (payload) => {
         bootstrapGuard.mark('streamMetadata')
@@ -3672,6 +3878,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
         const ffmpegPath = settingsRef.current.ffmpegPath.trim() || undefined
         const bootstrapSnapshot = bootstrapGuard.snapshot()
         const commentHighlightRevisionAtBootstrapStart = commentHighlightRevision
+        const captionsStatusRevisionAtBootstrapStart = captionsStatusRevisionRef.current
         const [
           nextHealth,
           nextEntitlements,
@@ -3679,6 +3886,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
           nextDevices,
           nextRecording,
           nextDiagnostics,
+          nextCaptionsStatus,
           nextLiveChat,
           nextCommentHighlight,
           nextPreview,
@@ -3698,6 +3906,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
           bootstrapRequest<DeviceList>('devices.list', { ffmpegPath }),
           bootstrapRequest<RecordingStatus>('recording.status'),
           bootstrapRequest<DiagnosticStats>('diagnostics.stats'),
+          bootstrapRequest<CaptionsStatus>('captions.status.get'),
           bootstrapRequest<LiveChatSnapshot>('liveChat.status'),
           bootstrapRequest<CommentHighlightState>('comments.highlight.status'),
           bootstrapRequest<PreviewLiveStatus>('preview.live.status'),
@@ -3730,6 +3939,9 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
         }
         if (bootstrapGuard.isCurrent(bootstrapSnapshot, 'diagnostics')) {
           setDiagnosticStats(nextDiagnostics)
+        }
+        if (captionsStatusRevisionRef.current === captionsStatusRevisionAtBootstrapStart) {
+          commitCaptionsStatus(nextCaptionsStatus)
         }
         if (bootstrapGuard.isCurrent(bootstrapSnapshot, 'previewLive')) {
           applyPreviewLiveStatus(nextPreview)
@@ -3879,12 +4091,17 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
         if (!generationIsCurrent()) {
           return
         }
-        setWsStatus('failed')
+        // A bootstrap data request can fail while the established WebSocket
+        // remains healthy. Keep transport truth separate from snapshot health
+        // so captions and other live controls do not freeze behind a false
+        // "Backend offline" state.
+        setWsStatus(nextClient.connected ? 'connected' : 'failed')
         reportError(error)
       })
 
     return () => {
       disposed = true
+      cancelCaptionCueRender()
       bootstrapAbort.abort()
       liveChatMessageBatcher.dispose()
       if (liveChatRecoveryRetryTimer !== null) {
@@ -5659,18 +5876,311 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
   const isSessionActive =
     isActiveRecordingState(recording.state) || startRequestPending || stopRequestPending
 
+  // Every mic surface edits the same captureConfig. Mirror that one source of
+  // truth into the active backend-owned native audio session, scoped by the
+  // session id so a delayed update cannot mute/unmute the next capture.
+  useEffect(() => {
+    const params = activeAudioProcessingUpdateParams(
+      { state: recording.state, sessionId: recording.sessionId },
+      {
+        microphoneGainDb: captureConfig.audio.microphoneGainDb,
+        microphoneMuted: captureConfig.audio.microphoneMuted
+      }
+    )
+    if (!params) {
+      liveAudioProcessingSyncRef.current = null
+      return
+    }
+    if (!client || wsStatus !== 'connected') return
+
+    let sync = liveAudioProcessingSyncRef.current
+    if (!sync || sync.sessionId !== params.sessionId) {
+      sync = {
+        sessionId: params.sessionId,
+        lastApplied: {
+          microphoneGainDb: params.microphoneGainDb,
+          microphoneMuted: params.microphoneMuted
+        },
+        disabled: false,
+        requestRevision: 0
+      }
+      liveAudioProcessingSyncRef.current = sync
+    }
+
+    // Once this session proves it has no native post-controls path, keep every
+    // mic surface pinned to the last settings the backend actually accepted.
+    // A new capture session creates a fresh sync state and retries normally.
+    if (sync.disabled) {
+      if (
+        params.microphoneGainDb !== sync.lastApplied.microphoneGainDb ||
+        params.microphoneMuted !== sync.lastApplied.microphoneMuted
+      ) {
+        const rollback = sync.lastApplied
+        setCaptureConfig((current) => ({
+          ...current,
+          audio: { ...current.audio, ...rollback }
+        }))
+      }
+      return
+    }
+
+    sync.requestRevision += 1
+    const requestRevision = sync.requestRevision
+    const lastApplied = sync.lastApplied
+
+    const rejectCurrentRequest = (
+      result?: AudioProcessingUpdateResult
+    ): ReturnType<typeof rejectedLiveAudioProcessingUpdate> => {
+      const latest = liveAudioProcessingSyncRef.current
+      if (
+        !latest ||
+        latest.sessionId !== params.sessionId ||
+        latest.requestRevision !== requestRevision
+      ) {
+        return null
+      }
+      const rejection = rejectedLiveAudioProcessingUpdate({
+        recording: recordingRef.current,
+        current: captureConfigRef.current.audio,
+        requested: params,
+        result,
+        lastApplied
+      })
+      if (!rejection) return null
+
+      latest.disabled = rejection.disableForSession
+      setCaptureConfig((current) => {
+        const currentRejection = rejectedLiveAudioProcessingUpdate({
+          recording: recordingRef.current,
+          current: current.audio,
+          requested: params,
+          result,
+          lastApplied
+        })
+        if (!currentRejection) return current
+        return {
+          ...current,
+          audio: { ...current.audio, ...currentRejection.rollback }
+        }
+      })
+      return rejection
+    }
+
+    void client
+      .request<AudioProcessingUpdateResult>('audio.processing.update', params)
+      .then((result) => {
+        const latest = liveAudioProcessingSyncRef.current
+        if (
+          !latest ||
+          latest.sessionId !== params.sessionId ||
+          latest.requestRevision !== requestRevision ||
+          result.sessionId !== params.sessionId ||
+          recordingRef.current.sessionId !== params.sessionId ||
+          !['recording', 'streaming'].includes(recordingRef.current.state)
+        ) {
+          return
+        }
+        if (result.applied) {
+          latest.lastApplied = {
+            microphoneGainDb: result.microphoneGainDb,
+            microphoneMuted: result.microphoneMuted
+          }
+          return
+        }
+
+        const rejection = rejectCurrentRequest(result)
+        if (!rejection) return
+        reportError(new Error(rejection.message))
+      })
+      .catch((error) => {
+        const rejection = rejectCurrentRequest()
+        if (!rejection) return
+        const detail = error instanceof Error ? error.message : String(error)
+        reportError(new Error(`${rejection.message} ${detail}`))
+      })
+  }, [
+    client,
+    recording.sessionId,
+    recording.state,
+    captureConfig.audio.microphoneGainDb,
+    captureConfig.audio.microphoneMuted,
+    reportError,
+    wsStatus
+  ])
+
+  // Persisted consent is intent; the backend snapshot remains runtime truth.
+  // One attempt per capture/toggle/client edge prevents blocked/error states
+  // from spinning, while explicit retry edges deliberately try once again.
+  const captionsStartAttemptedRef = useRef(false)
+  const captionsStopAttemptedRef = useRef(false)
+  const captionsAttemptClientRef = useRef<BackendClient | null>(null)
+  const captionsAttemptScopeRef = useRef('')
+  const captionsCaptureActive = ['recording', 'streaming'].includes(recording.state)
+  const captionsAttemptScope = [
+    captureConfig.captions.enabled ? 'enabled' : 'disabled',
+    suppressCaptionsForSession ? 'suppressed' : 'normal',
+    captionsCaptureActive ? `capture:${recording.sessionId ?? 'unknown'}` : 'idle',
+    captureConfig.captions.language,
+    wsStatus
+  ].join(':')
+  useEffect(() => {
+    if (
+      captionsAttemptClientRef.current !== client ||
+      captionsAttemptScopeRef.current !== captionsAttemptScope
+    ) {
+      captionsAttemptClientRef.current = client
+      captionsAttemptScopeRef.current = captionsAttemptScope
+      captionsStartAttemptedRef.current = false
+      captionsStopAttemptedRef.current = false
+    }
+    if (!client || wsStatus !== 'connected' || captionsCommandPending) return
+    const action = decideCaptionsRuntimeIntent({
+      persistedEnabled: captureConfig.captions.enabled,
+      suppressForSession: suppressCaptionsForSession,
+      captureActive: captionsCaptureActive,
+      status: captionsStatus,
+      startAttempted: captionsStartAttemptedRef.current,
+      stopAttempted: captionsStopAttemptedRef.current
+    })
+    if (action === 'start') {
+      if (
+        captionRuntimeStartBlocked({
+          captureActive: captionsCaptureActive,
+          outputReadiness: captionOutputReadiness
+        })
+      ) {
+        setSuppressCaptionsForSession(true)
+        toast.error('Live captions cannot start in this session', {
+          id: 'captions-output-unsupported',
+          description:
+            captionOutputReadiness.description ??
+            'The active output configuration cannot carry caption pixels.'
+        })
+        return
+      }
+      captionsStartAttemptedRef.current = true
+      captionsStopAttemptedRef.current = false
+      void startCaptions(captureConfig.captions.language).catch((error: unknown) => {
+        toast.error('Live captions could not start', {
+          description:
+            error instanceof Error ? error.message : 'The caption service is unavailable.'
+        })
+      })
+    } else if (action === 'stop') {
+      captionsStartAttemptedRef.current = false
+      captionsStopAttemptedRef.current = true
+      void stopCaptions().catch(() => {})
+    }
+  }, [
+    captionsAttemptScope,
+    captionsCaptureActive,
+    captionsCommandPending,
+    captionOutputReadiness,
+    captionsStatus,
+    captureConfig.captions.enabled,
+    captureConfig.captions.language,
+    client,
+    startCaptions,
+    stopCaptions,
+    suppressCaptionsForSession,
+    wsStatus
+  ])
+
+  // A Go Live override survives confirmation and startup, then clears as soon
+  // as that attempted session returns to idle. Persisted consent never changes.
+  const suppressedCaptionSessionWasActiveRef = useRef(false)
+  useEffect(() => {
+    if (suppressCaptionsForSession && isSessionActive) {
+      suppressedCaptionSessionWasActiveRef.current = true
+      return
+    }
+    if (!isSessionActive && suppressedCaptionSessionWasActiveRef.current) {
+      suppressedCaptionSessionWasActiveRef.current = false
+      setSuppressCaptionsForSession(false)
+    }
+  }, [isSessionActive, suppressCaptionsForSession])
+
   useEffect(() => {
     if (aiConsent && !currentCloudAiReadiness.ready) {
       setAiConsent(false)
     }
   }, [aiConsent, currentCloudAiReadiness.ready])
 
-  // Burn-in driver: rasterize the newest caption line at the stream output
-  // width and push it to the backend overlay (stream leg only, A0). Cleared
-  // whenever burn-in/captions/session stop so the next session never starts
-  // with a stale bar.
-  const captionOverlayBusy = useRef(false)
+  // Burn-in driver: a serial latest-wins scheduler replaces the old boolean
+  // busy gate, which could permanently drop a final/style update that arrived
+  // during rasterization. One render may run and only the newest waits behind it.
   const captionOverlayPushedKey = useRef<string | null>(null)
+  const captionOverlayEpochRef = useRef(0)
+  const captionOverlayWorkActiveRef = useRef(false)
+  const captionOverlayExpiredLineRef = useRef<string | null>(null)
+  const captionOverlayWorkerRef = useRef<(work: CaptionOverlayWork) => Promise<void>>(
+    async () => {}
+  )
+  const captionOverlaySchedulerRef = useRef<LatestWinsScheduler<CaptionOverlayWork> | null>(null)
+  if (!captionOverlaySchedulerRef.current) {
+    captionOverlaySchedulerRef.current = new LatestWinsScheduler((work) =>
+      captionOverlayWorkerRef.current(work)
+    )
+  }
+  captionOverlayWorkerRef.current = async (work) => {
+    let pushed = false
+    for (const output of work.outputs) {
+      const pngBase64 = await renderCaptionOverlayPng({
+        text: work.text,
+        canvasWidth: output.canvasWidth,
+        textSize: work.textSize,
+        styleId: work.styleId
+      })
+      if (!pngBase64 || work.epoch !== captionOverlayEpochRef.current) return
+      await work.client.request('captions.overlay.set', {
+        pngBase64,
+        position: work.position,
+        target: output.target,
+        styleRevision: work.styleRevision
+      })
+      pushed = true
+    }
+    if (pushed && work.epoch === captionOverlayEpochRef.current) {
+      captionOverlayPushedKey.current = work.key
+    }
+  }
+
+  // The backend owns final-copy cue rendering after capture stops, so every
+  // live appearance revision is mirrored there as well as into overlay pixels.
+  useEffect(() => {
+    if (
+      !client ||
+      !isActiveRecordingState(recording.state) ||
+      !captureConfig.captions.enabled ||
+      suppressCaptionsForSession
+    ) {
+      return
+    }
+    void client
+      .request('captions.style.set', {
+        position: captureConfig.captions.position,
+        textSize: captureConfig.captions.textSize,
+        styleId: captureConfig.captions.styleId,
+        styleRevision: captureConfig.captions.styleRevision
+      })
+      .catch(() => {})
+  }, [
+    client,
+    recording.state,
+    captureConfig.captions.enabled,
+    captureConfig.captions.position,
+    captureConfig.captions.styleId,
+    captureConfig.captions.styleRevision,
+    captureConfig.captions.textSize,
+    suppressCaptionsForSession
+  ])
+
+  useEffect(() => {
+    captionOverlayEpochRef.current += 1
+    captionOverlaySchedulerRef.current?.clearPending()
+    captionOverlayPushedKey.current = null
+    captionOverlayWorkActiveRef.current = false
+  }, [client])
 
   // Capture-session rising edge: the caption strip/window and the burn bar
   // start EMPTY for every new video. The floor is recorded before the buffer
@@ -5683,7 +6193,11 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     if (isSessionActive && !captionSessionWasActiveRef.current) {
       const lines = captionLinesRef.current
       captionSessionFloorRef.current = captionSessionFloor(lines) ?? captionSessionFloorRef.current
+      captionOverlayEpochRef.current += 1
+      captionOverlaySchedulerRef.current?.clearPending()
       captionOverlayPushedKey.current = null
+      captionOverlayWorkActiveRef.current = false
+      captionOverlayExpiredLineRef.current = null
       if (lines.length > 0) {
         setCaptionLines([])
       }
@@ -5695,63 +6209,122 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     if (!client) {
       return
     }
-    const decision = decideOverlayPush({
-      burnIn: captureConfig.captions.burnTarget !== 'off',
-      captionsRunning: captionsStatus.state === 'live' || captionsStatus.state === 'degraded',
-      sessionActive: isSessionActive,
-      latest: captionLines.at(-1),
-      floor: captionSessionFloorRef.current,
-      pushedKey: captionOverlayPushedKey.current,
-      busy: captionOverlayBusy.current
-    })
-    if (decision.action === 'clear') {
-      captionOverlayPushedKey.current = null
-      void client.request('captions.overlay.clear').catch(() => {})
-      return
-    }
-    if (decision.action !== 'push') {
-      return
-    }
-    const latest = captionLines.at(-1)!
-    captionOverlayBusy.current = true
-    const streamVideo = streamOutputVideoSettings(
+    const latest = captionLines.at(-1)
+    const streamVideo = auxiliaryStreamOutputVideoSettings(
       captureConfig.video,
       captureConfig.streamEnabled ? captureConfig.streaming : undefined
     )
-    void renderCaptionOverlayPng({
-      text: latest.text,
-      canvasWidth: streamVideo.width,
-      textSize: captureConfig.captions.textSize
+    const outputs = captionOverlayTargetPlan({
+      burnTarget: captureConfig.captions.burnTarget,
+      recordEnabled: captureConfig.recordEnabled,
+      streamEnabled: captureConfig.streamEnabled,
+      recordingVideo: captureConfig.video,
+      streamVideo
     })
-      .then((pngBase64) => {
-        if (!pngBase64) {
-          return
-        }
-        return client
-          .request('captions.overlay.set', {
-            pngBase64,
-            position: captureConfig.captions.position
-          })
-          .then(() => {
-            captionOverlayPushedKey.current = decision.key
-          })
-      })
-      .catch(() => {
-        // Overlay pushes are best-effort; the next caption line retries.
-      })
-      .finally(() => {
-        captionOverlayBusy.current = false
-      })
+    const candidateKey = latest
+      ? outputs
+          .map((output) =>
+            captionOverlayKey(latest, {
+              styleId: captureConfig.captions.styleId,
+              styleRevision: captureConfig.captions.styleRevision,
+              position: captureConfig.captions.position,
+              textSize: captureConfig.captions.textSize,
+              canvasWidth: output.canvasWidth,
+              canvasHeight: output.canvasHeight,
+              outputLeg: output.target
+            })
+          )
+          .join('|')
+      : undefined
+    const burnIn = outputs.length > 0
+    const captionsRunning = captionsStatusIsActive(captionsStatus)
+    const decision = decideOverlayPush({
+      burnIn,
+      captionsRunning,
+      sessionActive: isSessionActive,
+      latest,
+      floor: captionSessionFloorRef.current,
+      pushedKey: captionOverlayPushedKey.current,
+      candidateKey,
+      expiredLineId: captionOverlayExpiredLineRef.current
+    })
+    if (
+      decision.action === 'clear' ||
+      ((!burnIn || !captionsRunning || !isSessionActive) && captionOverlayWorkActiveRef.current)
+    ) {
+      captionOverlayEpochRef.current += 1
+      captionOverlaySchedulerRef.current?.clearPending()
+      captionOverlayPushedKey.current = null
+      captionOverlayWorkActiveRef.current = false
+      void client
+        .request('captions.overlay.clear', {
+          styleRevision: captureConfig.captions.styleRevision
+        })
+        .catch(() => {})
+      return
+    }
+    if (decision.action !== 'push' || !latest || !decision.key) {
+      return
+    }
+    captionOverlayWorkActiveRef.current = true
+    captionOverlaySchedulerRef.current?.enqueue({
+      client,
+      epoch: captionOverlayEpochRef.current,
+      key: decision.key,
+      text: latest.text,
+      outputs: outputs.map((output) => ({
+        target: output.target,
+        canvasWidth: output.canvasWidth,
+        canvasHeight: output.canvasHeight
+      })),
+      styleId: captureConfig.captions.styleId,
+      styleRevision: captureConfig.captions.styleRevision,
+      textSize: captureConfig.captions.textSize,
+      position: captureConfig.captions.position
+    })
   }, [
     client,
     captionLines,
-    captionsStatus.state,
+    captionsStatus,
     isSessionActive,
     captureConfig.captions,
+    captureConfig.recordEnabled,
     captureConfig.video,
     captureConfig.streamEnabled,
     captureConfig.streaming
   ])
+
+  // Silence expiry belongs to the current line, not to a render attempt. Every
+  // partial refresh restarts the clock; finals dwell by readable text length.
+  const latestCaption = captionLines.at(-1)
+  useEffect(() => {
+    if (
+      !client ||
+      !latestCaption ||
+      !isSessionActive ||
+      captureConfig.captions.burnTarget === 'off'
+    ) {
+      return
+    }
+    const identity = captionLineIdentity(latestCaption)
+    captionOverlayExpiredLineRef.current = null
+    const dwellMs = latestCaption.kind === 'partial' ? 6000 : captionDwellMs(latestCaption.text)
+    const timer = window.setTimeout(() => {
+      const current = captionLinesRef.current.at(-1)
+      if (!current || captionLineIdentity(current) !== identity) return
+      captionOverlayExpiredLineRef.current = identity
+      captionOverlayEpochRef.current += 1
+      captionOverlaySchedulerRef.current?.clearPending()
+      captionOverlayPushedKey.current = null
+      captionOverlayWorkActiveRef.current = false
+      void client
+        .request('captions.overlay.clear', {
+          styleRevision: captureConfig.captions.styleRevision
+        })
+        .catch(() => {})
+    }, dwellMs)
+    return () => window.clearTimeout(timer)
+  }, [client, captureConfig.captions, isSessionActive, latestCaption])
 
   const renameScreen = useCallback(
     async (screenId: string, name: string) => {
@@ -6797,6 +7370,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     try {
       setLastError(null)
       setGoLivePartialSetup(null)
+      setSuppressCaptionsForSession(false)
       setGoLiveConfirmationPending(true)
       if (streamMetadataDraft) {
         const saved = await client.request<StreamMetadataDraft>(
@@ -6810,12 +7384,23 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
         )
         setStreamMetadataValidation(validation)
       }
-      const preflight = await client.request<GoLivePreflight>(
-        'streamTargets.confirmation.validate',
-        {
+      const [preflight] = await Promise.all([
+        client.request<GoLivePreflight>('streamTargets.confirmation.validate', {
           streaming: captureConfig.streaming
-        }
-      )
+        }),
+        captureConfig.captions.enabled
+          ? client
+              .request<AiCapabilities>('ai.capabilities.get')
+              .then((capabilities) => {
+                setAiCapabilities(capabilities)
+                setAiReadinessError(null)
+              })
+              .catch((error: unknown) => {
+                setAiCapabilities(null)
+                setAiReadinessError(error instanceof Error ? error.message : String(error))
+              })
+          : Promise.resolve()
+      ])
       setGoLivePreflight(preflight)
       setGoLiveConfirmationOpen(true)
     } catch (error) {
@@ -6824,6 +7409,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       setGoLiveConfirmationPending(false)
     }
   }, [
+    captureConfig.captions.enabled,
     captureConfig.streaming,
     client,
     isSessionActive,
@@ -6854,6 +7440,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     }
     setGoLivePartialSetup(null)
     setGoLiveConfirmationOpen(false)
+    setSuppressCaptionsForSession(false)
   }, [
     completePreparedPlatformBroadcasts,
     goLiveConfirmationPending,
@@ -6863,6 +7450,12 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
 
   const confirmGoLive = useCallback(async () => {
     if (!client || goLiveConfirmationPending || startRequestPending) {
+      return
+    }
+    if (goLiveCaptionsReadiness.blocksStart) {
+      toast.warning('Live captions are not ready.', {
+        description: goLiveCaptionsReadiness.description
+      })
       return
     }
 
@@ -6924,6 +7517,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     captureConfig.streaming,
     client,
     goLiveConfirmationPending,
+    goLiveCaptionsReadiness,
     prepareOauthTargetsForGoLive,
     reportError,
     runStartSession,
@@ -6932,6 +7526,12 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
   ])
 
   const continueGoLiveWithReadyDestinations = useCallback(async () => {
+    if (goLiveCaptionsReadiness.blocksStart) {
+      toast.warning('Live captions are not ready.', {
+        description: goLiveCaptionsReadiness.description
+      })
+      return
+    }
     const decision = decideContinueGoLiveWithReadyDestinations({
       goLiveConfirmationPending,
       startRequestPending,
@@ -6954,6 +7554,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
     }
   }, [
     goLiveConfirmationPending,
+    goLiveCaptionsReadiness,
     goLivePartialSetup,
     reportError,
     runStartSession,
@@ -7621,7 +8222,8 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       commentsWindowOpen: commentsWindow.open,
       openCommentsWindow,
       closeCommentsWindow,
-      toggleCommentsWindow
+      toggleCommentsWindow,
+      toggleCaptionsWindow
     }),
     [
       closeCommentsWindow,
@@ -7636,6 +8238,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       recording.state,
       runtimeInfo,
       toggleCommentsWindow,
+      toggleCaptionsWindow,
       togglePreviewWindow,
       wsStatus
     ]
@@ -7692,6 +8295,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       clearLiveChat,
       captionsStatus,
       captionLines,
+      captionsCommandPending,
       startCaptions,
       stopCaptions,
       captionsWindow,
@@ -7715,6 +8319,8 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       goLiveConfirmationOpen,
       goLiveConfirmationPending,
       goLivePartialSetup,
+      goLiveCaptionsReadiness,
+      continueGoLiveWithoutCaptions,
       previewUrl,
       previewLoading,
       nativePreviewSurfaceEnabled,
@@ -7857,6 +8463,7 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       clearLiveChat,
       captionsStatus,
       captionLines,
+      captionsCommandPending,
       startCaptions,
       stopCaptions,
       captionsWindow,
@@ -7880,6 +8487,8 @@ export function StudioProvider({ children }: { children: ReactNode }): ReactElem
       goLiveConfirmationOpen,
       goLiveConfirmationPending,
       goLivePartialSetup,
+      goLiveCaptionsReadiness,
+      continueGoLiveWithoutCaptions,
       previewUrl,
       previewLoading,
       nativePreviewSurfaceEnabled,
