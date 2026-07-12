@@ -476,8 +476,10 @@ fn av_skew_ms(video: &VideoStreamInfo, audio: &AudioStreamInfo) -> Option<f64> {
         skew = Some((video_start - audio_start).abs() * 1000.0);
     }
     if let (Some(video_duration), Some(audio_duration)) = (video.duration, audio.duration) {
-        let duration_skew = (video_duration - audio_duration).abs() * 1000.0;
-        skew = Some(skew.map_or(duration_skew, |current| current.max(duration_skew)));
+        let delayed_audio_skew = (video_duration - audio_duration).max(0.0) * 1000.0;
+        skew = Some(skew.map_or(delayed_audio_skew, |current| {
+            current.max(delayed_audio_skew)
+        }));
     }
     skew
 }
@@ -2246,6 +2248,25 @@ mod tests {
             issue,
             QualityIssue::AvSkew { ms } if (*ms - 391.0).abs() < 1.0
         )));
+    }
+
+    #[test]
+    fn audio_only_muxer_tail_is_not_classified_as_av_skew() {
+        let json = r#"{"streams":[
+            {"codec_type":"video","codec_name":"h264","width":1280,"height":720,
+             "r_frame_rate":"30/1","avg_frame_rate":"30/1","duration":"8.100","nb_frames":"243","start_time":"0.0"},
+            {"codec_type":"audio","codec_name":"aac","channels":2,"duration":"8.298","start_time":"0.0"}
+        ]}"#;
+        let probe = parse_ffprobe_json(json).unwrap();
+        let report = classify_quality(&probe, &thresholds(), &QualityExpectations::default());
+
+        assert_eq!(report.verdict, QualityVerdict::Clean);
+        assert!(
+            !report
+                .issues
+                .iter()
+                .any(|issue| matches!(issue, QualityIssue::AvSkew { .. }))
+        );
     }
 
     #[test]

@@ -254,6 +254,13 @@ export function launchDevApp({
 }
 
 export function devAppSpawnSpec({ env, platform = process.platform } = {}) {
+  if (platform === 'win32') {
+    return {
+      command: env?.ComSpec || process.env.ComSpec || 'cmd.exe',
+      args: ['/d', '/s', '/c', 'pnpm --filter @videorc/desktop dev'],
+      options: devAppSpawnOptions({ env, platform })
+    }
+  }
   return {
     command: 'pnpm',
     args: ['--filter', '@videorc/desktop', 'dev'],
@@ -292,7 +299,10 @@ export function devAppSpawnOptions({ env, platform = process.platform } = {}) {
     detached: platform !== 'win32',
     env,
     stdio: ['ignore', 'pipe', 'pipe'],
-    shell: platform === 'win32'
+    // Windows dev launches use an explicit cmd.exe command string in
+    // devAppSpawnSpec. shell:true with a separate argv array makes Node
+    // reconstruct paths containing spaces unsafely.
+    shell: false
   }
 }
 

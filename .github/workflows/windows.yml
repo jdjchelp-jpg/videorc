@@ -148,6 +148,10 @@ jobs:
           VIDEORC_NATIVE_PREVIEW_MEASUREMENT_MS: '4000'
           VIDEORC_EXPECT_NATIVE_METAL_PREVIEW: '0'
           VIDEORC_NATIVE_PREVIEW_EXERCISE_PROOF_POLLING: '1'
+          # Hosted Windows uses the contained Electron proof surface with 125ms
+          # polling, not the production native CAMetalLayer latency contract.
+          VIDEORC_NATIVE_PREVIEW_MAX_INPUT_TO_PRESENT_P95_MS: '350'
+          VIDEORC_NATIVE_PREVIEW_MAX_INPUT_TO_PRESENT_P99_MS: '500'
           VIDEORC_ENCODER_BRIDGE_VIDEO_OUTPUT: raw-yuv420p
 
       - name: Upload installer artifact

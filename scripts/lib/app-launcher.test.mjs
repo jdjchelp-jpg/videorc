@@ -137,12 +137,20 @@ test('smokeAppEnv preserves explicit app dirs and reaper policy', () => {
   })
 })
 
-test('dev app launch targets the desktop package and uses a shell on Windows', () => {
-  const windowsSpec = devAppSpawnSpec({ platform: 'win32' })
+test('dev app launch uses explicit cmd.exe without shell argv reconstruction on Windows', () => {
+  const windowsSpec = devAppSpawnSpec({
+    platform: 'win32',
+    env: { ComSpec: 'C:\\Windows\\System32\\cmd.exe' }
+  })
 
-  assert.equal(windowsSpec.command, 'pnpm')
-  assert.deepEqual(windowsSpec.args, ['--filter', '@videorc/desktop', 'dev'])
-  assert.equal(windowsSpec.options.shell, true)
+  assert.equal(windowsSpec.command, 'C:\\Windows\\System32\\cmd.exe')
+  assert.deepEqual(windowsSpec.args, [
+    '/d',
+    '/s',
+    '/c',
+    'pnpm --filter @videorc/desktop dev'
+  ])
+  assert.equal(windowsSpec.options.shell, false)
   assert.equal(devAppSpawnOptions({ platform: 'darwin' }).shell, false)
   assert.equal(devAppSpawnOptions({ platform: 'linux' }).shell, false)
   // detached is POSIX-only: on Windows it silently drops the piped output the

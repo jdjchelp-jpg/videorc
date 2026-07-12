@@ -65,7 +65,17 @@ const STREAM_OUTPUT_QUEUE_MAX_AGE: Duration = Duration::from_millis(150);
 // for another complete write; busy ticks are explicitly coalesced and the
 // decoder holds the last VFR frame across the wall-time gap.
 const RAW_VIDEO_FIFO_QUEUE_MAX_FRAMES: usize = 0;
+#[cfg(not(target_os = "windows"))]
 const FIFO_FRAME_WRITE_HARD_TIMEOUT: Duration = Duration::from_secs(2);
+// Media Foundation can stop draining the raw-video pipe for several seconds
+// while its MFT catches up. A raw YUV frame is indivisible once writing starts:
+// timing it out truncates a plane, kills FFmpeg, strands the recovery MKV, and
+// loses the remainder of the user's recording. Keep a bounded shutdown escape
+// hatch, but give a progressing Windows recording enough time to recover.
+#[cfg(target_os = "windows")]
+const RAW_VIDEO_FIFO_FRAME_WRITE_HARD_TIMEOUT: Duration = Duration::from_secs(30);
+#[cfg(not(target_os = "windows"))]
+const RAW_VIDEO_FIFO_FRAME_WRITE_HARD_TIMEOUT: Duration = FIFO_FRAME_WRITE_HARD_TIMEOUT;
 const RAW_VIDEO_FIFO_STARTUP_PRIME_TIMEOUT: Duration = Duration::from_millis(2500);
 const FIFO_WRITE_PROGRESS_YIELD_BUDGET: u32 = 64;
 const FIFO_WRITE_STALL_BACKOFF: Duration = Duration::from_micros(250);
@@ -2702,7 +2712,7 @@ fn run_raw_video_fifo_writer_loop_with_receiver<W, F>(
             &stop,
             deadline,
             max_frame_age,
-            FIFO_FRAME_WRITE_HARD_TIMEOUT,
+            RAW_VIDEO_FIFO_FRAME_WRITE_HARD_TIMEOUT,
             false,
         ) {
             Ok(()) => {
@@ -4310,6 +4320,20 @@ mod tests {
     }
 
     #[test]
+    fn raw_fifo_writer_uses_a_windows_safe_complete_frame_timeout() {
+        #[cfg(target_os = "windows")]
+        assert_eq!(
+            RAW_VIDEO_FIFO_FRAME_WRITE_HARD_TIMEOUT,
+            Duration::from_secs(30)
+        );
+        #[cfg(not(target_os = "windows"))]
+        assert_eq!(
+            RAW_VIDEO_FIFO_FRAME_WRITE_HARD_TIMEOUT,
+            FIFO_FRAME_WRITE_HARD_TIMEOUT
+        );
+    }
+
+    #[test]
     fn raw_fifo_writer_finishes_an_inflight_frame_when_stop_arrives_mid_write() {
         let (frame_tx, frame_rx) = std_mpsc::sync_channel(1);
         let (result_tx, result_rx) = std_mpsc::sync_channel(3);
@@ -4393,15 +4417,15 @@ mod tests {
             };
             let stop = AtomicBool::new(false);
             let bytes = vec![7; raw_yuv420p_len(1920, 1080).expect("1080p frame size")];
-            let deadline = Instant::now() + Duration::from_millis(250);
+            let deadline = Instant::now() + Duration::from_millis(500);
 
             write_all_until(
                 &mut sink,
                 &bytes,
                 &stop,
                 deadline,
-                Duration::from_millis(250),
-                Duration::from_millis(250),
+                Duration::from_millis(500),
+                Duration::from_millis(500),
                 false,
             )
             .expect("active FIFO draining must not pay a millisecond sleep per pipe-sized chunk");

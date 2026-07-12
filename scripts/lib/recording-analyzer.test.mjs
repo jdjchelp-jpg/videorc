@@ -190,9 +190,9 @@ describe('avSkewMs', () => {
     assert.ok(Math.abs(avSkewMs(probe) - 120) < 1e-6)
   })
 
-  it('falls back to duration mismatch', () => {
+  it('does not classify an audio-only muxer tail as content skew', () => {
     const probe = { video: { duration: 3.0 }, audio: [{ duration: 3.2 }] }
-    assert.ok(Math.abs(avSkewMs(probe) - 200) < 1e-6)
+    assert.equal(avSkewMs(probe), 0)
   })
 
   it('catches a constant audio delay (equal start_times, shorter audio)', () => {

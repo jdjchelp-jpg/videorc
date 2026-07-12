@@ -276,8 +276,11 @@ export function avSkewMs(probe) {
     skew = Math.abs(video.startTime - audio.startTime) * 1000
   }
   if (Number.isFinite(video.duration) && Number.isFinite(audio.duration)) {
-    const durationSkew = Math.abs(video.duration - audio.duration) * 1000
-    skew = skew == null ? durationSkew : Math.max(skew, durationSkew)
+    // A shorter audio stream can reveal delayed audio when muxing normalized both
+    // start times to zero. Audio extending beyond video is only an end-of-file tail;
+    // it does not move audio relative to video during their shared content window.
+    const delayedAudioSkew = Math.max(video.duration - audio.duration, 0) * 1000
+    skew = skew == null ? delayedAudioSkew : Math.max(skew, delayedAudioSkew)
   }
   return skew
 }

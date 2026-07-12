@@ -61,6 +61,13 @@ pub enum MicrophoneInput {
     },
 }
 
+// DirectShow otherwise uses the device's default audio buffer, commonly around
+// 500ms. That made Windows recordings start with roughly half a second less
+// audio than video and could deliver speech in audible bursts under encoder
+// load. Keep enough cushion for consumer USB microphones without carrying the
+// device-default latency into the recording pipeline.
+const WINDOWS_DSHOW_AUDIO_BUFFER_MS: u32 = 100;
+
 /// Low-latency session capture input for a screen or camera device
 /// (macOS: avfoundation). The cursor is only meaningful for screens.
 pub fn append_avfoundation_video_input(
@@ -223,6 +230,8 @@ pub fn append_microphone_input(
             args.extend([
                 "-f".to_string(),
                 "dshow".to_string(),
+                "-audio_buffer_size".to_string(),
+                WINDOWS_DSHOW_AUDIO_BUFFER_MS.to_string(),
                 "-thread_queue_size".to_string(),
                 "512".to_string(),
                 "-sample_rate".to_string(),
@@ -520,6 +529,8 @@ mod tests {
             vec![
                 "-f".to_string(),
                 "dshow".to_string(),
+                "-audio_buffer_size".to_string(),
+                WINDOWS_DSHOW_AUDIO_BUFFER_MS.to_string(),
                 "-thread_queue_size".to_string(),
                 "512".to_string(),
                 "-sample_rate".to_string(),
