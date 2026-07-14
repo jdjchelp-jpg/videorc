@@ -210,6 +210,12 @@ const IDLE_PREVIEW_FPS: u32 = 10;
 const IDLE_PREVIEW_JPEG_QUALITY: u32 = 4;
 const STOP_FINALIZE_TIMEOUT: Duration = Duration::from_secs(20);
 const FINAL_DURATION_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+// A just-exited FFmpeg can leave its MP4 briefly unavailable to a Windows
+// filter driver (Defender/indexing are common examples). Do not demote an
+// otherwise completed MP4 to MKV recovery on that short-lived lock.
+const MP4_STAGING_LOCK_RETRY_ATTEMPTS: usize = 8;
+const MP4_STAGING_LOCK_RETRY_INITIAL_DELAY: Duration = Duration::from_millis(100);
+const MP4_STAGING_LOCK_RETRY_MAX_DELAY: Duration = Duration::from_secs(1);
 const STOP_TERM_DELAY: Duration = Duration::from_secs(3);
 const STOP_KILL_DELAY: Duration = Duration::from_secs(3);
 // Sessions with a live RTMP leg get a longer quit grace: the tee/fifo leg
@@ -2630,10 +2636,40 @@ async fn export_mp4_from_mkv(ffmpeg_path: &str, input: &Path, output: &Path) -> 
 }
 
 async fn sync_nonempty_staged_mp4_for_publication(output: PathBuf) -> Result<()> {
-    tokio::task::spawn_blocking(move || sync_nonempty_staged_mp4(&output))
-        .await
-        .context("Could not join staged MP4 sync task")??;
-    Ok(())
+    let mut retry_delay = MP4_STAGING_LOCK_RETRY_INITIAL_DELAY;
+    for attempt in 0..MP4_STAGING_LOCK_RETRY_ATTEMPTS {
+        let output = output.clone();
+        let result = tokio::task::spawn_blocking(move || sync_nonempty_staged_mp4(&output))
+            .await
+            .context("Could not join staged MP4 sync task")?;
+        match result {
+            Ok(()) => return Ok(()),
+            Err(error)
+                if attempt + 1 < MP4_STAGING_LOCK_RETRY_ATTEMPTS
+                    && is_transient_windows_file_lock(&error) =>
+            {
+                sleep(retry_delay).await;
+                retry_delay = retry_delay
+                    .saturating_mul(2)
+                    .min(MP4_STAGING_LOCK_RETRY_MAX_DELAY);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+
+    unreachable!("the bounded MP4 staging retry loop always returns")
+}
+
+fn is_transient_windows_file_lock(error: &anyhow::Error) -> bool {
+    if !cfg!(target_os = "windows") {
+        return false;
+    }
+
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<io::Error>()
+            .is_some_and(|error| matches!(error.raw_os_error(), Some(5 | 32 | 33 | 1224)))
+    })
 }
 
 fn sync_nonempty_staged_mp4(output: &Path) -> Result<()> {
